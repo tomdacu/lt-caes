@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from CoolProp.CoolProp import PropsSI
 import config
+from matplotlib.patches import Rectangle
 
 def calculate_physical_exergy(state, dead_state):
     """
@@ -166,7 +167,7 @@ def plot_irreversibility_pie_chart(irreversibilities):
 
 
     fig, ax = plt.subplots(figsize=(10, 8))
-    wedges, texts, autotexts = ax.pie(
+    pie_result = ax.pie(
         sizes, 
         autopct=lambda p: f'{p:.1f}%\n({(p/100)*total_irr/1e3:.1f} kJ/kg)',
         startangle=90,
@@ -174,6 +175,11 @@ def plot_irreversibility_pie_chart(irreversibilities):
         pctdistance=0.85,
         wedgeprops=dict(width=0.4, edgecolor='w')
     )
+    if len(pie_result) == 3:
+        wedges, texts, autotexts = pie_result
+    else:
+        wedges, texts = pie_result
+        autotexts = []
 
     # Style text
     plt.setp(autotexts, size=8, weight="bold", color="white")
@@ -185,7 +191,7 @@ def plot_irreversibility_pie_chart(irreversibilities):
         'Heat Exchangers': 'lightgreen',
         'Storage': 'grey'
     }
-    handles = [plt.Rectangle((0,0),1,1, color=color) for color in legend_labels.values()]
+    handles = [Rectangle((0,0),1,1, color=color) for color in legend_labels.values()]
     ax.legend(handles, legend_labels.keys(), title="Component Types", loc="center")
 
     ax.set_title("Distribution of Exergetic Irreversibilities", pad=20)

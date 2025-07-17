@@ -66,6 +66,7 @@ Il lavoro specifico prodotto dall'espansore (`work_produced`) è calcolato in mo
 ### 3. Scambiatori di Calore
 
 Gli scambiatori di calore sono modellati come trasformazioni isobare (a pressione costante).
+
 - **Inter-refrigeratore**: Raffredda il fluido fino a una temperatura target (es. `T_ambientale`).
 - **Riscaldatore**: Riscalda il fluido fino a una temperatura target prima dell'espansione.
 
@@ -76,18 +77,21 @@ L'efficienza complessiva dell'impianto è calcolata come il rapporto tra l'energ
 `Efficienza = |Lavoro Espansione| / (Lavoro Compressione + Calore Fornito)`
 
 Dove:
+
 - `Lavoro Espansione` è il lavoro netto prodotto dagli espansori (negativo per convenzione).
 - `Lavoro Compressione` è il lavoro netto richiesto dai compressori (positivo).
 - `Calore Fornito` è il calore totale aggiunto nei riscaldatori durante il ciclo di espansione.
 
 ## Utilizzo
 
-1.  **Configurazione**: Aprire `config.py` e impostare i parametri desiderati per la simulazione.
-2.  **Definizione Ciclo**: Se necessario, modificare `specifications.py` per cambiare la sequenza o il tipo di componenti.
-3.  **Esecuzione**: Eseguire lo script `main.py` da un terminale:
+1. **Configurazione**: Aprire `config.py` e impostare i parametri desiderati per la simulazione.
+2. **Definizione Ciclo**: Se necessario, modificare `specifications.py` per cambiare la sequenza o il tipo di componenti.
+3. **Esecuzione**: Eseguire lo script `main.py` da un terminale:
+
     ```bash
     python I_CAES/main.py
     ```
-4.  **Analisi Risultati**:
+
+4. **Analisi Risultati**:
     - I risultati numerici (lavoro, efficienza) saranno stampati sulla console.
     - I diagrammi termodinamici (T-s, h-s, P-h) verranno visualizzati in finestre separate, mostrando i cicli di compressione ed espansione con processi colorati e stati numerati.
