@@ -124,76 +124,146 @@ def analyze_exergy(compression_states, expansion_states, compression_processes, 
 
         irreversibilities[comp_name] = irr
 
-    # --- Plotting ---
-    plot_irreversibility_pie_chart(irreversibilities)
+    # --- Enhanced Plotting ---
+    plot_enhanced_exergy_analysis(irreversibilities, compression_processes, expansion_processes)
 
 
-def plot_irreversibility_pie_chart(irreversibilities):
+def plot_enhanced_exergy_analysis(irreversibilities, compression_processes, expansion_processes):
     """
-    Plots a pie chart of the irreversibilities for each component.
-
+    Plots enhanced pie charts showing both individual components and summed categories.
+    
     Args:
-        irreversibilities (dict): A dictionary with component names as keys and
-                                  their irreversibility values (in J/kg) as values.
+        irreversibilities (dict): Dictionary with component names as keys and irreversibility values
+        compression_processes (list): List of compression process types
+        expansion_processes (list): List of expansion process types
     """
-    # Filter out zero or negative irreversibilities for a cleaner chart
-    labels = [key for key, value in irreversibilities.items() if value > 0]
-    sizes = [value for value in irreversibilities.values() if value > 0]
-
-    if not sizes:
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    # Filter out zero or negative irreversibilities
+    positive_irreversibilities = {k: v for k, v in irreversibilities.items() if v > 0}
+    
+    if not positive_irreversibilities:
         print("No positive irreversibilities to plot.")
         return
-
-    total_irr = sum(sizes)
-    print("\n--- Exergy Destruction per Component ---")
-    for label, size in zip(labels, sizes):
-        print(f"{label}: {size / 1e3:.2f} kJ/kg ({(size/total_irr)*100:.1f}%)")
-    print(f"Total: {total_irr / 1e3:.2f} kJ/kg")
-
-
-    # Define colors for component types
-    colors_map = {
-        'C': 'skyblue',   # Compressor
-        'E': 'salmon',    # Expander (Turbine)
-        'IC': 'lightgreen', # Intercooler (Heat Exchanger)
-        'IH': 'gold',     # Interheater (Heat Exchanger)
-        'S': 'grey'       # Storage
+    
+    # Create categories for summed analysis
+    categories = {
+        'All Compressors': 0,
+        'All Expanders': 0,
+        'All Intercoolers': 0,
+        'All Interheaters': 0,
+        'Storage': 0
     }
     
-    colors = []
-    for label in labels:
-        prefix = ''.join(filter(str.isalpha, label))
-        colors.append(colors_map.get(prefix, 'lightgrey'))
-
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-    pie_result = ax.pie(
-        sizes, 
-        autopct=lambda p: f'{p:.1f}%\n({(p/100)*total_irr/1e3:.1f} kJ/kg)',
-        startangle=90,
-        colors=colors,
-        pctdistance=0.85,
-        wedgeprops=dict(width=0.4, edgecolor='w')
-    )
-    if len(pie_result) == 3:
-        wedges, texts, autotexts = pie_result
-    else:
-        wedges, texts = pie_result
-        autotexts = []
-
-    # Style text
-    plt.setp(autotexts, size=8, weight="bold", color="white")
+    # Categorize individual components
+    individual_detailed = {}
     
-    # Legend
-    legend_labels = {
-        'Compressors': 'skyblue',
-        'Turbines': 'salmon',
-        'Heat Exchangers': 'lightgreen',
-        'Storage': 'grey'
-    }
-    handles = [Rectangle((0,0),1,1, color=color) for color in legend_labels.values()]
-    ax.legend(handles, legend_labels.keys(), title="Component Types", loc="center")
-
-    ax.set_title("Distribution of Exergetic Irreversibilities", pad=20)
-    plt.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+    for comp, irr in positive_irreversibilities.items():
+        if comp.startswith('C'):
+            categories['All Compressors'] += irr
+            individual_detailed[comp] = irr
+        elif comp.startswith('E'):
+            categories['All Expanders'] += irr
+            individual_detailed[comp] = irr
+        elif comp.startswith('IC'):
+            categories['All Intercoolers'] += irr
+            individual_detailed[comp] = irr
+        elif comp.startswith('IH'):
+            categories['All Interheaters'] += irr
+            individual_detailed[comp] = irr
+        elif comp == 'Storage':
+            categories['Storage'] += irr
+            individual_detailed[comp] = irr
+    
+    # Remove empty categories
+    categories = {k: v for k, v in categories.items() if v > 0}
+    
+    # Print detailed analysis
+    total_irr = sum(positive_irreversibilities.values())
+    
+    print("\n" + "="*60)
+    print("EXERGY DESTRUCTION ANALYSIS")
+    print("="*60)
+    
+    print("\n--- Individual Components ---")
+    for comp, irr in sorted(individual_detailed.items(), key=lambda x: x[1], reverse=True):
+        percentage = (irr / total_irr) * 100
+        print(f"{comp}: {irr/1000:.2f} kJ/kg ({percentage:.1f}%)")
+    
+    print("\n--- Summed Categories ---")
+    for category, irr in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+        percentage = (irr / total_irr) * 100
+        print(f"{category}: {irr/1000:.2f} kJ/kg ({percentage:.1f}%)")
+    
+    print(f"\nTotal Exergy Destruction: {total_irr/1000:.2f} kJ/kg")
+    print("="*60)
+    
+    # Create enhanced visualization
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    
+    # Colors for individual components
+    colors_individual = []
+    for comp in individual_detailed.keys():
+        if comp.startswith('C'):
+            colors_individual.append('#1f77b4')  # blue
+        elif comp.startswith('E'):
+            colors_individual.append('#ff7f0e')  # orange
+        elif comp.startswith('IC'):
+            colors_individual.append('#2ca02c')  # green
+        elif comp.startswith('IH'):
+            colors_individual.append('#d62728')  # red
+        elif comp == 'Storage':
+            colors_individual.append('#9467bd')  # purple
+    
+    # Colors for categories
+    colors_categories = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    
+    # Plot 1: Individual Components
+    if individual_detailed:
+        sizes1 = list(individual_detailed.values())
+        labels1 = list(individual_detailed.keys())
+        
+        wedges1, texts1, autotexts1 = ax1.pie(
+            sizes1, 
+            labels=labels1,
+            autopct=lambda p: f'{p:.1f}%',
+            startangle=90,
+            colors=colors_individual,
+            textprops={'fontsize': 9}
+        )
+        ax1.set_title('Individual Components\nExergy Destruction', fontsize=12, fontweight='bold')
+    
+    # Plot 2: Summed Categories
+    if categories:
+        sizes2 = list(categories.values())
+        labels2 = [f'{k}\n{v/1000:.1f} kJ/kg' for k, v in categories.items()]
+        
+        wedges2, texts2, autotexts2 = ax2.pie(
+            sizes2,
+            labels=labels2,
+            autopct=lambda p: f'{p:.1f}%',
+            startangle=90,
+            colors=colors_categories[:len(categories)],
+            textprops={'fontsize': 10}
+        )
+        ax2.set_title('Summed Categories\nExergy Destruction', fontsize=12, fontweight='bold')
+    
+    plt.suptitle('Exergetic Analysis: Irreversibility Distribution', fontsize=14, fontweight='bold')
+    plt.tight_layout()
     plt.show()
+    
+    # Also create a summary table
+    print("\n" + "="*60)
+    print("EXERGY DESTRUCTION SUMMARY TABLE")
+    print("="*60)
+    print(f"{'Component':<15} {'Irreversibility':<15} {'Percentage':<10}")
+    print("-"*45)
+    
+    for comp, irr in sorted(individual_detailed.items(), key=lambda x: x[1], reverse=True):
+        percentage = (irr / total_irr) * 100
+        print(f"{comp:<15} {irr/1000:<15.2f} {percentage:<10.1f}%")
+    
+    print("-"*45)
+    print(f"{'TOTAL':<15} {total_irr/1000:<15.2f} {100.0:<10.1f}%")
+    print("="*60)

@@ -18,7 +18,7 @@ DELTA_T = 5 # Difference in temperature from ambient air
 
 # --- Compression System Configuration ---
 COMPRESSOR_STAGES = 6  # Number of compression stages
-COMPRESSOR_ISENTROPIC_EFFICIENCY = 0.8  # Isentropic efficiency of each compressor stage
+COMPRESSOR_ISENTROPIC_EFFICIENCY = 0.96  # Isentropic efficiency of each compressor stage
 COMPRESSOR_INLET_P_BAR = P_AMBIENT_BAR  # Inlet pressure for the first compressor stage
 COMPRESSOR_INLET_T_C = T_AMBIENT_C  # Inlet temperature for the first compressor stage
 COMPRESSOR_OUTLET_P_BAR = 70.0  # Final outlet pressure of the compression train in bar
@@ -43,6 +43,7 @@ INTERHEATER_PRESSURE_DROP_FACTOR = INTERCOOLER_PRESSURE_DROP_FACTOR  # Pressure 
 # --- Analysis Settings ---
 TARGET_ENERGY_OUTPUT_MWH = 100  # Target energy output for storage sizing in MWh
 SHOW_PLOTS = True  # Set to False to disable showing thermodynamic cycle plots
+SHOW_EXERGY_ANALYSIS = True  # Set to True to show exergetic analysis pie chart
 # Options: 'normal', 'stages', 'delta_t', 'efficiency', 'pressure_drop', 'ambient_t'
 ANALYSIS_TYPE = 'normal'  # Type of analysis to perform
 

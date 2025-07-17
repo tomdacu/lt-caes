@@ -7,11 +7,13 @@ This script orchestrates the entire simulation by:
 3. Executing the thermodynamic calculations for each component in the cycle.
 4. Calculating the overall round-trip efficiency of the plant.
 5. Visualizing the thermodynamic cycles using `plotting.py`.
+6. Performing exergetic analysis using `exergetic_analysis.py`.
 """
 
 import config
 import specifications
 import plotting
+import exergetic_analysis
 from CoolProp.CoolProp import PropsSI
 import parametric_analysis
 
@@ -157,6 +159,17 @@ def main():
                 expansion_processes,
                 config.FLUID
             )
+
+        # --- Exergetic Analysis ---
+        if config.SHOW_EXERGY_ANALYSIS:
+            print("\n--- Running Exergetic Analysis ---")
+            exergetic_analysis.analyze_exergy(
+                compression_states,
+                expansion_states,
+                compression_processes,
+                expansion_processes
+            )
+
     elif config.ANALYSIS_TYPE == 'stages':
         parametric_analysis.analyze_stages()
     elif config.ANALYSIS_TYPE == 'delta_t':
