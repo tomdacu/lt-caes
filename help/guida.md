@@ -5,22 +5,31 @@ Questo simulatore calcola il comportamento termodinamico di un impianto CAES, an
 
 ---
 
-## 📁 Struttura del Progetto
+## 📁 Struttura del Progetto (v2.0.0 - Modulare)
 
 ```
 I_CAES/
-├── main.py                 # 🚀 Script principale - punto di ingresso
-├── config.py               # ⚙️  Parametri configurabili dell'impianto
-├── specifications.py       # 🔄 Definizione sequenza componenti
-├── plotting.py             # 📊 Visualizzazione grafici termodinamici
-├── transformation/         # 📐 Formule termodinamiche
-│   ├── compressor_formulas.py  # Compressione adiabatica reale
-│   ├── expander_formulas.py    # Espansione adiabatica reale
-│   ├── exchanger.py            # Scambiatori di calore
-│   └── storage.py              # Modello di accumulo
-└── help/                   # 📖 Documentazione
-    ├── guida.md              # Questa guida
-    ├── PROJECT_CHANGELOG.md # Storico versioni
+├── main.py                    # 🚀 Script principale - punto di ingresso
+├── config.py                  # ⚙️  Parametri configurabili dell'impianto
+├── specifications.py          # 🔄 Definizione sequenza componenti
+├── plotting.py                # 📊 Visualizzazione grafici termodinamici
+├── transformation/            # 📐 Formule termodinamiche
+│   ├── compressor_formulas.py # Compressione adiabatica reale
+│   ├── expander_formulas.py  # Espansione adiabatica reale
+│   ├── exchanger.py           # Scambiatori di calore
+│   └── storage.py             # Modello di accumulo
+├── core/                      # 🔥 Componenti di accumulo termico
+│   ├── heat_storage.py      # Calcoli accumulo termico
+│   └── heat_transfer_losses.py # Calcoli perdite di calore
+├── analysis/                  # 📊 Moduli di analisi
+│   ├── exergetic_analysis.py  # Analisi exergetica
+│   └── parametric_analysis.py # Studi parametrici
+├── simulation/                # 🕐 Simulazioni temporali
+│   └── heat_storage_simulation.py # Simulazione evoluzione temporale
+├── utils/                     # 🛠️ Utilità future
+└── help/                      # 📖 Documentazione
+    ├── guida.md               # Questa guida
+    ├── PROJECT_CHANGELOG.md   # Storico versioni
     └── commit_history.log    # Log completo commit
 ```
 

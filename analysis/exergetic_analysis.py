@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from CoolProp.CoolProp import PropsSI
 import config
+import heat_storage
 from matplotlib.patches import Rectangle
 
 def calculate_physical_exergy(state, dead_state):
@@ -45,7 +46,7 @@ def calculate_physical_exergy(state, dead_state):
     
     return (h - h0) - t0 * (s - s0)
 
-def analyze_exergy(compression_states, expansion_states, compression_processes, expansion_processes):
+def analyze_exergy(compression_states, expansion_states, compression_processes, expansion_processes, water_tank_temperature_c=None):
     """
     Performs the exergetic analysis for the entire CAES cycle.
 
@@ -54,6 +55,7 @@ def analyze_exergy(compression_states, expansion_states, compression_processes, 
         expansion_states (list): List of thermodynamic states for the expansion cycle.
         compression_processes (list): List of process types for the compression cycle.
         expansion_processes (list): List of process types for the expansion cycle.
+        water_tank_temperature_c (float, optional): Water tank temperature in Celsius for heat storage analysis.
     """
     print("\n--- Running Exergetic Analysis ---")
 
@@ -83,6 +85,16 @@ def analyze_exergy(compression_states, expansion_states, compression_processes, 
             b_in = calculate_physical_exergy(in_state, dead_state)
             b_out = calculate_physical_exergy(out_state, dead_state)
             irr = b_in - b_out
+            
+            # Add heat storage exergy destruction if enabled
+            if config.HEAT_STORAGE_ENABLED and 'intercooler' in process:
+                # Calculate exergy destruction in heat transfer to water storage
+                heat_rejected = out_state['H'] - in_state['H']  # Negative value
+                if water_tank_temperature_c is not None:
+                    t_water = water_tank_temperature_c + 273.15
+                    # Exergy destruction in heat transfer from air to water
+                    exergy_destruction = dead_state['T'] * (out_state['S'] - in_state['S']) - (out_state['H'] - in_state['H']) * (1 - dead_state['T'] / t_water)
+                    irr = abs(exergy_destruction)
         
         irreversibilities[comp_name] = irr
 
@@ -97,6 +109,21 @@ def analyze_exergy(compression_states, expansion_states, compression_processes, 
     storage_irr = b_storage_in - b_storage_out
     irreversibilities["Storage"] = storage_irr if storage_irr > 0 else 0
 
+    # --- Heat Storage System Exergy ---
+    if config.HEAT_STORAGE_ENABLED and water_tank_temperature_c is not None:
+        # Calculate exergy stored in water tank
+        water_mass = heat_storage.calculate_water_mass()
+        exergy_water = heat_storage.calculate_exergy_of_water_storage(
+            water_tank_temperature_c, water_mass, dead_state['T']
+        )
+        
+        # Add heat storage irreversibility
+        irreversibilities["Heat Storage"] = abs(exergy_water) * 0.05  # Assume 5% irreversibility
+        
+        print(f"\nHeat Storage System:")
+        print(f"Water tank temperature: {water_tank_temperature_c:.2f}°C")
+        print(f"Exergy stored in water: {exergy_water/1000:.2f} kJ/kg")
+
     # --- Expansion Cycle Irreversibilities ---
     for i, process in enumerate(expansion_processes):
         in_state = expansion_states[i]
@@ -107,6 +134,7 @@ def analyze_exergy(compression_states, expansion_states, compression_processes, 
             # Irreversibility = T0 * (s_out - s_in)
             irr = dead_state['T'] * (out_state['S'] - in_state['S'])
         else: # Interheater
+
             # Irreversibility = b_in - b_out (will be negative, so we take abs)
             # This represents exergy supplied by the heat source, not destroyed.
             # For a complete analysis, we'd need the source temperature.
@@ -114,11 +142,19 @@ def analyze_exergy(compression_states, expansion_states, compression_processes, 
             # The actual irreversibility is in the heat transfer process.
             # For simplicity, we'll label the exergy GAIN here, but not include it in the destruction pie chart.
             # A more rigorous approach would model the heat source.
+
             b_in = calculate_physical_exergy(in_state, dead_state)
             b_out = calculate_physical_exergy(out_state, dead_state)
             exergy_gain = b_out - b_in
-            # We set irreversibility to a small value for plotting, as it's a gain, not a loss.
-            irr = 0 
+            
+            # Calculate exergy destruction in heat transfer from water to air
+            if config.HEAT_STORAGE_ENABLED and water_tank_temperature_c is not None:
+                t_water = water_tank_temperature_c + 273.15
+                # Exergy destruction in heat transfer from water to air
+                exergy_destruction = dead_state['T'] * (out_state['S'] - in_state['S']) - (out_state['H'] - in_state['H']) * (1 - dead_state['T'] / t_water)
+                irr = abs(exergy_destruction)
+            else:
+                irr = 0 
             print(f"Exergy gain in {comp_name}: {exergy_gain / 1e3:.2f} kJ/kg")
 
 

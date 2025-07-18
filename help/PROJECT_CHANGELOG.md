@@ -1,112 +1,100 @@
-# Project Change Log & Version History
+# 📋 PROJECT CHANGELOG
 
-## 📋 Commit History Overview
+## [v2.0.0] - 2024-07-18 - Heat Storage Complete Analysis & Repository Restructuring
 
-This file contains a complete history of all commits to this project, along with instructions for navigating between versions.
+### 🆕 NEW FEATURES
+- **Heat Storage Complete Analysis**: Added time-evolution simulation with tank losses
+- **Daily Power Profile**: 96-value daily power profile for 15-minute intervals
+- **Tank Heat Losses**: Comprehensive heat loss calculations (conduction, convection, radiation)
+- **Configurable Tank Geometry**: Cylindrical tank with insulation parameters
+- **Time Analysis Mode**: New analysis type `heat_storage_time_analysis`
 
-### 🔄 How to Use This File
-- **To see current commit:** `git log --oneline -1`
-- **To revert to a specific commit:** `git checkout <commit-hash>`
-- **To create a branch from old commit:** `git checkout -b <new-branch-name> <commit-hash>`
-- **To go back to latest:** `git checkout main`
-- **To see what changed in a commit:** `git show <commit-hash>`
+### 🏗️ REPOSITORY RESTRUCTURING
+- **Modular Architecture**: Split code into organized directories
+- **Core Module**: `core/` directory for heat storage components
+- **Analysis Module**: `analysis/` directory for exergy and parametric analysis
+- **Simulation Module**: `simulation/` directory for time-evolution simulations
+- **Utils Module**: `utils/` directory for future utilities
 
----
-
-## 📊 Complete Commit History
-
-### Current Branch: main
-
-**- f7ff78a | 2025-07-17 | Update exergetic analysis and documentation | Tommaso D'Acunzio | (HEAD -> main)**
-- **Files changed:** exergetic_analysis.py, guida.md
-- **Changes:** 16 insertions, 6 deletions
-- **Description:** Updated exergetic analysis module and documentation
-
-**- a677f1b | 2025-07-17 | Initial project setup | Tommaso D'Acunzio |**
-- **Files added:** Complete project structure including:
-  - Python modules: config.py, exergetic_analysis.py, main.py, parametric_analysis.py, plotting.py, specifications.py
-  - Transformation package: compressor_formulas.py, exchanger.py, expander_formulas.py, storage.py
-  - Documentation: guida.md
-  - Compiled Python cache files
-
----
-
-## 🎯 Quick Reference Commands
-
-### Viewing History
-```bash
-# See all commits
-git log --oneline --all --graph
-
-# See detailed changes in last commit
-git show HEAD
-
-# See changes in specific commit
-git show <commit-hash>
-
-# See what files changed
-git diff --name-only <commit-hash>~1 <commit-hash>
-```
-
-### Reverting Changes
-```bash
-# Revert to previous commit (temporary)
-git checkout <commit-hash>
-
-# Create new branch from old commit
-git checkout -b restore-point-<commit-hash> <commit-hash>
-
-# Reset current branch to previous commit (permanent)
-git reset --hard <commit-hash>
-
-# Revert specific commit (creates new commit)
-git revert <commit-hash>
-```
-
-### File Recovery
-```bash
-# Restore specific file from previous commit
-git checkout <commit-hash> -- <filename>
-
-# See file content at specific commit
-git show <commit-hash>:<filename>
-```
-
----
-
-## 📁 Current Project Structure (as of f7ff78a)
-
+### 📁 NEW DIRECTORY STRUCTURE
 ```
 I_CAES/
-├── config.py
-├── exergetic_analysis.py
-├── main.py
-├── parametric_analysis.py
-├── plotting.py
-├── specifications.py
-├── transformation/
-│   ├── compressor_formulas.py
-│   ├── exchanger.py
-│   ├── expander_formulas.py
-│   └── storage.py
-└── help/                    # 📁 Cartella documentazione
-    ├── guida.md             # Guida completa al programma
-    ├── PROJECT_CHANGELOG.md # Storico versioni
-    └── commit_history.log    # Log completo commit
+├── main.py                    # Main entry point (simplified)
+├── config.py                  # Configuration parameters
+├── specifications.py          # Cycle specifications
+├── plotting.py                # Visualization tools
+├── transformation/           # Thermodynamic formulas
+├── core/                      # Heat storage core components
+│   ├── heat_storage.py        # Heat storage calculations
+│   └── heat_transfer_losses.py # Heat loss calculations
+├── analysis/                 # Analysis modules
+│   ├── exergetic_analysis.py   # Exergy analysis
+│   └── parametric_analysis.py  # Parametric studies
+├── simulation/                 # Simulation modules
+│   └── heat_storage_simulation.py # Time-evolution simulation
+├── utils/                      # Utility modules
+└── help/                       # Documentation
+    ├── guida.md               # User guide
+    ├── PROJECT_CHANGELOG.md   # This file
+    └── commit_history.log    # Git history
 ```
 
----
+### 🔧 CONFIGURATION UPDATES
+- Added `HEAT_STORAGE_COMPLETE_ANALYSIS` parameter
+- Added `NOMINAL_AIR_MASS_FLOW_RATE_KG_S` parameter
+- Added tank geometry parameters (`TANK_HEIGHT_M`, `TANK_DIAMETER_M`)
+- Added insulation parameters (`INSULATION_THICKNESS_M`, `INSULATION_THERMAL_CONDUCTIVITY_WMK`)
+- Added simulation parameters (`SIMULATION_DAYS`, `TIME_STEP_MINUTES`)
+- Added daily power profile `POWER_FRACTION_PROFILE_DAILY`
 
-## 📝 Last Updated
-**Date:** 2025-07-17  
-**Time:** 21:05:00 (Europe/Rome, UTC+2:00)  
-**By:** Tommaso D'Acunzio  
-**Changes:** Organizzati file di documentazione nella cartella 'help'
+### 📊 ENHANCED ANALYSIS CAPABILITIES
+- **Time-evolution simulation** with configurable duration
+- **Real-time temperature tracking** in water storage tank
+- **Energy flow visualization** with heat in/out/losses
+- **Cumulative energy analysis** over simulation period
+- **Backward compatibility** maintained for existing analyses
 
----
+### 🎯 USAGE EXAMPLES
+```python
+# Simple heat storage analysis
+config.HEAT_STORAGE_ENABLED = True
+config.ANALYSIS_TYPE = 'heat_storage_analysis'
 
-## 🔄 Next Steps
-To update this file after new commits:
-1. Run: `git log --oneline --all --graph --decorate --date=short --pretty=format:"- **%h** | %ad | %s | %an | %d" >> help/PROJECT_CHANGELOG.md`
-2. Add the new commit details to the history section
-3. Update the "Last Updated" section
+# Complete time analysis
+config.HEAT_STORAGE_COMPLETE_ANALYSIS = True
+config.ANALYSIS_TYPE = 'heat_storage_time_analysis'
+```
+
+## [v1.1.0] - 2024-07-18 - Heat Storage System Implementation
+
+### 🆕 NEW FEATURES
+- **Heat Storage System**: Added water-based heat storage capability
+- **Heat Recovery**: Captures heat from intercoolers during compression
+- **Heat Supply**: Uses stored heat for turbine inlet air preheating
+- **Exergy Analysis**: Enhanced to include heat storage components
+- **Parametric Analysis**: Added heat storage parameter studies
+
+### 🔧 CONFIGURATION UPDATES
+- Added `HEAT_STORAGE_ENABLED` parameter
+- Added water storage parameters (`WATER_SPECIFIC_HEAT_KJ_KGK`, `WATER_DENSITY_KG_M3`)
+- Added `WATER_STORAGE_TANK_VOLUME_M3` parameter
+- Added `TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C` parameter
+
+### 📊 ANALYSIS TYPES
+- Added `heat_storage_analysis` to `ANALYSIS_TYPE` options
+
+## [v1.0.0] - 2024-07-05 - Initial Release
+
+### ✅ INITIAL FEATURES
+- **Basic CAES Cycle**: Compression and expansion cycles
+- **Real Components**: Compressors, expanders, intercoolers, interheaters
+- **Efficiency Calculation**: Round-trip efficiency calculation
+- **Parametric Analysis**: Multiple parameter studies
+- **Visualization**: Thermodynamic cycle plots
+- **Exergy Analysis**: Component-level exergy destruction analysis
+
+### 📁 INITIAL STRUCTURE
+- Single directory with all Python files
+- Basic configuration system
+- Modular component definitions
+- Comprehensive documentation

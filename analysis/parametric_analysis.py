@@ -111,6 +111,174 @@ def analyze_delta_t():
     plt.grid(True)
     plt.show()
 
+def analyze_heat_storage():
+    """
+    Performs a parametric analysis on heat storage system parameters.
+    """
+    print("--- Running Parametric Analysis: Heat Storage System ---")
+    
+    # Analysis for water storage tank volume
+    print("\nAnalyzing water storage tank volume impact...")
+    efficiencies_volume = []
+    volumes_range = [50, 100, 200, 500, 1000]  # m³
+    
+    for volume in volumes_range:
+        print(f"Analyzing for water tank volume = {volume} m³...")
+        
+        # Store original values
+        original_heat_storage = config.HEAT_STORAGE_ENABLED
+        original_volume = config.WATER_STORAGE_TANK_VOLUME_M3
+        
+        # Set heat storage parameters
+        config.HEAT_STORAGE_ENABLED = True
+        config.WATER_STORAGE_TANK_VOLUME_M3 = volume
+        
+        # Run simulation
+        eff = run_simulation_for_efficiency({})
+        efficiencies_volume.append(eff)
+        
+        # Restore original values
+        config.HEAT_STORAGE_ENABLED = original_heat_storage
+        config.WATER_STORAGE_TANK_VOLUME_M3 = original_volume
+    
+    # Plot volume analysis
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(volumes_range, efficiencies_volume, 'o-')
+    plt.xlabel("Water Storage Tank Volume [m³]")
+    plt.ylabel("Round-trip Efficiency")
+    plt.title("Efficiency vs. Water Storage Tank Volume")
+    plt.grid(True)
+    
+    # Analysis for temperature difference
+    print("\nAnalyzing temperature difference impact...")
+    efficiencies_delta_t = []
+    delta_t_range = [5, 10, 15, 20, 30]  # °C
+    
+    for delta_t in delta_t_range:
+        print(f"Analyzing for temperature difference = {delta_t} °C...")
+        
+        # Store original values
+        original_heat_storage = config.HEAT_STORAGE_ENABLED
+        original_delta_t = config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C
+        
+        # Set heat storage parameters
+        config.HEAT_STORAGE_ENABLED = True
+        config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C = delta_t
+        
+        # Run simulation
+        eff = run_simulation_for_efficiency({})
+        efficiencies_delta_t.append(eff)
+        
+        # Restore original values
+        config.HEAT_STORAGE_ENABLED = original_heat_storage
+        config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C = original_delta_t
+    
+    # Plot delta T analysis
+    plt.subplot(1, 2, 2)
+    plt.plot(delta_t_range, efficiencies_delta_t, 'o-')
+    plt.xlabel("Temperature Difference [°C]")
+    plt.ylabel("Round-trip Efficiency")
+    plt.title("Efficiency vs. Temperature Difference")
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary
+    print("\nHeat Storage Analysis Summary:")
+    print("="*50)
+    print("Water Tank Volume Analysis:")
+    for vol, eff in zip(volumes_range, efficiencies_volume):
+        print(f"  {vol} m³: {eff:.2%}")
+    print("\nTemperature Difference Analysis:")
+    for dt, eff in zip(delta_t_range, efficiencies_delta_t):
+        print(f"  {dt} °C: {eff:.2%}")
+
+def analyze_heat_storage():
+    """
+    Performs a parametric analysis on heat storage system parameters.
+    """
+    print("--- Running Parametric Analysis: Heat Storage System ---")
+    
+    # Analysis for water storage tank volume
+    print("\nAnalyzing water storage tank volume impact...")
+    efficiencies_volume = []
+    volumes_range = [50, 100, 200, 500, 1000]  # m³
+    
+    for volume in volumes_range:
+        print(f"Analyzing for water tank volume = {volume} m³...")
+        
+        # Store original values
+        original_heat_storage = config.HEAT_STORAGE_ENABLED
+        original_volume = config.WATER_STORAGE_TANK_VOLUME_M3
+        
+        # Set heat storage parameters
+        config.HEAT_STORAGE_ENABLED = True
+        config.WATER_STORAGE_TANK_VOLUME_M3 = volume
+        
+        # Run simulation
+        eff = run_simulation_for_efficiency({})
+        efficiencies_volume.append(eff)
+        
+        # Restore original values
+        config.HEAT_STORAGE_ENABLED = original_heat_storage
+        config.WATER_STORAGE_TANK_VOLUME_M3 = original_volume
+    
+    # Plot volume analysis
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(volumes_range, efficiencies_volume, 'o-')
+    plt.xlabel("Water Storage Tank Volume [m³]")
+    plt.ylabel("Round-trip Efficiency")
+    plt.title("Efficiency vs. Water Storage Tank Volume")
+    plt.grid(True)
+    
+    # Analysis for temperature difference
+    print("\nAnalyzing temperature difference impact...")
+    efficiencies_delta_t = []
+    delta_t_range = [5, 10, 15, 20, 30]  # °C
+    
+    for delta_t in delta_t_range:
+        print(f"Analyzing for temperature difference = {delta_t} °C...")
+        
+        # Store original values
+        original_heat_storage = config.HEAT_STORAGE_ENABLED
+        original_delta_t = config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C
+        
+        # Set heat storage parameters
+        config.HEAT_STORAGE_ENABLED = True
+        config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C = delta_t
+        
+        # Run simulation
+        eff = run_simulation_for_efficiency({})
+        efficiencies_delta_t.append(eff)
+        
+        # Restore original values
+        config.HEAT_STORAGE_ENABLED = original_heat_storage
+        config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C = original_delta_t
+    
+    # Plot delta T analysis
+    plt.subplot(1, 2, 2)
+    plt.plot(delta_t_range, efficiencies_delta_t, 'o-')
+    plt.xlabel("Temperature Difference [°C]")
+    plt.ylabel("Round-trip Efficiency")
+    plt.title("Efficiency vs. Temperature Difference")
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary
+    print("\nHeat Storage Analysis Summary:")
+    print("="*50)
+    print("Water Tank Volume Analysis:")
+    for vol, eff in zip(volumes_range, efficiencies_volume):
+        print(f"  {vol} m³: {eff:.2%}")
+    print("\nTemperature Difference Analysis:")
+    for dt, eff in zip(delta_t_range, efficiencies_delta_t):
+        print(f"  {dt} °C: {eff:.2%}")
+
 def analyze_efficiency():
     """
     Performs a parametric analysis on the isentropic efficiency of compressors and expanders.
