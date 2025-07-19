@@ -6,6 +6,7 @@ which captures heat from intercoolers and uses it to heat air entering the turbi
 """
 
 import config
+import math
 from CoolProp.CoolProp import PropsSI
 
 def calculate_water_mass():
@@ -17,20 +18,21 @@ def calculate_water_mass():
     """
     return config.WATER_STORAGE_TANK_VOLUME_M3 * config.WATER_DENSITY_KG_M3
 
-def calculate_heat_recovered_from_intercooler(inlet_t_air, outlet_t_air, fluid):
+def calculate_heat_recovered_from_intercooler(inlet_t_air, outlet_t_air, inlet_p_air, fluid):
     """
     Calculates the specific heat recovered from air during intercooling.
     
     Args:
         inlet_t_air (float): Inlet air temperature in Kelvin
         outlet_t_air (float): Outlet air temperature in Kelvin
+        inlet_p_air (float): Inlet air pressure in Pascals
         fluid (str): Working fluid name
         
     Returns:
         float: Specific heat recovered in J/kg
     """
-    h_in = PropsSI('H', 'T', inlet_t_air, 'P', 1e5, fluid)
-    h_out = PropsSI('H', 'T', outlet_t_air, 'P', 1e5, fluid)
+    h_in = PropsSI('H', 'T', inlet_t_air, 'P', inlet_p_air, fluid)
+    h_out = PropsSI('H', 'T', outlet_t_air, 'P', inlet_p_air, fluid)
     return h_in - h_out
 
 def update_water_tank_temperature(heat_added_joules, water_mass_kg, initial_water_t_c, heat_loss_joules_per_step=0.0):
@@ -55,26 +57,44 @@ def update_water_tank_temperature(heat_added_joules, water_mass_kg, initial_wate
     delta_t = net_heat_change / (water_mass_kg * specific_heat)
     return initial_water_t_c + delta_t
 
-def calculate_heat_supplied_to_expander(water_t_c, target_delta_t_c, fluid):
+def calculate_specific_heat_supplied_to_expander(inlet_t_air, water_t_c, inlet_p_air, fluid):
     """
     Calculates the specific heat supplied from water storage to expander inlet air.
     
     Args:
+        inlet_t_air (float): Air inlet temperature to interheater in Kelvin
         water_t_c (float): Water temperature in Celsius
-        target_delta_t_c (float): Target temperature difference for heating
+        inlet_p_air (float): Air pressure in Pascals
         fluid (str): Working fluid name
         
     Returns:
         float: Specific heat supplied in J/kg
     """
     # Calculate target air temperature based on water temperature and delta T
-    target_air_t_c = water_t_c - target_delta_t_c
+    target_air_t = water_t_c - config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C
     
-    # Calculate heat required to heat air from ambient to target temperature
-    h_ambient = PropsSI('H', 'T', config.T_AMBIENT_C + 273.15, 'P', 1e5, fluid)
-    h_target = PropsSI('H', 'T', target_air_t_c + 273.15, 'P', 1e5, fluid)
+    # Calculate heat required to heat air from inlet to target temperature
+    h_inlet = PropsSI('H', 'T', inlet_t_air, 'P', inlet_p_air, fluid)
+    h_target = PropsSI('H', 'T', target_air_t + 273.15, 'P', inlet_p_air, fluid)
     
-    return h_target - h_ambient
+    return h_target - h_inlet
+
+def calculate_total_heat_supplied_to_expander(mass_flow_rate_air, inlet_t_air, water_t_c, inlet_p_air, fluid):
+    """
+    Calculates the total heat supplied from water storage to expander inlet air.
+    
+    Args:
+        mass_flow_rate_air (float): Mass flow rate of air in kg/s
+        inlet_t_air (float): Air inlet temperature to interheater in Kelvin
+        water_t_c (float): Water temperature in Celsius
+        inlet_p_air (float): Air pressure in Pascals
+        fluid (str): Working fluid name
+        
+    Returns:
+        float: Heat supplied in Joules
+    """
+    specific_heat = calculate_specific_heat_supplied_to_expander(inlet_t_air, water_t_c, inlet_p_air, fluid)
+    return mass_flow_rate_air * specific_heat
 
 def get_total_energy_stored_joules(water_t_c, water_mass_kg, reference_t_c=None):
     """
@@ -97,28 +117,6 @@ def get_total_energy_stored_joules(water_t_c, water_mass_kg, reference_t_c=None)
     # Calculate energy relative to reference temperature
     delta_t = water_t_c - reference_t_c
     return water_mass_kg * specific_heat * delta_t
-
-def calculate_heat_supplied_to_expander(mass_flow_rate_air, water_t_c, target_delta_t_c, fluid):
-    """
-    Calculates the heat supplied from water storage to expander inlet air.
-    
-    Args:
-        mass_flow_rate_air (float): Mass flow rate of air in kg/s
-        water_t_c (float): Water temperature in Celsius
-        target_delta_t_c (float): Target temperature difference for heating
-        fluid (str): Working fluid name
-        
-    Returns:
-        float: Heat supplied in Joules
-    """
-    # Calculate target air temperature based on water temperature and delta T
-    target_air_t_c = water_t_c - target_delta_t_c
-    
-    # Calculate heat required to heat air from ambient to target temperature
-    h_ambient = PropsSI('H', 'T', config.T_AMBIENT_C + 273.15, 'P', 1e5, fluid)
-    h_target = PropsSI('H', 'T', target_air_t_c + 273.15, 'P', 1e5, fluid)
-    
-    return mass_flow_rate_air * (h_target - h_ambient)
 
 def calculate_exergy_of_heat_transfer(Q, T_source, T_dead):
     """
@@ -148,6 +146,8 @@ def calculate_exergy_of_water_storage(water_t_c, water_mass_kg, t_dead):
     Returns:
         float: Exergy stored in water in Joules
     """
+    import math
+    
     # Convert specific heat from kJ/kg·K to J/kg·K
     specific_heat = config.WATER_SPECIFIC_HEAT_KJ_KGK * 1000
     
@@ -158,5 +158,5 @@ def calculate_exergy_of_water_storage(water_t_c, water_mass_kg, t_dead):
     if t_water <= t0:
         return 0
     
-    exergy = water_mass_kg * specific_heat * ((t_water - t0) - t0 * (t_water / t0))
+    exergy = water_mass_kg * specific_heat * ((t_water - t0) - t0 * math.log(t_water / t0))
     return exergy

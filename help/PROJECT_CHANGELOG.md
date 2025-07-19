@@ -30,7 +30,7 @@ I_CAES/
 ├── analysis/                 # Analysis modules
 │   ├── exergetic_analysis.py   # Exergy analysis
 │   └── parametric_analysis.py  # Parametric studies
-├── simulation/                 # Simulation modules
+├── simulation/                # Simulation modules
 │   └── heat_storage_simulation.py # Time-evolution simulation
 ├── utils/                      # Utility modules
 └── help/                       # Documentation
@@ -61,6 +61,45 @@ config.HEAT_STORAGE_ENABLED = True
 config.ANALYSIS_TYPE = 'heat_storage_analysis'
 
 # Complete time analysis
+config.HEAT_STORAGE_COMPLETE_ANALYSIS = True
+config.ANALYSIS_TYPE = 'heat_storage_time_analysis'
+```
+
+## [v2.1.0] - 2024-07-19 - Heat Storage System Improvements & Plant Documentation
+
+### 🆕 NEW FEATURES
+- **Dynamic Heat Exchanger Temperatures**: Heat exchangers now use water tank temperature for target calculations
+- **Counter-current Heat Exchange**: Proper modeling of counter-current heat exchangers
+- **Hot/Cold Water Tank System**: Complete water tank operation during charging/discharging
+- **Plant Documentation**: Comprehensive plant description file
+
+### 🔧 CONFIGURATION UPDATES
+- Added `HEAT_EXCHANGE_APPROACH_TEMP_C` parameter for heat exchanger approach temperature
+- Updated temperature calculation logic for heat storage mode
+
+### 🐛 BUG FIXES
+- Fixed `math.log` bug in `calculate_exergy_of_water_storage`
+- Corrected heat calculation logic in `calculate_heat_supplied_to_expander`
+- Removed duplicate function signatures in heat_storage.py
+- Updated pressure handling in `calculate_heat_recovered_from_intercooler`
+
+### 📚 DOCUMENTATION
+- Added `help/plant_description.md` with detailed plant operation explanation
+- Updated configuration comments for clarity
+- Added documentation for heat storage system operation
+
+### 🏗️ CODE IMPROVEMENTS
+- **specifications.py**: Added optional `water_tank_temperature_c` parameter to cycle definitions
+- **heat_storage_simulation.py**: Updated to use corrected heat calculation functions
+- **main.py**: Maintained backward compatibility with existing analyses
+
+### 🎯 USAGE EXAMPLES
+```python
+# Heat storage with dynamic temperature control
+config.HEAT_STORAGE_ENABLED = True
+config.HEAT_EXCHANGE_APPROACH_TEMP_C = 5  # 5°C approach temperature
+
+# Time analysis with improved heat storage
 config.HEAT_STORAGE_COMPLETE_ANALYSIS = True
 config.ANALYSIS_TYPE = 'heat_storage_time_analysis'
 ```

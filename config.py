@@ -25,6 +25,7 @@ WATER_SPECIFIC_HEAT_KJ_KGK = 4.186  # Specific heat capacity of water in kJ/kg·
 WATER_DENSITY_KG_M3 = 997  # Density of water at room temperature in kg/m³
 WATER_STORAGE_TANK_VOLUME_M3 = 100  # Volume of water storage tank in m³
 TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C = 10  # Temperature difference for heating turbine inlet air using stored heat
+HEAT_EXCHANGE_APPROACH_TEMP_C = 5  # Minimum temperature difference for heat exchange between air and water
 
 # --- Heat Storage Time Analysis Configuration ---
 # These parameters are only used when HEAT_STORAGE_COMPLETE_ANALYSIS = True
@@ -50,12 +51,12 @@ INITIAL_WATER_TANK_T_C = T_AMBIENT_C  # Initial water tank temperature [°C]
 POWER_FRACTION_PROFILE_DAILY = [
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 00:00 - 01:30 (8 intervals)
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 01:30 - 03:00
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 03:00 - 04:30
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0,  # 03:00 - 04:30
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 04:30 - 06:00
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 06:00 - 07:30
+    0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0,  # 06:00 - 07:30
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 07:30 - 09:00
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 09:00 - 10:30
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 10:30 - 12:00
+    0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0,  # 10:30 - 12:00
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 12:00 - 13:30
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 13:30 - 15:00
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  # 15:00 - 16:30

@@ -80,14 +80,15 @@ def run_heat_storage_time_analysis():
                 if component["type"] == "intercooler":
                     inlet_t = compression_states[i]['T']
                     outlet_t = compression_states[i+1]['T']
+                    inlet_p = compression_states[i]['P']
                     specific_heat_recovered += heat_storage.calculate_heat_recovered_from_intercooler(
-                        inlet_t, outlet_t, config.FLUID
+                        inlet_t, outlet_t, inlet_p, config.FLUID
                     )
             
             heat_in_joules = specific_heat_recovered * effective_mass_flow * time_step_seconds
             
         elif power_fraction < 0:  # Discharging
-            # Run expansion cycle
+            # Run expansion cycle with dynamic water tank temperature
             initial_expansion_temp_c = water_tank_temperature_c - config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C
             initial_expansion_temp_c = max(initial_expansion_temp_c, config.T_AMBIENT_C)
             
@@ -97,7 +98,7 @@ def run_heat_storage_time_analysis():
                 'H': PropsSI('H', 'P', config.STORAGE_PRESSURE_BAR * 1e5, 'T', initial_expansion_temp_c + 273.15, config.FLUID),
                 'S': PropsSI('S', 'P', config.STORAGE_PRESSURE_BAR * 1e5, 'T', initial_expansion_temp_c + 273.15, config.FLUID),
             }
-            expansion_cycle_def = specifications.define_expansion_cycle()
+            expansion_cycle_def = specifications.define_expansion_cycle(water_tank_temperature_c)
             expansion_states, expansion_work, _ = run_cycle(
                 initial_expansion_state, expansion_cycle_def, config.EXPANDER_OUTLET_P_BAR * 1e5
             )
@@ -106,8 +107,10 @@ def run_heat_storage_time_analysis():
             specific_heat_supplied = 0.0
             for i, component in enumerate(expansion_cycle_def):
                 if component["type"] == "interheater":
-                    specific_heat_supplied += heat_storage.calculate_heat_supplied_to_expander(
-                        water_tank_temperature_c, config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C, config.FLUID
+                    inlet_t = expansion_states[i]['T']
+                    inlet_p = expansion_states[i]['P']
+                    specific_heat_supplied += heat_storage.calculate_specific_heat_supplied_to_expander(
+                        inlet_t, water_tank_temperature_c, inlet_p, config.FLUID
                     )
             
             heat_out_joules = specific_heat_supplied * effective_mass_flow * time_step_seconds
