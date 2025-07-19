@@ -7,12 +7,11 @@ including tank losses and daily power profiles.
 
 import config
 import specifications
-import heat_storage
-import heat_transfer_losses
-from CoolProp.CoolProp import PropsSI
+from utils.cycle_runner import run_cycle
+from core import heat_storage, heat_transfer_losses
 import numpy as np
 import matplotlib.pyplot as plt
-from main import run_cycle
+from CoolProp.CoolProp import PropsSI
 
 def run_heat_storage_time_analysis():
     """

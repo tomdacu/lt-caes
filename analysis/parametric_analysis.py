@@ -8,7 +8,7 @@ It analyzes the effect of varying key parameters on the plant's round-trip effic
 import matplotlib.pyplot as plt
 import config
 import specifications
-from main import run_cycle
+from utils.cycle_runner import run_cycle
 from CoolProp.CoolProp import PropsSI
 
 def run_simulation_for_efficiency(params_override={}):

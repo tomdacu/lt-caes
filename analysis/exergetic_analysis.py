@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from CoolProp.CoolProp import PropsSI
 import config
-import heat_storage
+from core import heat_storage
 from matplotlib.patches import Rectangle
 
 def calculate_physical_exergy(state, dead_state):
