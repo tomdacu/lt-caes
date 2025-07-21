@@ -5,158 +5,75 @@ This module provides functions to model and analyze the heat storage system,
 which captures heat from intercoolers and uses it to heat air entering the turbine.
 """
 
-import config
 import math
 from CoolProp.CoolProp import PropsSI
 
-def calculate_water_mass():
-    """
-    Calculates the mass of water in the storage tank.
-    
-    Returns:
-        float: Mass of water in kg
-    """
-    return config.WATER_STORAGE_TANK_VOLUME_M3 * config.WATER_DENSITY_KG_M3
 
-def calculate_heat_recovered_from_intercooler(inlet_t_air, outlet_t_air, inlet_p_air, fluid):
-    """
-    Calculates the specific heat recovered from air during intercooling.
-    
-    Args:
-        inlet_t_air (float): Inlet air temperature in Kelvin
-        outlet_t_air (float): Outlet air temperature in Kelvin
-        inlet_p_air (float): Inlet air pressure in Pascals
-        fluid (str): Working fluid name
-        
-    Returns:
-        float: Specific heat recovered in J/kg
-    """
-    h_in = PropsSI('H', 'T', inlet_t_air, 'P', inlet_p_air, fluid)
-    h_out = PropsSI('H', 'T', outlet_t_air, 'P', inlet_p_air, fluid)
-    return h_in - h_out
 
-def update_water_tank_temperature(heat_added_joules, water_mass_kg, initial_water_t_c, heat_loss_joules_per_step=0.0):
+class HeatStorageSystem:
     """
-    Updates the water tank temperature based on heat added and losses.
+    Heat storage system class for CAES plant.
     
-    Args:
-        heat_added_joules (float): Heat added to water in Joules
-        water_mass_kg (float): Mass of water in kg
-        initial_water_t_c (float): Initial water temperature in Celsius
-        heat_loss_joules_per_step (float): Heat lost from tank in Joules (default: 0.0)
+    Manages thermal energy storage using hot water tanks to store heat
+    from compression and provide it during expansion.
+    """
+    
+    def __init__(self, config):
+        """Initialize heat storage system with plant configuration."""
+        self.config = config
+        # Initialize tank temperatures to reasonable values
+        # Start hot tank at ambient + reasonable offset to avoid cold interheater temperatures
+        self.hot_tank_temperature_c = config.T_ambient_C + 50  # Start at 65°C for 15°C ambient
+        self.cold_tank_temperature_c = config.T_ambient_C
+        self.water_mass_kg = self._calculate_water_mass()
         
-    Returns:
-        float: New water temperature in Celsius
-    """
-    # Convert specific heat from kJ/kg·K to J/kg·K
-    specific_heat = config.WATER_SPECIFIC_HEAT_KJ_KGK * 1000
+    def _calculate_water_mass(self):
+        """Calculate water mass from tank dimensions."""
+        # Use tank volume from config
+        volume = self.config.tank_volume_m3
+        water_density = 1000  # kg/m³ for water
+        return volume * water_density
     
-    # Net heat change considering losses
-    net_heat_change = heat_added_joules - heat_loss_joules_per_step
+    def get_intercooler_target_temperature(self):
+        """Get target temperature for intercooler outlet in Kelvin."""
+        # Target is ambient + heat exchange approach, converted to Kelvin
+        return (self.config.T_ambient_C + self.config.heat_exchange_approach_temp) + 273.15
     
-    delta_t = net_heat_change / (water_mass_kg * specific_heat)
-    return initial_water_t_c + delta_t
-
-def calculate_specific_heat_supplied_to_expander(inlet_t_air, water_t_c, inlet_p_air, fluid):
-    """
-    Calculates the specific heat supplied from water storage to expander inlet air.
+    def get_interheater_target_temperature(self):
+        """Get target temperature for interheater outlet in Kelvin."""
+        # Use stored hot water temperature minus approach temperature, converted to Kelvin
+        target_temp_k = (self.hot_tank_temperature_c - self.config.heat_exchange_approach_temp) + 273.15
+        # Ensure minimum temperature is reasonable
+        min_temp_k = self.config.T_ambient_C + 273.15  # At least ambient temperature
+        return max(target_temp_k, min_temp_k)
     
-    Args:
-        inlet_t_air (float): Air inlet temperature to interheater in Kelvin
-        water_t_c (float): Water temperature in Celsius
-        inlet_p_air (float): Air pressure in Pascals
-        fluid (str): Working fluid name
+    def calculate_simple_hot_temp(self, charging_results):
+        """
+        Calculate hot tank temperature based on compression heat recovery.
         
-    Returns:
-        float: Specific heat supplied in J/kg
-    """
-    # Calculate target air temperature based on water temperature and delta T
-    target_air_t = water_t_c - config.TURBINE_INLET_HEAT_EXCHANGE_DELTA_T_C
-    
-    # Calculate heat required to heat air from inlet to target temperature
-    h_inlet = PropsSI('H', 'T', inlet_t_air, 'P', inlet_p_air, fluid)
-    h_target = PropsSI('H', 'T', target_air_t + 273.15, 'P', inlet_p_air, fluid)
-    
-    return h_target - h_inlet
-
-def calculate_total_heat_supplied_to_expander(mass_flow_rate_air, inlet_t_air, water_t_c, inlet_p_air, fluid):
-    """
-    Calculates the total heat supplied from water storage to expander inlet air.
-    
-    Args:
-        mass_flow_rate_air (float): Mass flow rate of air in kg/s
-        inlet_t_air (float): Air inlet temperature to interheater in Kelvin
-        water_t_c (float): Water temperature in Celsius
-        inlet_p_air (float): Air pressure in Pascals
-        fluid (str): Working fluid name
+        Args:
+            charging_results: Results from compression cycle
+        """
+        # Simple model: calculate average compression outlet temperature
+        compression_states = charging_results.all_states
+        if len(compression_states) > 2:
+            # Get compression outlet states (every other state starting from index 1)
+            compression_outlets = compression_states[1::2]
+            
+            if compression_outlets:
+                # Average outlet temperature
+                avg_compression_temp = sum(state.t for state in compression_outlets) / len(compression_outlets)
+                
+                # Hot tank temperature is compression outlet minus heat exchange approach
+                self.hot_tank_temperature_c = avg_compression_temp - 273.15 - self.config.heat_exchange_approach_temp
+                
+                # Ensure it's not below ambient
+                self.hot_tank_temperature_c = max(self.hot_tank_temperature_c, self.config.T_ambient_C)
+                
+                # Cold tank remains near ambient (simplified)
+                self.cold_tank_temperature_c = self.config.T_ambient_C + 2
         
-    Returns:
-        float: Heat supplied in Joules
-    """
-    specific_heat = calculate_specific_heat_supplied_to_expander(inlet_t_air, water_t_c, inlet_p_air, fluid)
-    return mass_flow_rate_air * specific_heat
-
-def get_total_energy_stored_joules(water_t_c, water_mass_kg, reference_t_c=None):
-    """
-    Calculates the total thermal energy stored in the water tank.
-    
-    Args:
-        water_t_c (float): Water temperature in Celsius
-        water_mass_kg (float): Mass of water in kg
-        reference_t_c (float): Reference temperature for energy calculation (default: ambient)
-        
-    Returns:
-        float: Total energy stored in Joules
-    """
-    if reference_t_c is None:
-        reference_t_c = config.T_AMBIENT_C
-    
-    # Convert specific heat from kJ/kg·K to J/kg·K
-    specific_heat = config.WATER_SPECIFIC_HEAT_KJ_KGK * 1000
-    
-    # Calculate energy relative to reference temperature
-    delta_t = water_t_c - reference_t_c
-    return water_mass_kg * specific_heat * delta_t
-
-def calculate_exergy_of_heat_transfer(Q, T_source, T_dead):
-    """
-    Calculates the exergy of heat transfer.
-    
-    Args:
-        Q (float): Heat transferred in Joules
-        T_source (float): Source temperature in Kelvin
-        T_dead (float): Dead state temperature in Kelvin
-        
-    Returns:
-        float: Exergy of heat transfer in Joules
-    """
-    if T_source <= T_dead:
-        return 0  # No exergy if source temperature is below dead state
-    return Q * (1 - T_dead / T_source)
-
-def calculate_exergy_of_water_storage(water_t_c, water_mass_kg, t_dead):
-    """
-    Calculates the exergy stored in the water tank.
-    
-    Args:
-        water_t_c (float): Water temperature in Celsius
-        water_mass_kg (float): Mass of water in kg
-        t_dead (float): Dead state temperature in Kelvin
-        
-    Returns:
-        float: Exergy stored in water in Joules
-    """
-    import math
-    
-    # Convert specific heat from kJ/kg·K to J/kg·K
-    specific_heat = config.WATER_SPECIFIC_HEAT_KJ_KGK * 1000
-    
-    # Calculate exergy using the formula: m * c * [(T - T0) - T0 * ln(T/T0)]
-    t_water = water_t_c + 273.15
-    t0 = t_dead
-    
-    if t_water <= t0:
-        return 0
-    
-    exergy = water_mass_kg * specific_heat * ((t_water - t0) - t0 * math.log(t_water / t0))
-    return exergy
+        # Fallback if no compression states
+        if not hasattr(self, 'hot_tank_temperature_c') or self.hot_tank_temperature_c <= self.config.T_ambient_C:
+            self.hot_tank_temperature_c = self.config.T_ambient_C + 50  # Default hot temperature
+            self.cold_tank_temperature_c = self.config.T_ambient_C

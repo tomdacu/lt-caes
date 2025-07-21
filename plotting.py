@@ -5,7 +5,11 @@ This module provides functions for visualizing the thermodynamic cycles of the C
 import matplotlib.pyplot as plt
 from fluprodia import FluidPropertyDiagram
 import numpy as np
-import config # Import config to access ambient temperature
+
+try:
+    from dashboard import AMBIENT_TEMPERATURE_C
+except ImportError:
+    AMBIENT_TEMPERATURE_C = 15.0  # Default value
 
 def _plot_process(diagram, ax, diagram_type, states, process_type, **kwargs):
     """Helper function to plot a single process on a diagram."""
@@ -62,8 +66,16 @@ def _plot_process(diagram, ax, diagram_type, states, process_type, **kwargs):
 
 def plot_thermodynamic_cycles(compression_states, expansion_states, compression_processes, expansion_processes, fluid_name):
     """
-    Plots T-s, h-s, and P-h diagrams for the CAES cycle, each in a separate window.
+    Plots selected thermodynamic diagrams for the CAES cycle based on dashboard configuration.
     """
+    # Import dashboard settings
+    try:
+        from dashboard import SHOW_TS_DIAGRAM, SHOW_HS_DIAGRAM, SHOW_PH_DIAGRAM
+    except ImportError:
+        # Default to showing all diagrams if dashboard not available
+        SHOW_TS_DIAGRAM = True
+        SHOW_HS_DIAGRAM = True  
+        SHOW_PH_DIAGRAM = True
     
     color_map = {
         'compressor': 'green',
@@ -94,73 +106,75 @@ def plot_thermodynamic_cycles(compression_states, expansion_states, compression_
     isotherm_diagram.set_unit_system(T='°C', p='bar', h='kJ/kg', s='kJ/kgK')
     isotherm_data = isotherm_diagram.calc_individual_isoline(
         isoline_property='T',
-        isoline_value=config.T_AMBIENT_C,
+        isoline_value=AMBIENT_TEMPERATURE_C,
         starting_point_property='p',
         starting_point_value=p_min, # Start at ambient pressure
         ending_point_property='p',
         ending_point_value=p_max    # End at max cycle pressure
     )
-    isotherm_label = f'Ambient Temp ({config.T_AMBIENT_C}°C)'
+    isotherm_label = f'Ambient Temp ({AMBIENT_TEMPERATURE_C}°C)'
 
     # --- T-s Diagram ---
-    ts_diagram = FluidPropertyDiagram(fluid_name)
-    ts_diagram.set_unit_system(T='°C', p='bar', h='kJ/kg', s='kJ/kgK')
-    ts_diagram.calc_isolines()
-    fig, ax = plt.subplots(1, figsize=(12, 8)) # Smaller figure size
-    ts_diagram.draw_isolines(fig, ax, 'Ts', x_min=s_min-margin_s, x_max=s_max+margin_s, y_min=t_min-margin_t, y_max=t_max+margin_t)
+    if SHOW_TS_DIAGRAM:
+        ts_diagram = FluidPropertyDiagram(fluid_name)
+        ts_diagram.set_unit_system(T='°C', p='bar', h='kJ/kg', s='kJ/kgK')
+        ts_diagram.calc_isolines()
+        fig, ax = plt.subplots(1, figsize=(12, 8)) # Smaller figure size
+        ts_diagram.draw_isolines(fig, ax, 'Ts', x_min=s_min-margin_s, x_max=s_max+margin_s, y_min=t_min-margin_t, y_max=t_max+margin_t)
 
-    # Plot ambient temperature isotherm
-    ax.plot(isotherm_data['s'], isotherm_data['T'], 'k--', label=isotherm_label, linewidth=0.75)
-
-    for i in range(len(compression_processes)):
-        _plot_process(ts_diagram, ax, 'Ts', [compression_states[i], compression_states[i+1]], compression_processes[i], color=color_map[compression_processes[i]], label=compression_processes[i].capitalize())
-    for i in range(len(expansion_processes)):
-        _plot_process(ts_diagram, ax, 'Ts', [expansion_states[i], expansion_states[i+1]], expansion_processes[i], color=color_map[expansion_processes[i]], label=expansion_processes[i].capitalize())
-    
-    handles, labels = ax.get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    ax.legend(by_label.values(), by_label.keys())
-    ax.set_title('T-s Diagram')
-    plt.show()
+        # Plot ambient temperature isotherm
+        ax.plot(isotherm_data['s'], isotherm_data['T'], 'k--', label=isotherm_label, linewidth=0.75)
+        for i in range(len(compression_processes)):
+            _plot_process(ts_diagram, ax, 'Ts', [compression_states[i], compression_states[i+1]], compression_processes[i], color=color_map[compression_processes[i]], label=compression_processes[i].capitalize())
+        for i in range(len(expansion_processes)):
+            _plot_process(ts_diagram, ax, 'Ts', [expansion_states[i], expansion_states[i+1]], expansion_processes[i], color=color_map[expansion_processes[i]], label=expansion_processes[i].capitalize())
+        
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys())
+        ax.set_title('T-s Diagram')
+        plt.show()
 
     # --- h-s Diagram ---
-    hs_diagram = FluidPropertyDiagram(fluid_name)
-    hs_diagram.set_unit_system(T='°C', p='bar', h='kJ/kg', s='kJ/kgK')
-    hs_diagram.calc_isolines()
-    fig, ax = plt.subplots(1, figsize=(10, 6)) # Smaller figure size
-    hs_diagram.draw_isolines(fig, ax, 'hs', x_min=s_min-margin_s, x_max=s_max+margin_s, y_min=h_min-margin_h, y_max=h_max+margin_h)
+    if SHOW_HS_DIAGRAM:
+        hs_diagram = FluidPropertyDiagram(fluid_name)
+        hs_diagram.set_unit_system(T='°C', p='bar', h='kJ/kg', s='kJ/kgK')
+        hs_diagram.calc_isolines()
+        fig, ax = plt.subplots(1, figsize=(10, 6)) # Smaller figure size
+        hs_diagram.draw_isolines(fig, ax, 'hs', x_min=s_min-margin_s, x_max=s_max+margin_s, y_min=h_min-margin_h, y_max=h_max+margin_h)
 
-    # Plot ambient temperature isotherm
-    ax.plot(isotherm_data['s'], isotherm_data['h'], 'k--', label=isotherm_label, linewidth=0.75)
+        # Plot ambient temperature isotherm
+        ax.plot(isotherm_data['s'], isotherm_data['h'], 'k--', label=isotherm_label, linewidth=0.75)
 
-    for i in range(len(compression_processes)):
-        _plot_process(hs_diagram, ax, 'hs', [compression_states[i], compression_states[i+1]], compression_processes[i], color=color_map[compression_processes[i]], label=compression_processes[i].capitalize())
-    for i in range(len(expansion_processes)):
-        _plot_process(hs_diagram, ax, 'hs', [expansion_states[i], expansion_states[i+1]], expansion_processes[i], color=color_map[expansion_processes[i]], label=expansion_processes[i].capitalize())
+        for i in range(len(compression_processes)):
+            _plot_process(hs_diagram, ax, 'hs', [compression_states[i], compression_states[i+1]], compression_processes[i], color=color_map[compression_processes[i]], label=compression_processes[i].capitalize())
+        for i in range(len(expansion_processes)):
+            _plot_process(hs_diagram, ax, 'hs', [expansion_states[i], expansion_states[i+1]], expansion_processes[i], color=color_map[expansion_processes[i]], label=expansion_processes[i].capitalize())
 
-    handles, labels = ax.get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    ax.legend(by_label.values(), by_label.keys())
-    ax.set_title('h-s Diagram')
-    plt.show()
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys())
+        ax.set_title('h-s Diagram')
+        plt.show()
 
     # --- P-h Diagram ---
-    ph_diagram = FluidPropertyDiagram(fluid_name)
-    ph_diagram.set_unit_system(T='°C', p='bar', h='kJ/kg', s='kJ/kgK')
-    ph_diagram.calc_isolines()
-    fig, ax = plt.subplots(1, figsize=(10, 6)) # Smaller figure size
-    ph_diagram.draw_isolines(fig, ax, 'logph', x_min=h_min-margin_h, x_max=h_max+margin_h, y_min=p_min*0.9, y_max=p_max*1.1)
+    if SHOW_PH_DIAGRAM:
+        ph_diagram = FluidPropertyDiagram(fluid_name)
+        ph_diagram.set_unit_system(T='°C', p='bar', h='kJ/kg', s='kJ/kgK')
+        ph_diagram.calc_isolines()
+        fig, ax = plt.subplots(1, figsize=(10, 6)) # Smaller figure size
+        ph_diagram.draw_isolines(fig, ax, 'logph', x_min=h_min-margin_h, x_max=h_max+margin_h, y_min=p_min*0.9, y_max=p_max*1.1)
 
-    # Plot ambient temperature isotherm
-    ax.plot(isotherm_data['h'], isotherm_data['p'], 'k--', label=isotherm_label, linewidth=0.75)
+        # Plot ambient temperature isotherm
+        ax.plot(isotherm_data['h'], isotherm_data['p'], 'k--', label=isotherm_label, linewidth=0.75)
 
-    for i in range(len(compression_processes)):
-        _plot_process(ph_diagram, ax, 'logph', [compression_states[i], compression_states[i+1]], compression_processes[i], color=color_map[compression_processes[i]], label=compression_processes[i].capitalize())
-    for i in range(len(expansion_processes)):
-        _plot_process(ph_diagram, ax, 'logph', [expansion_states[i], expansion_states[i+1]], expansion_processes[i], color=color_map[expansion_processes[i]], label=expansion_processes[i].capitalize())
-    
-    handles, labels = ax.get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    ax.legend(by_label.values(), by_label.keys())
-    ax.set_title('P-h Diagram')
-    plt.show()
+        for i in range(len(compression_processes)):
+            _plot_process(ph_diagram, ax, 'logph', [compression_states[i], compression_states[i+1]], compression_processes[i], color=color_map[compression_processes[i]], label=compression_processes[i].capitalize())
+        for i in range(len(expansion_processes)):
+            _plot_process(ph_diagram, ax, 'logph', [expansion_states[i], expansion_states[i+1]], expansion_processes[i], color=color_map[expansion_processes[i]], label=expansion_processes[i].capitalize())
+        
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys())
+        ax.set_title('P-h Diagram')
+        plt.show()
