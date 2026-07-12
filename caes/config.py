@@ -26,6 +26,13 @@ class HeatExchangerModel(str, Enum):
     COUNTERFLOW_NTU = "counterflow_ntu"
 
 
+class WaterFlowStrategy(str, Enum):
+    """How the water-side mass flow is selected for finite-area A-CAES HXs."""
+
+    SPECIFIED = "specified"
+    OPTIMIZE_THERMAL = "optimize_thermal"
+
+
 @dataclass(frozen=True)
 class PlantConfig:
     """Inputs for one charge/discharge batch.
@@ -54,6 +61,10 @@ class PlantConfig:
     overall_heat_transfer_coefficient_w_m2k: float = 100.0
     air_mass_flow_kg_s: float = 5.0
     water_mass_flow_kg_s: float = 20.0
+    water_flow_strategy: WaterFlowStrategy = WaterFlowStrategy.SPECIFIED
+    water_flow_target_fraction: float = 0.95
+    water_mass_flow_search_min_kg_s: float = 0.1
+    water_mass_flow_search_max_kg_s: float = 1_000.0
 
     # Batch and sensible-water thermal storage inputs (A-CAES only).
     air_mass_kg: float = 10_000.0
@@ -75,6 +86,7 @@ class PlantConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", PlantMode(self.mode))
         object.__setattr__(self, "heat_exchanger_model", HeatExchangerModel(self.heat_exchanger_model))
+        object.__setattr__(self, "water_flow_strategy", WaterFlowStrategy(self.water_flow_strategy))
         if self.storage_pressure_bar <= self.ambient_pressure_bar:
             raise ValueError("storage_pressure_bar must exceed ambient_pressure_bar")
         if self.compressor_stages < 1 or self.expander_stages < 1:
@@ -94,11 +106,19 @@ class PlantConfig:
             "overall_heat_transfer_coefficient_w_m2k", "air_mass_flow_kg_s",
             "water_mass_flow_kg_s", "heat_exchanger_reference_area_m2",
             "heat_exchanger_cost_exponent", "heat_exchanger_installation_factor",
+            "water_mass_flow_search_min_kg_s", "water_mass_flow_search_max_kg_s",
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
         if self.heat_exchanger_reference_cost_eur is not None and self.heat_exchanger_reference_cost_eur <= 0:
             raise ValueError("heat_exchanger_reference_cost_eur must be positive when supplied")
+        if not 0 < self.water_flow_target_fraction <= 1:
+            raise ValueError("water_flow_target_fraction must be in (0, 1]")
+        if self.water_mass_flow_search_max_kg_s < self.water_mass_flow_search_min_kg_s:
+            raise ValueError("water_mass_flow_search_max_kg_s must not be below the search minimum")
+        if self.water_flow_strategy is WaterFlowStrategy.OPTIMIZE_THERMAL:
+            if self.mode is not PlantMode.ADIABATIC or self.heat_exchanger_model is not HeatExchangerModel.COUNTERFLOW_NTU:
+                raise ValueError("optimize_thermal requires adiabatic mode and counterflow_ntu heat exchangers")
 
     @property
     def ambient_temperature_k(self) -> float:
@@ -112,4 +132,5 @@ class PlantConfig:
         data = asdict(self)
         data["mode"] = self.mode.value
         data["heat_exchanger_model"] = self.heat_exchanger_model.value
+        data["water_flow_strategy"] = self.water_flow_strategy.value
         return data

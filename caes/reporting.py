@@ -13,6 +13,7 @@ def summary(result: PlantResult) -> str:
         f"Air batch: {result.air_mass_kg:,.0f} kg",
         f"Compression work: {result.compression_work_input_j / 3.6e6:,.2f} kWh",
         f"Expansion work: {result.expansion_work_output_j / 3.6e6:,.2f} kWh",
+        f"Design-point compressor/turbine power: {result.charging_power_kw:,.1f} / {result.discharging_power_kw:,.1f} kW",
         f"Shaft-work ratio: {result.shaft_work_ratio:.2%}",
     ]
     if result.round_trip_efficiency is None:
@@ -37,6 +38,12 @@ def summary(result: PlantResult) -> str:
             lines.append(f"Configured screening installed cost: €{hx.screening_installed_cost_eur:,.0f}")
         else:
             lines.append("Screening installed cost: not calculated (supply a reference cost correlation)")
+    if result.water_flow_optimization:
+        optimisation = result.water_flow_optimization
+        lines.extend((
+            f"Optimized water mass flow: {optimisation.optimized_water_mass_flow_kg_s:.3f} kg/s",
+            f"Thermal-recovery target achieved: {optimisation.achieved_fraction:.2%} of the {optimisation.reference_water_mass_flow_kg_s:g} kg/s reference",
+        ))
     return "\n".join(lines)
 
 

@@ -1,6 +1,6 @@
 import pytest
 
-from caes import CAESPlant, HeatExchangerModel, PlantConfig, PlantMode
+from caes import CAESPlant, HeatExchangerModel, PlantConfig, PlantMode, WaterFlowStrategy
 
 
 def _config(mode: PlantMode) -> PlantConfig:
@@ -77,3 +77,29 @@ def test_finite_area_countercurrent_exchangers_report_ntu_area_and_screening_cos
     assert finite_hx
     assert all(0.0 <= item.effectiveness <= 1.0 for item in finite_hx)
     assert all(item.duty_w <= item.maximum_duty_w for item in finite_hx)
+
+
+def test_water_flow_optimizer_finds_smallest_flow_for_thermal_recovery_target():
+    config = PlantConfig(
+        mode=PlantMode.ADIABATIC,
+        heat_exchanger_model=HeatExchangerModel.COUNTERFLOW_NTU,
+        water_flow_strategy=WaterFlowStrategy.OPTIMIZE_THERMAL,
+        compressor_stages=3,
+        expander_stages=3,
+        storage_pressure_bar=60.0,
+        air_mass_kg=2_000.0,
+        water_tank_volume_m3=10.0,
+        air_mass_flow_kg_s=2.0,
+        heat_exchanger_area_m2=20.0,
+        overall_heat_transfer_coefficient_w_m2k=100.0,
+        water_flow_target_fraction=0.90,
+        water_mass_flow_search_min_kg_s=0.1,
+        water_mass_flow_search_max_kg_s=100.0,
+    )
+    result = CAESPlant(config).run()
+    optimum = result.water_flow_optimization
+    assert optimum is not None
+    assert 0.1 <= optimum.optimized_water_mass_flow_kg_s < 100.0
+    assert optimum.achieved_fraction == pytest.approx(0.90, abs=2e-3)
+    assert result.charging_power_kw > 0
+    assert result.discharging_power_kw > 0

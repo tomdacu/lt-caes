@@ -103,6 +103,18 @@ class HeatExchangerSummary:
     screening_installed_cost_eur: float | None
 
 
+@dataclass(frozen=True)
+class WaterFlowOptimization:
+    """Result of finding the smallest water flow that meets a thermal target."""
+
+    optimized_water_mass_flow_kg_s: float
+    target_fraction: float
+    achieved_fraction: float
+    recovered_energy_at_optimum_j: float
+    recovered_energy_reference_j: float
+    reference_water_mass_flow_kg_s: float
+
+
 @dataclass
 class PlantResult:
     charging: Cycle
@@ -110,8 +122,10 @@ class PlantResult:
     thermal_store: ThermalStoreSnapshot | None
     mode: str
     air_mass_kg: float
+    design_air_mass_flow_kg_s: float
     heat_exchanger_summary: HeatExchangerSummary
     external_heat_input_j: float = 0.0
+    water_flow_optimization: WaterFlowOptimization | None = None
 
     @property
     def compression_work_input_j(self) -> float:
@@ -124,6 +138,16 @@ class PlantResult:
     @property
     def shaft_work_ratio(self) -> float:
         return self.expansion_work_output_j / self.compression_work_input_j
+
+    @property
+    def charging_power_kw(self) -> float:
+        """Compressor shaft-power scale at the configured design air mass flow."""
+        return self.charging.work_j_per_kg * self.design_air_mass_flow_kg_s / 1_000
+
+    @property
+    def discharging_power_kw(self) -> float:
+        """Turbine shaft-power scale at the configured design air mass flow."""
+        return -self.discharging.work_j_per_kg * self.design_air_mass_flow_kg_s / 1_000
 
     @property
     def round_trip_efficiency(self) -> float | None:

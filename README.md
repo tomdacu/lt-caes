@@ -31,6 +31,7 @@ python -m caes.cli --mode adiabatic --plot artifacts/cycle.png
 python -m caes.cli --write-default-config example_config.json
 python -m caes.cli --config example_config.json
 python -m caes.cli --config counterflow_example_config.json
+python -m caes.cli --config counterflow_optimized_config.json
 ```
 
 The command reports compression work, expansion work, the shaft-work ratio,
@@ -66,6 +67,7 @@ not for sizing a real cavern, heat exchanger, or tank without further work.
 Read [the physics and assumptions](docs/PHYSICS.md), [configuration and use](docs/USAGE.md), and [the migration record](docs/MIGRATION.md) before interpreting results.
 The curated [research map](docs/research/README.md) links the papers, research
 groups, and software most relevant to this model.
+For fixed-air-flow heat-exchanger sizing, see [water-flow optimisation](docs/WATER_FLOW_OPTIMIZATION.md).
 
 ## Validation
 
