@@ -16,8 +16,8 @@ Start with:
 1. [LTA-CAES literature](LITERATURE.md) for the technical and economic basis.
 2. [People, groups, and software](PEOPLE_AND_GROUPS.md) for researchers and
    tools worth following.
-3. [Model scope](../PHYSICS.md#relationship-to-lta-caes) for the difference
-   between the current well-mixed water model and a full two-tank plant.
+3. [Model scope](../PHYSICS.md) for the normalized two-tank assumptions and
+   the dynamic or equipment-sizing effects intentionally deferred.
 
 ## How to contribute a source
 

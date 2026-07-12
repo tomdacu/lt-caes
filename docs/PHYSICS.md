@@ -1,155 +1,122 @@
-# Physics, accounting boundary, and model limitations
+# Physics and model boundary
 
-## What is modelled
+## Boundary
 
-The solver follows a fixed mass of dry air through steady-flow components. All
-state variables use SI units and are calculated with CoolProp's real-air
-properties. Kinetic and potential energy changes are neglected.
+The solver follows one kilogram of dry air through steady-flow components. The
+air store is represented by a fixed storage pressure and an ambient-temperature
+discharge state. Cavern pressure variation, tank geometry, equipment cost,
+water pressurization, and time evolution are future model layers.
 
-For each compressor and turbine, the isentropic reference state is obtained at
-the outlet pressure and inlet entropy. The actual enthalpy change is then:
+## Turbomachinery
 
-```text
-compressor: h₂ = h₁ + (h₂s - h₁) / ηc
-turbine:    h₂ = h₁ - ηt (h₁ - h₂s)
-```
-
-The sign convention is explicit: compressor work is positive (input to air);
-turbine work is negative (output from air). Every component is checked against
-the steady-flow relation, per unit air mass:
+CoolProp supplies real-air enthalpy and entropy. Compressor and turbine outlet
+enthalpies follow isentropic-efficiency definitions:
 
 ```text
-h₂ - h₁ = q_to_air + w_to_air
+h2,compressor = h1 + (h2s - h1) / eta_c
+h2,turbine    = h1 - eta_t (h1 - h2s)
 ```
 
-## Pressure losses and staging
+Stage pressure ratios compensate exchanger pressure losses and reach the
+specified storage and ambient pressures exactly.
 
-Every intercooler and interheater has a fractional pressure loss `δ`, so its
-outlet pressure is `p_out = p_in (1 - δ)`. Equal stage pressure ratios are
-calculated including all downstream exchanger losses. The final compressor and
-turbine stage are then targeted exactly to the configured storage and ambient
-pressures. This removes the old model's pressure-drift ambiguity.
+## Two plant concepts
 
-An exchanger that cannot transfer heat is represented as an **isenthalpic
-throttle** across its pressure loss. It is not forced to an isothermal state;
-forcing constant temperature across a real-gas pressure drop can create a small
-but nonphysical heat input.
-
-## Heat-exchanger design options
-
-`heat_exchanger_model = "pinch"` retains the conceptual target-temperature
-method: the air outlet is limited to the water-inlet temperature plus/minus the
-configured pinch. It is useful for first-pass cycle studies, but it does not
-size a heat exchanger.
-
-`heat_exchanger_model = "counterflow_ntu"` models each intermediate A-CAES
-intercooler and every A-CAES reheat exchanger as a single-pass counter-current
-air/water exchanger. It requires an effective overall coefficient `U`, heat
-transfer area `A`, and air/water mass flows. It calculates:
+Both configurations use the same pressure-storage backbone.
 
 ```text
-UA = U A
-Cair = ṁair cp,air;  Cwater = ṁwater cp,water
-NTU = UA / min(Cair, Cwater)
-Q = εcounterflow(NTU, Cr) min(Cair, Cwater) |Th,in - Tc,in|
+D-CAES: ambient -> compressors -> ambient coolers -> air store
+        air store -> ambient reheaters -> expanders -> ambient
+
+A-CAES: ambient -> compressors -> water intercoolers -> air store
+        cold tank -> parallel IC branches -> hot tank
+        hot tank -> parallel IH branches -> cold tank
+        air store -> water interheaters -> expanders -> ambient
 ```
 
-For unequal heat-capacity rates, the counterflow effectiveness is:
+D-CAES ambient heat is reported explicitly. A-CAES water branches are mixed by
+mass and energy balance; the hot-tank temperature is a result, not an input.
+
+## Heat exchangers
+
+### Pinch model
+
+For each compression stage:
 
 ```text
-ε = [1 - exp(-NTU (1 - Cr))] / [1 - Cr exp(-NTU (1 - Cr))]
-Cr = Cmin / Cmax
+T_air,out   = T_cold,in + pinch
+T_water,out = T_air,in  - pinch
 ```
 
-Thus a finite area and conductance limit duty automatically; the hot and cold
-streams cannot cross. `U` is an **overall/effective** coefficient, not a single
-air-side or water-side film coefficient. If only film coefficients are known,
-first combine their resistances, wall conduction, and fouling resistance to
-obtain an overall `U` on a declared area basis.
+The water/air mass ratio is solved from the air enthalpy change and the water
+energy balance. During discharge, the available hot-water mass is split equally
+among the parallel interheaters; actual duty is limited by both terminal pinch
+constraints.
 
-## A-CAES: finite sensible-water thermal store
-
-The A-CAES model recovers a configured fraction of the heat rejected by
-**intermediate** intercoolers. The final aftercooler brings the air to the
-cavern's ambient-temperature assumption; its residual heat is rejected to the
-environment rather than incorrectly sent to a possibly hotter water store.
-
-The store is intentionally simple but conserves energy:
+### Specified effectiveness
 
 ```text
-Cstore = Vwater ρwater cp,water
-Tstore,new = Tstore,old + Qrecovered / Cstore
+Q = epsilon C_min (T_hot,in - T_cold,in)
 ```
 
-Before discharge, an explicit standing-loss fraction is applied. At every
-interheater, air can be heated only while both conditions hold:
+The normalized water/air ratio fixes the water capacity rate.
+
+### Counterflow NTU
 
 ```text
-Tair,out ≤ Twater - pinch
-Qdelivered ≤ remaining sensible energy above initial water temperature
+NTU = UA / C_min
+C_r = C_min / C_max
+epsilon = [1 - exp(-NTU(1-C_r))] / [1 - C_r exp(-NTU(1-C_r))]
 ```
 
-The delivered energy reduces store temperature. Therefore stored heat cannot
-be reused independently at every turbine stage, a defect of the previous
-maximum-temperature approximation.
+Because the analysis is normalized, NTU is the meaningful conductance input;
+absolute area and flow are deferred to plant sizing.
 
-## Relationship to LTA-CAES
+## Two-tank balance and surplus
 
-This repository's main research target is **LTA-CAES**: a low-temperature
-A-CAES concept that stores compression heat in a liquid thermal-energy-storage
-medium and returns it to the air during expansion. Water is the most compelling
-candidate at moderate temperatures because it is inexpensive, widely available,
-non-toxic, and has high sensible heat capacity. The reference LTA-CAES concept
-uses a liquid two-tank thermal store at approximately 90-200 °C; above roughly
-95 °C, water must be pressurised to remain liquid.
-
-The current solver is an energy-balanced **well-mixed water-store** model. It
-is therefore appropriate for early thermodynamic, heat-exchanger-area, and
-cost-sensitivity studies. It is not yet a two-tank LTA-CAES plant model:
-separate hot/cold inventory, pump work, water pressure, tank heat loss, and
-transient stratification remain explicit future extensions. See the
-[research map](research/README.md) for the primary LTA-CAES sources that guide
-those extensions.
-
-For this closed A-CAES boundary:
+Parallel cold-water returns mix into one hot-tank state:
 
 ```text
-ηRT = Wturbine,out / Wcompressor,in
+M_w cp (T_hot - T_cold) = sum(Q_recovered,i)
 ```
 
-## D-CAES: external reheat is not free stored energy
+After normalized storage loss, hot water is split among expansion stages. The
+returned streams mix into the cold-side return state. Cycle energy closes as:
 
-In D-CAES, compression heat is rejected and not stored. The model optionally
-reheats air between turbine stages from an ambient external source, respecting
-the configured pinch. That heat is reported as `external_heat_input_j`.
+```text
+Q_recovered = Q_storage_loss + Q_air_reheat + Q_surplus
+```
 
-Because an external heat source supplies energy during discharge, the ratio
-`Wturbine,out / Wcompressor,in` is shown only as a **shaft-work ratio**, not as
-a closed storage round-trip efficiency. Comparing it directly with A-CAES RTE
-would be misleading. A fuel-fired D-CAES analysis additionally needs fuel
-lower-heating value, combustor efficiency, exhaust losses, and an exergy or
-primary-energy boundary; those are outside this model.
+Surplus may be rejected or exported as useful heat. This permits hot-water
+energy to exceed expansion demand without forcing an artificial equality.
 
-## Important limitations
+## Exergy
 
-- The cavern has fixed pressure and reaches ambient temperature; it is not a
-  dynamic mass/energy model of cavern charge, discharge, rock heat transfer,
-  or pressure swing.
-- The water store is well mixed with constant water heat capacity. It does not
-  represent thermocline stratification, two-tank hydraulics, or heat-exchanger
-  UA/NTU design.
-- There is no motor/generator, mechanical-drive, valve, pipeline, or auxiliary
-  power model. Add those before quoting plant-level electrical RTE.
-- The code is a conceptual design tool, not a safety, control, or equipment
-  sizing tool.
-- The counterflow option is a design-point epsilon-NTU model. It does not yet
-  calculate exchanger geometry, two-phase behavior, fouling over time, or a
-  pressure-drop/area trade-off.
+Air physical-flow exergy relative to the ambient dead state is:
 
-## References
+```text
+e = (h - h0) - T0 (s - s0)
+```
 
-- CoolProp documentation: [High-Level Interface](https://coolprop.org/coolprop/HighLevelAPI.html) and [pure-fluid formulations](https://coolprop.org/fluid_properties/PurePseudoPure.html).
-- International Energy Agency Energy Storage: [Compressed Air Energy Storage fact sheet](https://www.iea-es.org/wp-content/uploads/public/FactSheet_mechanical_CAES.pdf).
-- Balaji & Gedupudi, *Heat Transfer Engineering*, counterflow
-  effectiveness–NTU relation, [reference page](https://www.sciencedirect.com/science/article/pii/B9780128185032000071).
-- Zhao, Wang, & Ding, *Performance analysis of compressed air energy storage systems considering dynamic characteristics of compressed air storage*, Applied Energy 2018, [DOI landing page](https://www.sciencedirect.com/science/article/pii/S0360544217311441). This is relevant background for the dynamic-cavern effects intentionally excluded here.
+For water with constant heat capacity:
+
+```text
+b(T) = cp [(T - T0) - T0 ln(T/T0)]
+```
+
+The model reports compressor, turbine, exchanger, cavern-equilibration,
+hot-tank-mixing, storage-loss, and rejected-surplus exergy destruction.
+
+```text
+eta_electric = W_expansion / W_compression
+eta_ex,useful = (W_expansion + B_useful_heat) / W_compression
+```
+
+## Limits
+
+- Water uses constant specific heat and no pressure/saturation model.
+- Tanks are perfectly mixed nodes, not time-dependent vessels.
+- Equal water allocation is used across discharge interheaters.
+- Compressor and turbine maps are represented by constant isentropic efficiency.
+- T-s, T-h, and p-h plots connect the calculated stage outlet states; they are
+  cycle traces, not fluid-property envelope diagrams.

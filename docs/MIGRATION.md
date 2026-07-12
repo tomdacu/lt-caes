@@ -1,39 +1,30 @@
-# Migration and corrections
+# Migration notes
 
-## New project layout
+The project now has one normalized solver and one shared configuration model.
+
+## Removed concepts
+
+- batch air mass and tank-volume sizing;
+- absolute air/water mass flow and power rating;
+- exchanger area, overall U, and screening cost;
+- the previous minimum-flow-to-duty optimizer;
+- the well-mixed single-water-store approximation;
+- duplicate legacy source trees and generated result images.
+
+Those belong to later sizing, time-domain, and economic layers.
+
+## Current architecture
 
 ```text
-caes_storage/
-├── caes/          # one tested simulation package
-├── docs/          # assumptions, theory, and usage
-├── tests/         # physics and regression tests
-├── pyproject.toml # packaging and test configuration
-└── README.md
+caes/config.py            validated choices and parameters
+caes/logic.py             field groups and interdependency rules
+caes/thermodynamics.py    air states and turbomachinery
+caes/heat_exchangers.py   pinch, effectiveness, and NTU models
+caes/exergy.py            air/water exergy functions
+caes/plant.py             D-CAES and two-tank A-CAES orchestration
+caes/gui.py               dependency-aware GUI and thermodynamic diagrams
 ```
 
-The earlier `CAES_preview` scripts and the previous `CAES_program` repository
-are intentionally removed after this migration. Their code combined exploratory
-plots, duplicated component models, and incompatible package roots.
-
-## Material corrections from the former model
-
-1. Heat storage is now finite and energy balanced; it is no longer inferred
-   from the maximum compressor-outlet temperature.
-2. Intercoolers cannot add heat to air. Inactive exchangers throttle
-   isenthalpically across their pressure loss.
-3. Thermal-store heat delivery is limited by both pinch temperature and
-   remaining stored energy.
-4. The final aftercooling/cavern-equilibration step is not falsely recovered
-   into an already-hot, well-mixed water store.
-5. D-CAES external reheat is explicit and its shaft-work ratio is not labelled
-   a closed round-trip efficiency.
-6. Pressure-loss compensation reaches the requested final storage and exhaust
-   pressures exactly.
-7. The public entry point is a reproducible CLI rather than modules with
-   simulation loops running at import time.
-
-## Deliberate removals
-
-The obsolete Tk GUIs, generated images, duplicate legacy modules, and
-unverified exergy/Sankey outputs are not carried over. A reliable thermal and
-energy model is a prerequisite for reintroducing richer visualization or a GUI.
+The CLI and GUI call the same `PlantConfig` and `CAESPlant`. Dormant fields can
+remain in JSON files, but they do not influence results under the selected
+model.

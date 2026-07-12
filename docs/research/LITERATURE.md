@@ -16,7 +16,7 @@
 |---|---|
 | Laijun Chen et al., 2016, *Review and prospect of compressed air energy storage system*. [DOI](https://doi.org/10.1007/s40565-016-0240-5) | Open-access overview of CAES configurations, components, and research directions. |
 | Philipp Roos and Andreas Haselbacher, 2022, *Analytical modeling of advanced adiabatic compressed air energy storage: Literature review and new models*. [ETH record](https://www.research-collection.ethz.ch/handle/20.500.11850/547543?show=full) | Valuable for understanding assumptions in analytical A-CAES models and their limitations. |
-| Zhao, Wang, and Ding, 2018, *Performance analysis of compressed air energy storage systems considering dynamic characteristics of compressed air storage*. [Publisher page](https://www.sciencedirect.com/science/article/pii/S0360544217311441) | A reference for the dynamic cavern and thermal effects excluded from this current fixed-pressure batch model. |
+| Zhao, Wang, and Ding, 2018, *Performance analysis of compressed air energy storage systems considering dynamic characteristics of compressed air storage*. [Publisher page](https://www.sciencedirect.com/science/article/pii/S0360544217311441) | A reference for the dynamic cavern and thermal effects excluded from this normalized fixed-pressure model. |
 
 ## Source provenance
 

@@ -1,6 +1,19 @@
-"""Physically bounded LTA-CAES water-storage and comparison plant models."""
+"""Normalized D-CAES and water-based LTA-CAES efficiency models."""
 
-from .config import HeatExchangerModel, PlantConfig, PlantMode, WaterFlowStrategy
+from .config import (
+    HeatExchangerModel,
+    PlantConfig,
+    PlantMode,
+    ThermalSurplusUse,
+    WaterFlowMode,
+)
 from .plant import CAESPlant
 
-__all__ = ["CAESPlant", "HeatExchangerModel", "PlantConfig", "PlantMode", "WaterFlowStrategy"]
+__all__ = [
+    "CAESPlant",
+    "HeatExchangerModel",
+    "PlantConfig",
+    "PlantMode",
+    "ThermalSurplusUse",
+    "WaterFlowMode",
+]

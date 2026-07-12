@@ -1,4 +1,4 @@
-"""Human-readable reports and non-interactive cycle plots."""
+"""Text and plot output for normalized CAES results."""
 
 from __future__ import annotations
 
@@ -10,56 +10,68 @@ from .models import PlantResult
 def summary(result: PlantResult) -> str:
     lines = [
         f"Mode: {result.mode}",
-        f"Air batch: {result.air_mass_kg:,.0f} kg",
-        f"Compression work: {result.compression_work_input_j / 3.6e6:,.2f} kWh",
-        f"Expansion work: {result.expansion_work_output_j / 3.6e6:,.2f} kWh",
-        f"Design-point compressor/turbine power: {result.charging_power_kw:,.1f} / {result.discharging_power_kw:,.1f} kW",
-        f"Shaft-work ratio: {result.shaft_work_ratio:.2%}",
+        "Analysis basis: 1 kg of charged/discharged air",
+        f"Compression work: {result.compression_work_input_j_per_kg / 1000:.2f} kJ/kg-air",
+        f"Expansion work: {result.expansion_work_output_j_per_kg / 1000:.2f} kJ/kg-air",
+        f"Electrical round-trip efficiency: {result.round_trip_efficiency:.2%}",
+        f"Total useful exergy efficiency: {result.exergy.total_useful_exergy_efficiency:.2%}",
+        f"Total component exergy destruction: {result.exergy.total_destruction_j_per_kg_air / 1000:.2f} kJ/kg-air",
     ]
-    if result.round_trip_efficiency is None:
-        lines.append("Storage-only RTE: not defined for D-CAES with external reheat")
-        lines.append(f"External heat supplied: {result.external_heat_input_j / 3.6e6:,.2f} kWh")
-    else:
-        lines.append(f"Electrical/shaft round-trip efficiency: {result.round_trip_efficiency:.2%}")
+    if result.external_heat_input_j_per_kg > 0:
+        lines.append(f"External ambient heat: {result.external_heat_input_j_per_kg / 1000:.2f} kJ/kg-air")
     if result.thermal_store:
         store = result.thermal_store
-        lines.extend((
-            f"Thermal-store final temperature: {store.temperature_k - 273.15:.1f} °C",
-            f"Heat recovered/delivered/lost: {store.recovered_energy_j / 3.6e6:.2f} / {store.delivered_energy_j / 3.6e6:.2f} / {store.lost_energy_j / 3.6e6:.2f} kWh",
-        ))
-    hx = result.heat_exchanger_summary
-    if hx.model == "counterflow_ntu" and hx.exchanger_count:
-        lines.extend((
-            f"Counter-current heat exchangers: {hx.exchanger_count}",
-            f"Area per exchanger / total: {hx.area_per_exchanger_m2:.1f} / {hx.total_area_m2:.1f} m²",
-            f"UA per exchanger: {hx.ua_per_exchanger_w_per_k:.1f} W/K",
-        ))
-        if hx.screening_installed_cost_eur is not None:
-            lines.append(f"Configured screening installed cost: €{hx.screening_installed_cost_eur:,.0f}")
-        else:
-            lines.append("Screening installed cost: not calculated (supply a reference cost correlation)")
-    if result.water_flow_optimization:
-        optimisation = result.water_flow_optimization
-        lines.extend((
-            f"Optimized water mass flow: {optimisation.optimized_water_mass_flow_kg_s:.3f} kg/s",
-            f"Thermal-recovery target achieved: {optimisation.achieved_fraction:.2%} of the {optimisation.reference_water_mass_flow_kg_s:g} kg/s reference",
-        ))
+        destination = "useful heat" if store.useful_surplus else "rejected"
+        lines.extend(
+            (
+                f"Cold/hot/available water temperature: {store.cold_temperature_k - 273.15:.1f} / {store.hot_temperature_before_loss_k - 273.15:.1f} / {store.hot_temperature_available_k - 273.15:.1f} °C",
+                f"Water returned after reheat: {store.returned_temperature_k - 273.15:.1f} °C",
+                f"Total normalized water mass: {store.total_water_mass_ratio:.3f} kg-water/kg-air",
+                f"Recovered/delivered/surplus heat: {store.recovered_heat_j_per_kg_air / 1000:.2f} / {store.delivered_heat_j_per_kg_air / 1000:.2f} / {store.surplus_heat_j_per_kg_air / 1000:.2f} kJ/kg-air",
+                f"Surplus destination: {destination}",
+                f"Hot-water exergy: {result.exergy.hot_water_exergy_j_per_kg_air / 1000:.2f} kJ/kg-air",
+            )
+        )
+    if result.selected_water_air_mass_ratio is not None:
+        lines.append(f"Selected water/air ratio per charging HX: {result.selected_water_air_mass_ratio:.4f} kg/kg")
+    if result.optimization:
+        lines.append(
+            f"Optimization: {result.optimization.objective}, objective={result.optimization.objective_value:.5g}, {result.optimization.evaluated_points} points"
+        )
     return "\n".join(lines)
 
 
-def save_temperature_entropy_plot(result: PlantResult, path: str | Path) -> Path:
-    """Save a simple T-s trace; no GUI or global plotting state is required."""
+def save_thermodynamic_plots(result: PlantResult, path: str | Path) -> Path:
+    """Save T-s, T-h, and p-h traces to one comparison figure."""
     import matplotlib.pyplot as plt
 
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for cycle, color in ((result.charging, "tab:red"), (result.discharging, "tab:blue")):
-        states = cycle.states
-        ax.plot([s.entropy_j_per_kgk / 1000 for s in states], [s.temperature_c for s in states], "o-", color=color, label=cycle.name)
-    ax.set(xlabel="Specific entropy [kJ/(kg·K)]", ylabel="Temperature [°C]", title="CAES cycle trace")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8))
+    diagrams = (
+        (axes[0], lambda state: state.entropy_j_per_kgk / 1000, lambda state: state.temperature_c,
+         "Specific entropy [kJ/(kg·K)]", "Temperature [°C]", "T-s", False),
+        (axes[1], lambda state: state.enthalpy_j_per_kg / 1000, lambda state: state.temperature_c,
+         "Specific enthalpy [kJ/kg]", "Temperature [°C]", "T-h", False),
+        (axes[2], lambda state: state.enthalpy_j_per_kg / 1000, lambda state: state.pressure_bar,
+         "Specific enthalpy [kJ/kg]", "Pressure [bar]", "p-h", True),
+    )
+    for ax, x_value, y_value, x_label, y_label, title, log_pressure in diagrams:
+        for cycle, color in ((result.charging, "tab:red"), (result.discharging, "tab:blue")):
+            states = cycle.states
+            ax.plot(
+                [x_value(state) for state in states],
+                [y_value(state) for state in states],
+                "o-",
+                color=color,
+                label=cycle.name,
+            )
+        ax.set(xlabel=x_label, ylabel=y_label, title=title)
+        if log_pressure:
+            ax.set_yscale("log")
+        ax.legend()
+        ax.grid(True, which="both", alpha=0.3)
+    fig.suptitle(f"Normalized CAES cycle · electrical RTE {result.round_trip_efficiency:.1%}")
     fig.tight_layout()
     fig.savefig(output, dpi=160)
     plt.close(fig)

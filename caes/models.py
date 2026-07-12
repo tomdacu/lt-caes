@@ -1,4 +1,4 @@
-"""Data models shared by the solver, reports, and plots."""
+"""Result models for normalized energy and exergy analysis."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ from typing import Literal
 
 @dataclass(frozen=True)
 class State:
-    """A thermodynamic state in SI units."""
-
     pressure_pa: float
     temperature_k: float
     enthalpy_j_per_kg: float
@@ -25,21 +23,29 @@ class State:
 
 
 @dataclass(frozen=True)
-class Process:
-    """One steady-flow component process, expressed per kg of air."""
+class HeatExchangerPerformance:
+    model: str
+    effectiveness: float
+    ntu: float | None
+    water_air_mass_ratio: float
+    water_inlet_temperature_k: float
+    water_outlet_temperature_k: float
+    duty_j_per_kg_air: float
 
-    kind: Literal["compression", "expansion", "intercooling", "interheating"]
+
+@dataclass(frozen=True)
+class Process:
+    kind: str
     inlet: State
     outlet: State
     work_j_per_kg: float = 0.0
     heat_to_air_j_per_kg: float = 0.0
-    heat_to_store_j_per_kg: float = 0.0
+    exergy_destruction_j_per_kg: float = 0.0
+    heat_exchanger: HeatExchangerPerformance | None = None
     note: str = ""
-    heat_exchanger: "HeatExchangerPerformance | None" = None
 
     @property
     def first_law_residual_j_per_kg(self) -> float:
-        """Residual for dh = q_to_air + w_to_air (steady-flow, KE/PE neglected)."""
         return (self.outlet.enthalpy_j_per_kg - self.inlet.enthalpy_j_per_kg) - (
             self.heat_to_air_j_per_kg + self.work_j_per_kg
         )
@@ -64,96 +70,67 @@ class Cycle:
         return sum(process.work_j_per_kg for process in self.processes)
 
     @property
-    def heat_to_air_j_per_kg(self) -> float:
-        return sum(process.heat_to_air_j_per_kg for process in self.processes)
-
-    @property
     def max_first_law_residual_j_per_kg(self) -> float:
         return max((abs(p.first_law_residual_j_per_kg) for p in self.processes), default=0.0)
 
 
 @dataclass(frozen=True)
-class ThermalStoreSnapshot:
-    temperature_k: float
-    energy_above_initial_j: float
-    recovered_energy_j: float
-    delivered_energy_j: float
-    lost_energy_j: float
+class TwoTankSummary:
+    cold_temperature_k: float
+    hot_temperature_before_loss_k: float
+    hot_temperature_available_k: float
+    returned_temperature_k: float
+    total_water_mass_ratio: float
+    recovered_heat_j_per_kg_air: float
+    delivered_heat_j_per_kg_air: float
+    storage_loss_j_per_kg_air: float
+    surplus_heat_j_per_kg_air: float
+    surplus_exergy_j_per_kg_air: float
+    useful_surplus: bool
 
 
 @dataclass(frozen=True)
-class HeatExchangerPerformance:
-    """Design-point performance of one finite-area counter-current exchanger."""
-
-    area_m2: float
-    ua_w_per_k: float
-    ntu: float
-    effectiveness: float
-    duty_w: float
-    maximum_duty_w: float
-
-
-@dataclass(frozen=True)
-class HeatExchangerSummary:
-    model: str
-    exchanger_count: int
-    area_per_exchanger_m2: float | None
-    total_area_m2: float | None
-    ua_per_exchanger_w_per_k: float | None
-    screening_installed_cost_eur: float | None
+class ExergySummary:
+    electrical_efficiency: float
+    total_useful_exergy_efficiency: float
+    hot_water_exergy_j_per_kg_air: float
+    useful_heat_exergy_j_per_kg_air: float
+    rejected_heat_exergy_j_per_kg_air: float
+    component_destruction_j_per_kg_air: dict[str, float]
+    total_destruction_j_per_kg_air: float
 
 
 @dataclass(frozen=True)
-class WaterFlowOptimization:
-    """Result of finding the smallest water flow that meets a thermal target."""
-
-    optimized_water_mass_flow_kg_s: float
-    target_fraction: float
-    achieved_fraction: float
-    recovered_energy_at_optimum_j: float
-    recovered_energy_reference_j: float
-    reference_water_mass_flow_kg_s: float
+class OptimizationSummary:
+    objective: str
+    selected_water_air_mass_ratio: float
+    objective_value: float
+    evaluated_points: int
 
 
 @dataclass
 class PlantResult:
+    mode: str
     charging: Cycle
     discharging: Cycle
-    thermal_store: ThermalStoreSnapshot | None
-    mode: str
-    air_mass_kg: float
-    design_air_mass_flow_kg_s: float
-    heat_exchanger_summary: HeatExchangerSummary
-    external_heat_input_j: float = 0.0
-    water_flow_optimization: WaterFlowOptimization | None = None
+    thermal_store: TwoTankSummary | None
+    exergy: ExergySummary
+    selected_water_air_mass_ratio: float | None = None
+    optimization: OptimizationSummary | None = None
+    external_heat_input_j_per_kg: float = 0.0
 
     @property
-    def compression_work_input_j(self) -> float:
-        return self.charging.work_j_per_kg * self.air_mass_kg
+    def compression_work_input_j_per_kg(self) -> float:
+        return self.charging.work_j_per_kg
 
     @property
-    def expansion_work_output_j(self) -> float:
-        return -self.discharging.work_j_per_kg * self.air_mass_kg
+    def expansion_work_output_j_per_kg(self) -> float:
+        return -self.discharging.work_j_per_kg
 
     @property
     def shaft_work_ratio(self) -> float:
-        return self.expansion_work_output_j / self.compression_work_input_j
+        return self.expansion_work_output_j_per_kg / self.compression_work_input_j_per_kg
 
     @property
-    def charging_power_kw(self) -> float:
-        """Compressor shaft-power scale at the configured design air mass flow."""
-        return self.charging.work_j_per_kg * self.design_air_mass_flow_kg_s / 1_000
-
-    @property
-    def discharging_power_kw(self) -> float:
-        """Turbine shaft-power scale at the configured design air mass flow."""
-        return -self.discharging.work_j_per_kg * self.design_air_mass_flow_kg_s / 1_000
-
-    @property
-    def round_trip_efficiency(self) -> float | None:
-        """Electrical/shaft RTE for a closed A-CAES cycle only.
-
-        A D-CAES cycle uses external reheat, so its shaft-work ratio is not a
-        storage-only round-trip efficiency and is deliberately not labelled RTE.
-        """
-        return self.shaft_work_ratio if self.mode == "adiabatic" else None
+    def round_trip_efficiency(self) -> float:
+        return self.shaft_work_ratio

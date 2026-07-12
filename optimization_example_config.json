@@ -1,7 +1,5 @@
 {
   "mode": "adiabatic",
-  "ambient_temperature_c": 15.0,
-  "ambient_pressure_bar": 1.01325,
   "storage_pressure_bar": 100.0,
   "compressor_stages": 4,
   "expander_stages": 4,
@@ -12,8 +10,9 @@
   "cold_tank_temperature_c": 20.0,
   "heat_exchanger_model": "counterflow_ntu",
   "heat_exchanger_ntu": 3.0,
-  "water_flow_mode": "specified_ratio",
-  "water_air_mass_ratio": 0.3,
+  "water_flow_mode": "max_electric_efficiency",
+  "water_air_ratio_search_min": 0.05,
+  "water_air_ratio_search_max": 5.0,
   "thermal_storage_loss_fraction": 0.02,
   "thermal_surplus_use": "reject"
 }
