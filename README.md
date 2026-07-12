@@ -23,11 +23,14 @@ python -m pytest
 python -m caes.cli --mode adiabatic --plot artifacts/cycle.png
 python -m caes.cli --write-default-config example_config.json
 python -m caes.cli --config example_config.json
+python -m caes.cli --config counterflow_example_config.json
 ```
 
 The command reports compression work, expansion work, the shaft-work ratio,
 thermal-store recovery/delivery/losses, and (for A-CAES only) a closed-cycle
-round-trip efficiency.
+round-trip efficiency. The counter-current configuration additionally reports
+per-exchanger `UA`, NTU performance, total heat-transfer area, and an optional
+user-supplied screening-cost correlation.
 
 ## Modelling boundary
 

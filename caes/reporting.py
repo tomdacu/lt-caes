@@ -26,6 +26,17 @@ def summary(result: PlantResult) -> str:
             f"Thermal-store final temperature: {store.temperature_k - 273.15:.1f} °C",
             f"Heat recovered/delivered/lost: {store.recovered_energy_j / 3.6e6:.2f} / {store.delivered_energy_j / 3.6e6:.2f} / {store.lost_energy_j / 3.6e6:.2f} kWh",
         ))
+    hx = result.heat_exchanger_summary
+    if hx.model == "counterflow_ntu" and hx.exchanger_count:
+        lines.extend((
+            f"Counter-current heat exchangers: {hx.exchanger_count}",
+            f"Area per exchanger / total: {hx.area_per_exchanger_m2:.1f} / {hx.total_area_m2:.1f} m²",
+            f"UA per exchanger: {hx.ua_per_exchanger_w_per_k:.1f} W/K",
+        ))
+        if hx.screening_installed_cost_eur is not None:
+            lines.append(f"Configured screening installed cost: €{hx.screening_installed_cost_eur:,.0f}")
+        else:
+            lines.append("Screening installed cost: not calculated (supply a reference cost correlation)")
     return "\n".join(lines)
 
 

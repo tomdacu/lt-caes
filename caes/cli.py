@@ -7,7 +7,7 @@ import json
 from dataclasses import fields
 from pathlib import Path
 
-from .config import PlantConfig, PlantMode
+from .config import HeatExchangerModel, PlantConfig, PlantMode
 from .plant import CAESPlant
 from .reporting import save_temperature_entropy_plot, summary
 
@@ -20,6 +20,8 @@ def _config_from_json(path: Path) -> PlantConfig:
         raise ValueError(f"unknown configuration fields: {', '.join(sorted(unknown))}")
     if "mode" in data:
         data["mode"] = PlantMode(data["mode"])
+    if "heat_exchanger_model" in data:
+        data["heat_exchanger_model"] = HeatExchangerModel(data["heat_exchanger_model"])
     return PlantConfig(**data)
 
 

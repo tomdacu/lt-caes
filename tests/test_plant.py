@@ -1,6 +1,6 @@
 import pytest
 
-from caes import CAESPlant, PlantConfig, PlantMode
+from caes import CAESPlant, HeatExchangerModel, PlantConfig, PlantMode
 
 
 def _config(mode: PlantMode) -> PlantConfig:
@@ -48,3 +48,32 @@ def test_all_component_processes_close_the_steady_flow_first_law():
 def test_invalid_storage_pressure_is_rejected():
     with pytest.raises(ValueError, match="storage_pressure"):
         PlantConfig(storage_pressure_bar=1.0)
+
+
+def test_finite_area_countercurrent_exchangers_report_ntu_area_and_screening_cost():
+    config = PlantConfig(
+        mode=PlantMode.ADIABATIC,
+        heat_exchanger_model=HeatExchangerModel.COUNTERFLOW_NTU,
+        compressor_stages=3,
+        expander_stages=3,
+        storage_pressure_bar=60.0,
+        air_mass_kg=2_000.0,
+        water_tank_volume_m3=10.0,
+        air_mass_flow_kg_s=2.0,
+        water_mass_flow_kg_s=10.0,
+        heat_exchanger_area_m2=20.0,
+        overall_heat_transfer_coefficient_w_m2k=100.0,
+        heat_exchanger_reference_cost_eur=10_000.0,
+        heat_exchanger_reference_area_m2=20.0,
+        heat_exchanger_installation_factor=2.0,
+    )
+    result = CAESPlant(config).run()
+    hx = result.heat_exchanger_summary
+    assert hx.exchanger_count == 5  # two intermediate intercoolers + three reheaters
+    assert hx.total_area_m2 == pytest.approx(100.0)
+    assert hx.ua_per_exchanger_w_per_k == pytest.approx(2_000.0)
+    assert hx.screening_installed_cost_eur == pytest.approx(100_000.0)
+    finite_hx = [p.heat_exchanger for p in result.charging.processes + result.discharging.processes if p.heat_exchanger]
+    assert finite_hx
+    assert all(0.0 <= item.effectiveness <= 1.0 for item in finite_hx)
+    assert all(item.duty_w <= item.maximum_duty_w for item in finite_hx)

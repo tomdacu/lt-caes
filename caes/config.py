@@ -19,6 +19,13 @@ class PlantMode(str, Enum):
     DIABATIC = "diabatic"
 
 
+class HeatExchangerModel(str, Enum):
+    """Level of detail used for air/water heat exchangers."""
+
+    PINCH = "pinch"
+    COUNTERFLOW_NTU = "counterflow_ntu"
+
+
 @dataclass(frozen=True)
 class PlantConfig:
     """Inputs for one charge/discharge batch.
@@ -39,6 +46,14 @@ class PlantConfig:
     intercooler_pressure_drop: float = 0.02
     interheater_pressure_drop: float = 0.02
     heat_exchanger_pinch_c: float = 5.0
+    heat_exchanger_model: HeatExchangerModel = HeatExchangerModel.PINCH
+
+    # Finite-area counter-current exchanger inputs. ``heat_transfer_coefficient``
+    # is U, the effective overall coefficient—not an individual film h.
+    heat_exchanger_area_m2: float = 100.0
+    overall_heat_transfer_coefficient_w_m2k: float = 100.0
+    air_mass_flow_kg_s: float = 5.0
+    water_mass_flow_kg_s: float = 20.0
 
     # Batch and sensible-water thermal storage inputs (A-CAES only).
     air_mass_kg: float = 10_000.0
@@ -47,10 +62,19 @@ class PlantConfig:
     heat_recovery_effectiveness: float = 0.95
     thermal_store_loss_fraction: float = 0.02
 
+    # Optional, user-supplied screening correlation. No universal exchanger
+    # price is assumed: omitted reference cost means no monetary estimate.
+    heat_exchanger_reference_area_m2: float = 100.0
+    heat_exchanger_reference_cost_eur: float | None = None
+    heat_exchanger_cost_exponent: float = 0.65
+    heat_exchanger_installation_factor: float = 1.0
+
     # D-CAES reheat is external energy, reported separately, never free.
     use_ambient_reheat: bool = True
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "mode", PlantMode(self.mode))
+        object.__setattr__(self, "heat_exchanger_model", HeatExchangerModel(self.heat_exchanger_model))
         if self.storage_pressure_bar <= self.ambient_pressure_bar:
             raise ValueError("storage_pressure_bar must exceed ambient_pressure_bar")
         if self.compressor_stages < 1 or self.expander_stages < 1:
@@ -65,8 +89,16 @@ class PlantConfig:
                 raise ValueError(f"{name} must be in [0, 1)")
         if self.heat_exchanger_pinch_c < 0:
             raise ValueError("heat_exchanger_pinch_c must be non-negative")
-        if self.air_mass_kg <= 0 or self.water_tank_volume_m3 <= 0:
-            raise ValueError("air_mass_kg and water_tank_volume_m3 must be positive")
+        for name in (
+            "air_mass_kg", "water_tank_volume_m3", "heat_exchanger_area_m2",
+            "overall_heat_transfer_coefficient_w_m2k", "air_mass_flow_kg_s",
+            "water_mass_flow_kg_s", "heat_exchanger_reference_area_m2",
+            "heat_exchanger_cost_exponent", "heat_exchanger_installation_factor",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.heat_exchanger_reference_cost_eur is not None and self.heat_exchanger_reference_cost_eur <= 0:
+            raise ValueError("heat_exchanger_reference_cost_eur must be positive when supplied")
 
     @property
     def ambient_temperature_k(self) -> float:
@@ -79,4 +111,5 @@ class PlantConfig:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["mode"] = self.mode.value
+        data["heat_exchanger_model"] = self.heat_exchanger_model.value
         return data

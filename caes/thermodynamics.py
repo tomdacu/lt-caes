@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from math import exp
+
 from CoolProp.CoolProp import PropsSI
 
-from .models import Process, State
+from .models import HeatExchangerPerformance, Process, State
+
+
+WATER_CP_J_PER_KGK = 4_180.0
 
 
 def state_pt(pressure_pa: float, temperature_k: float, fluid: str) -> State:
@@ -100,3 +105,69 @@ def heat_to(
         outlet = state_pt(outlet_pressure, target_temperature_k, fluid)
         heat_to_air = outlet.enthalpy_j_per_kg - inlet.enthalpy_j_per_kg
     return Process("interheating", inlet, outlet, heat_to_air_j_per_kg=heat_to_air, note=note)
+
+
+def _counterflow_effectiveness(ntu: float, capacity_ratio: float) -> float:
+    """Effectiveness for an adiabatic, single-pass counter-current exchanger."""
+    if ntu <= 0:
+        return 0.0
+    if abs(1.0 - capacity_ratio) < 1e-10:
+        return ntu / (1.0 + ntu)
+    exponential = exp(-ntu * (1.0 - capacity_ratio))
+    return (1.0 - exponential) / (1.0 - capacity_ratio * exponential)
+
+
+def counterflow_exchange(
+    inlet: State,
+    secondary_inlet_temperature_k: float,
+    pressure_drop: float,
+    fluid: str,
+    air_mass_flow_kg_s: float,
+    water_mass_flow_kg_s: float,
+    area_m2: float,
+    overall_heat_transfer_coefficient_w_m2k: float,
+    kind: str,
+) -> Process:
+    """Exchange heat between air and water with the epsilon-NTU method.
+
+    The water side is represented by a liquid-water heat-capacity rate. ``U``
+    must be the effective *overall* heat-transfer coefficient for the selected
+    exchanger construction and fouling state.
+    """
+    outlet_pressure = inlet.pressure_pa * (1.0 - pressure_drop)
+    temperature_difference = inlet.temperature_k - secondary_inlet_temperature_k
+    if (kind == "intercooling" and temperature_difference <= 0) or (
+        kind == "interheating" and temperature_difference >= 0
+    ):
+        outlet = state_ph(outlet_pressure, inlet.enthalpy_j_per_kg, fluid)
+        return Process(kind, inlet, outlet, note="counterflow bypass")
+
+    cp_air = PropsSI("C", "P", inlet.pressure_pa, "T", inlet.temperature_k, fluid)
+    c_air = air_mass_flow_kg_s * cp_air
+    c_water = water_mass_flow_kg_s * WATER_CP_J_PER_KGK
+    c_min = min(c_air, c_water)
+    c_max = max(c_air, c_water)
+    ua = area_m2 * overall_heat_transfer_coefficient_w_m2k
+    ntu = ua / c_min
+    effectiveness = _counterflow_effectiveness(ntu, c_min / c_max)
+    q_max = c_min * abs(temperature_difference)
+    duty = effectiveness * q_max
+    specific_duty = duty / air_mass_flow_kg_s
+    h_out = inlet.enthalpy_j_per_kg - specific_duty if kind == "intercooling" else inlet.enthalpy_j_per_kg + specific_duty
+    outlet = state_ph(outlet_pressure, h_out, fluid)
+    performance = HeatExchangerPerformance(
+        area_m2=area_m2,
+        ua_w_per_k=ua,
+        ntu=ntu,
+        effectiveness=effectiveness,
+        duty_w=duty,
+        maximum_duty_w=q_max,
+    )
+    return Process(
+        kind,
+        inlet,
+        outlet,
+        heat_to_air_j_per_kg=outlet.enthalpy_j_per_kg - inlet.enthalpy_j_per_kg,
+        heat_exchanger=performance,
+        note="counter-current epsilon-NTU",
+    )

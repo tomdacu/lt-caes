@@ -35,6 +35,7 @@ class Process:
     heat_to_air_j_per_kg: float = 0.0
     heat_to_store_j_per_kg: float = 0.0
     note: str = ""
+    heat_exchanger: "HeatExchangerPerformance | None" = None
 
     @property
     def first_law_residual_j_per_kg(self) -> float:
@@ -80,6 +81,28 @@ class ThermalStoreSnapshot:
     lost_energy_j: float
 
 
+@dataclass(frozen=True)
+class HeatExchangerPerformance:
+    """Design-point performance of one finite-area counter-current exchanger."""
+
+    area_m2: float
+    ua_w_per_k: float
+    ntu: float
+    effectiveness: float
+    duty_w: float
+    maximum_duty_w: float
+
+
+@dataclass(frozen=True)
+class HeatExchangerSummary:
+    model: str
+    exchanger_count: int
+    area_per_exchanger_m2: float | None
+    total_area_m2: float | None
+    ua_per_exchanger_w_per_k: float | None
+    screening_installed_cost_eur: float | None
+
+
 @dataclass
 class PlantResult:
     charging: Cycle
@@ -87,6 +110,7 @@ class PlantResult:
     thermal_store: ThermalStoreSnapshot | None
     mode: str
     air_mass_kg: float
+    heat_exchanger_summary: HeatExchangerSummary
     external_heat_input_j: float = 0.0
 
     @property

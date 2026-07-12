@@ -35,6 +35,38 @@ throttle** across its pressure loss. It is not forced to an isothermal state;
 forcing constant temperature across a real-gas pressure drop can create a small
 but nonphysical heat input.
 
+## Heat-exchanger design options
+
+`heat_exchanger_model = "pinch"` retains the conceptual target-temperature
+method: the air outlet is limited to the water-inlet temperature plus/minus the
+configured pinch. It is useful for first-pass cycle studies, but it does not
+size a heat exchanger.
+
+`heat_exchanger_model = "counterflow_ntu"` models each intermediate A-CAES
+intercooler and every A-CAES reheat exchanger as a single-pass counter-current
+air/water exchanger. It requires an effective overall coefficient `U`, heat
+transfer area `A`, and air/water mass flows. It calculates:
+
+```text
+UA = U A
+Cair = ṁair cp,air;  Cwater = ṁwater cp,water
+NTU = UA / min(Cair, Cwater)
+Q = εcounterflow(NTU, Cr) min(Cair, Cwater) |Th,in - Tc,in|
+```
+
+For unequal heat-capacity rates, the counterflow effectiveness is:
+
+```text
+ε = [1 - exp(-NTU (1 - Cr))] / [1 - Cr exp(-NTU (1 - Cr))]
+Cr = Cmin / Cmax
+```
+
+Thus a finite area and conductance limit duty automatically; the hot and cold
+streams cannot cross. `U` is an **overall/effective** coefficient, not a single
+air-side or water-side film coefficient. If only film coefficients are known,
+first combine their resistances, wall conduction, and fouling resistance to
+obtain an overall `U` on a declared area basis.
+
 ## A-CAES: finite sensible-water thermal store
 
 The A-CAES model recovers a configured fraction of the heat rejected by
@@ -92,9 +124,14 @@ primary-energy boundary; those are outside this model.
   power model. Add those before quoting plant-level electrical RTE.
 - The code is a conceptual design tool, not a safety, control, or equipment
   sizing tool.
+- The counterflow option is a design-point epsilon-NTU model. It does not yet
+  calculate exchanger geometry, two-phase behavior, fouling over time, or a
+  pressure-drop/area trade-off.
 
 ## References
 
 - CoolProp documentation: [High-Level Interface](https://coolprop.org/coolprop/HighLevelAPI.html) and [pure-fluid formulations](https://coolprop.org/fluid_properties/PurePseudoPure.html).
 - International Energy Agency Energy Storage: [Compressed Air Energy Storage fact sheet](https://www.iea-es.org/wp-content/uploads/public/FactSheet_mechanical_CAES.pdf).
+- Balaji & Gedupudi, *Heat Transfer Engineering*, counterflow
+  effectiveness–NTU relation, [reference page](https://www.sciencedirect.com/science/article/pii/B9780128185032000071).
 - Zhao, Wang, & Ding, *Performance analysis of compressed air energy storage systems considering dynamic characteristics of compressed air storage*, Applied Energy 2018, [DOI landing page](https://www.sciencedirect.com/science/article/pii/S0360544217311441). This is relevant background for the dynamic-cavern effects intentionally excluded here.
