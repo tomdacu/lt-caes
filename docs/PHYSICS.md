@@ -93,6 +93,24 @@ The delivered energy reduces store temperature. Therefore stored heat cannot
 be reused independently at every turbine stage, a defect of the previous
 maximum-temperature approximation.
 
+## Relationship to LTA-CAES
+
+This repository's main research target is **LTA-CAES**: a low-temperature
+A-CAES concept that stores compression heat in a liquid thermal-energy-storage
+medium and returns it to the air during expansion. Water is the most compelling
+candidate at moderate temperatures because it is inexpensive, widely available,
+non-toxic, and has high sensible heat capacity. The reference LTA-CAES concept
+uses a liquid two-tank thermal store at approximately 90-200 °C; above roughly
+95 °C, water must be pressurised to remain liquid.
+
+The current solver is an energy-balanced **well-mixed water-store** model. It
+is therefore appropriate for early thermodynamic, heat-exchanger-area, and
+cost-sensitivity studies. It is not yet a two-tank LTA-CAES plant model:
+separate hot/cold inventory, pump work, water pressure, tank heat loss, and
+transient stratification remain explicit future extensions. See the
+[research map](research/README.md) for the primary LTA-CAES sources that guide
+those extensions.
+
 For this closed A-CAES boundary:
 
 ```text

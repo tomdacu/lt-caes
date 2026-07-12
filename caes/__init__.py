@@ -1,4 +1,4 @@
-"""Physically bounded models for diabatic and adiabatic CAES plants."""
+"""Physically bounded LTA-CAES water-storage and comparison plant models."""
 
 from .config import HeatExchangerModel, PlantConfig, PlantMode
 from .plant import CAESPlant

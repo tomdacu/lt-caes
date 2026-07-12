@@ -1,8 +1,15 @@
-# CAES Storage
+# LTA-CAES Water Storage Simulator
 
-An energy-balanced, batch-performance simulator for compressed-air energy
-storage (CAES). It replaces the previous preview scripts and the partially
+An energy-balanced, research-oriented simulator for **low-temperature
+adiabatic compressed-air energy storage (LTA-CAES)** using sensible-water
+thermal storage. It replaces the previous preview scripts and the partially
 overlapping `CAES_program` implementation with one root-level project.
+
+The primary research question is deliberately practical: can a multi-stage
+A-CAES plant use readily available water, conventional heat exchangers, and
+moderate thermal-storage temperatures to reduce complexity and cost relative
+to high-temperature A-CAES? The D-CAES mode remains only as a clearly bounded
+comparison case.
 
 The model supports two clearly separated modes:
 
@@ -32,6 +39,22 @@ round-trip efficiency. The counter-current configuration additionally reports
 per-exchanger `UA`, NTU performance, total heat-transfer area, and an optional
 user-supplied screening-cost correlation.
 
+## Graphical interface
+
+A desktop GUI is provided for interactive what-if studies. It uses the same
+validated solver as the CLI and needs no extra dependencies (only `tkinter`,
+bundled with Python, and the already-required `matplotlib`).
+
+```powershell
+python -m caes.gui        # or: caes-gui after install
+```
+
+The window lets you edit every `PlantConfig` field grouped by subject, load and
+save JSON configurations, run the simulation with `F5`, and inspect the
+temperature-entropy diagram, a KPI strip, per-cycle process tables, and a
+full summary in one place. Non-applicable inputs are auto-disabled (e.g.
+thermal-store fields for D-CAES, NTU area/flow fields for the pinch model).
+
 ## Modelling boundary
 
 This is a **steady-flow, fixed-mass batch model**. The air in the store is
@@ -41,6 +64,8 @@ Consequently it is suitable for conceptual comparison and sensitivity studies,
 not for sizing a real cavern, heat exchanger, or tank without further work.
 
 Read [the physics and assumptions](docs/PHYSICS.md), [configuration and use](docs/USAGE.md), and [the migration record](docs/MIGRATION.md) before interpreting results.
+The curated [research map](docs/research/README.md) links the papers, research
+groups, and software most relevant to this model.
 
 ## Validation
 
