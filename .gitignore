@@ -1,38 +1,7 @@
-# Results and output files
-results/
-*.csv
-
-# Python cache files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Virtual environment
-.venv/
-venv/
-env/
-
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Plot files
-*.png
-*.jpg
-*.pdf
-
-# Temporary files
-*.tmp
-*.temp
+*.py[cod]
+.pytest_cache/
+artifacts/
+build/
+dist/
+*.egg-info/

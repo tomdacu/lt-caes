@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "caes-storage"
+version = "1.0.0"
+description = "Energy-balanced compressed-air energy-storage simulation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "CoolProp>=6.4",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+caes-simulate = "caes.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["caes*"]
