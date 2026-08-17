@@ -1,22 +1,386 @@
-"""Normalized D-CAES and two-tank water LTA-CAES cycle solver."""
+"""Normalized AD-CAES and two-tank coolant LTA/LTHP-CAES cycle solver.
+
+The adiabatic model is a *closed coolant cycle*. It solves these physical
+constraints together:
+
+1. every intercooler branch starts at the common cold-tank temperature and is
+   given its own stage-specific flow; the real coolant returns then mix to the
+   hot-tank temperature;
+2. the same total coolant inventory is divided among the interheaters, one bleed
+   per expansion stage, each sized by that stage's own duty;
+3. every wet-rated expander outlet stays above the common anti-icing envelope:
+   10 degC while liquid condensation is possible, otherwise the local frost
+   point plus 10 K;
+4. one heat-only E-303 is placed on the contiguous cold suffix of interheater
+   returns that maximises ambient heat pickup; that warmed subgroup then mixes
+   with the bypass returns before the cold tank;
+5. the configured direct coolant maximum limits every hot state without a
+   pressure or saturation correlation;
+6. the configured direct coolant minimum limits the cold tank and every
+   physical return;
+7. with a heat user, one mixed hot-store trunk crosses exactly K serial user
+   exchangers. After exchanger g, the coolant for contiguous interheater group
+   g bleeds off and only the remainder reaches exchanger g+1. The final
+   exchanger is followed by the final bleed; no zero-flow K+1 station exists.
+   Without a heat user E-302 does not exist and the complete hot-store stream
+   is optimized for turbine work.
+
+Those seven statements are the logic map of the solver. The detailed workflow
+and Mermaid concept maps live in ``docs/04_OPTIMIZATION_WORKFLOW.md``.
+
+WHAT THE SEARCH VARIABLE IS, AND WHY
+------------------------------------
+The coolant loop is closed on the cold-tank temperature. Branch-selective
+ambient recovery cannot be reconstructed from the raw mixed return: the branch
+distribution is part of the state. Each trial therefore builds the actual
+returns, optimises E-303 analytically, applies cold-tank standing, and closes
+the resulting tank temperature against the trial.
+
+WHAT THE ADIABATIC TRAIN DOES *NOT* DO
+--------------------------------------
+It scavenges no ambient heat.  Every joule the turbines receive comes from the
+coolant loop.  The AH-20x ambient preheaters that used to sit ahead of each coolant
+interheater in the district-heating concept have been removed: they were up to
+eight extra high-pressure gas/ambient exchangers with their fans and controls,
+and they were modelled with zero air-side pressure drop while every other
+exchanger in the train paid one.  Ambient reheat remains in AD-CAES
+(:meth:`CAESPlant._simulate_diabatic`), where it is the only heat source there
+is.
+"""
 
 from __future__ import annotations
 
-from dataclasses import replace
-from math import log10
+from collections import Counter
+from copy import deepcopy
+from dataclasses import dataclass, replace
+from functools import lru_cache
+from math import exp
 
-from .config import HeatExchangerModel, PlantConfig, PlantMode, ThermalSurplusUse, WaterFlowMode
-from .exergy import process_exergy_destruction, water_exergy
-from .heat_exchangers import WATER_CP_J_PER_KGK, cool_air_with_water, heat_air_with_water
-from .models import Cycle, ExergySummary, OptimizationSummary, PlantResult, Process, TwoTankSummary
-from .thermodynamics import compress, exchange_with_environment, expand, state_pt
+from .config import HeatOfftake, OptimizationObjective, PlantConfig, PlantMode
+from .constants import MINIMUM_FROST_CORRELATION_TEMPERATURE_K
+from .exergy import air_exergy, process_exergy_destruction, water_exergy
+from .heat_exchangers import (
+    WATER_CP_J_PER_KGK,
+    cascade_station_duty,
+    counterflow_effectiveness,
+    cool_air_with_water,
+    exchange_air_with_ambient_ntu,
+    heat_air_with_water,
+    water_ratio_for_duty,
+)
+from .models import (
+    Cycle,
+    OfftakeTap,
+    HeatOfftakeSummary,
+    ExergySummary,
+    MoistureSummary,
+    OptimizationSummary,
+    PlantResult,
+    Process,
+    TwoTankSummary,
+)
+from .moisture import analyze_charge_moisture
+from .thermal_limits import (
+    TEMPERATURE_LIMIT_TOLERANCE_K,
+    dry_air_wet_expansion_approximation_ok,
+    minimum_wet_expander_temperature_k,
+    reference_wet_expander_liquid_envelope_ok,
+    wet_expander_hard_floor_temperature_k,
+)
+from .thermodynamics import (
+    BOTH_WAYS,
+    COOL_ONLY,
+    HEAT_ONLY,
+    PropertyAPI,
+    compress,
+    exchange_with_environment,
+    expand,
+    state_ph,
+    state_pt,
+    throttle,
+    using_property_api,
+)
+
+
+WORKING_FLUID = "Air"
+
+# Numerical search limits, not plant inputs.  The branch bound is intentionally
+# generous; normal solutions are around 0.1-1.0 kg-water/kg-air per branch.
+MAX_BRANCH_WATER_AIR_RATIO = 30.0
+INVENTORY_MIN = 0.1
+INVENTORY_MAX = 30.0
+
+# Coolant-loop search window around the ambient temperature [K].  The lower end is
+# additionally kept a named safety margin above the frost-correlation domain
+# limit (see caes.constants), so every trial point stays where the moisture
+# correlations are valid.
+COLD_LOOP_SEARCH_BELOW_AMBIENT_K = 100.0
+COLD_LOOP_SEARCH_ABOVE_AMBIENT_K = 180.0
+COLD_LOOP_CORRELATION_MARGIN_K = 5.0
+# Coarse walk of the search coordinate before any root is bracketed [K].
+COLD_LOOP_SCAN_STEP_K = 2.0
+# Continuation of the root between neighbouring inventories: probe outward from
+# the previous root instead of rescanning the whole window.  The root moves
+# roughly 43 K per unit RELATIVE change in inventory in the measured designs, so
+# the probe span is scaled by that change rather than fixed; beyond the cap the
+# full walk is cheaper than more speculative probing.
+COLD_LOOP_CONTINUATION_STEPS = 10
+COLD_LOOP_CONTINUATION_SENSITIVITY_K = 45.0
+COLD_LOOP_CONTINUATION_MIN_SPAN_K = 4.0
+COLD_LOOP_CONTINUATION_MAX_SPAN_K = 40.0
+# The feasible part of the return window is a single interval: the constraints
+# that close it from below (coolant freezing, no usable charge heat) and from
+# above (coolant maximum, hot tank below the required supply) are monotone in
+# opposite directions.  Windows as narrow as 2.5 K have been measured, which is
+# why the walk stays at COLD_LOOP_SCAN_STEP_K rather than using a coarser first
+# pass, and why leaving the interval is a valid reason to stop walking.
+COLD_LOOP_ABANDON_AFTER_LEAVING = 3
+
+# Charge-side coolant allocation.  The capacity-matched split is a fixed point in
+# the branch flows; it is iterated to a tolerance, not to a fixed count, because
+# an under-converged split can read as violating the coolant maximum and hand
+# the design to the far more expensive relief allocation.
+CHARGE_FIXED_POINT_TOLERANCE = 2e-6
+CHARGE_FIXED_POINT_MAX_ITERATIONS = 20
+# The update contracts in every measured case; a change that stops shrinking by
+# at least this factor means it will not converge and further work is wasted.
+CHARGE_FIXED_POINT_STAGNATION = 0.99
+CHARGE_RELIEF_ITERATIONS = 10
+# Relief blend: coarse first-feasible scan (the peak temperature is monotone
+# along the segment in every measured case, but that is not guaranteed) followed
+# by bisection inside the bracketing interval.  Paid only when the ceiling binds.
+CASCADE_ROOT_REFINEMENTS = 18
+CASCADE_FEASIBILITY_BISECTIONS = 12
+# Kept only until old cached pickles can no longer reference the private legacy
+# methods below; the active equal-drop cascade does not read these values.
+LADDER_MEAN_TOLERANCE_K = 1e-4
+LADDER_REFINEMENTS = 20
+LADDER_FEASIBILITY_BISECTIONS = 10
+CHARGE_BLEND_COARSE_STEPS = 4
+CHARGE_BLEND_BISECTIONS = 12
+# Acceptance on the closed loop: the mixed return the assembled cycle produces
+# must be the one its charge train was built from.  Applied on the RETURN, which
+# E-303 and the tank standing period both CONTRACT toward ambient, so
+# the implied tolerance on the cold tank itself is never looser than this.
+COLD_LOOP_RETURN_CLOSURE_K = 5e-4
+# Numerical root target is tighter than physical acceptance because the K=1
+# analytic construction expresses exact mass closure through an equivalent
+# return-temperature residual before the materialized energy book is checked.
+COLD_LOOP_ROOT_RESIDUAL_K = 1e-7
+
+# Water-mass closure budget.  A residual ``dr`` in ``sum(r_interheater) - r_total``
+# does not stay a mass error: the water energy balance books the interheater
+# duties against the real branch flows but the tank terms against ``r_total``, so
+# ``dr`` reappears as roughly ``dr * cp_water * T_x`` of spurious heat.  Both the
+# root search and the final acceptance are therefore derived from ONE energy
+# budget instead of from independent ad-hoc numbers, so neither can silently
+# admit more error than the ~1 J/kg-air the energy and exergy books are asserted
+# against.  The reference supply temperature is a deliberately generous bound on
+# T_x for this model.
+WATER_MASS_CLOSURE_REFERENCE_SUPPLY_K = 500.0
+# Target for the bisection: half a joule per kilogram of air.
+WATER_MASS_CLOSURE_SEARCH_ERROR = 0.5 / (
+    WATER_CP_J_PER_KGK * WATER_MASS_CLOSURE_REFERENCE_SUPPLY_K
+)
+# Acceptance for the assembled design.  Twice the search target, so a root that
+# stopped on iteration count rather than on tolerance still lands inside the
+# one-joule budget instead of the ~30 J/kg a plain relative tolerance allowed.
+MAX_WATER_MASS_CLOSURE_ERROR = 2.0 * WATER_MASS_CLOSURE_SEARCH_ERROR
+
+class HeatOfftakeTemperatureError(ValueError):
+    """The requested DH temperatures cannot match the plant-coolant profile."""
+
+
+def _balanced_partition(weights: list[float], groups: int) -> list[int]:
+    """Split an ordered sequence into ``groups`` CONTIGUOUS blocks of equal weight.
+
+    Used to assign ordered expansion stages to cascade groups by their minimum
+    moisture-safe heat duties. It does not partition either thermal store.
+
+    Each cut is placed on whichever side of its target actually lies closer,
+    rather than on the first index that reaches it - stopping at the first
+    overshoot systematically front-loads the early groups.  Every group is
+    guaranteed at least one item.
+    """
+    count = len(weights)
+    if groups <= 1 or count == 0:
+        return [0] * count
+    groups = min(groups, count)
+    total = sum(weights)
+    if total <= 0.0:
+        return [min(groups - 1, index * groups // count) for index in range(count)]
+
+    prefix = [0.0]
+    for weight in weights:
+        prefix.append(prefix[-1] + weight)
+
+    # Cut b is the number of items in the first b groups.  Its feasible range
+    # keeps at least one item in every group on both sides of it.
+    cuts: list[int] = []
+    for boundary in range(1, groups):
+        target = total * boundary / groups
+        low = max(boundary, cuts[-1] + 1 if cuts else 1)
+        high = count - (groups - boundary)
+        cuts.append(min(range(low, high + 1), key=lambda i: abs(prefix[i] - target)))
+
+    membership: list[int] = []
+    for index in range(count):
+        membership.append(sum(1 for cut in cuts if index >= cut))
+    return membership
+
+
+def _hx_profile_spread(result: PlantResult) -> float:
+    """Worst endpoint T-Q non-parallelism over every air/water HX [K].
+
+    Full plotted curves retain small curvature from variable air cp.  The
+    endpoint difference is the inexpensive exact measure needed inside the
+    optimiser and is zero for equal secant heat-capacity rates.
+    """
+    spreads: list[float] = []
+    for cycle in (result.charging, result.discharging):
+        for process in cycle.processes:
+            hx = process.heat_exchanger
+            if hx is None:
+                continue
+            if process.kind == "intercooling":
+                first = process.inlet.temperature_k - hx.water_outlet_temperature_k
+                last = process.outlet.temperature_k - hx.water_inlet_temperature_k
+            else:
+                first = hx.water_outlet_temperature_k - process.inlet.temperature_k
+                last = hx.water_inlet_temperature_k - process.outlet.temperature_k
+            spreads.append(abs(last - first))
+    return max(spreads, default=float("inf"))
+
+
+@dataclass(frozen=True)
+class _ThermalLevel:
+    """The one mixed hot-store state (tuple wrapper retained internally)."""
+
+    mass_ratio: float                # kg-coolant / kg-air in the mixed store
+    temperature_before_loss_k: float  # mixed-mean of all intercooler returns
+    temperature_available_k: float    # after the standing period
+    charge_returns: tuple[tuple[float, float, float], ...]
+
+
+@dataclass(frozen=True)
+class _ThermalStore:
+    """Internal store state passed between the charge and discharge solvers.
+
+    ``levels`` contains exactly one mixed state for result compatibility.
+    ``coolant_cascade_groups`` never changes it.
+    """
+
+    total_ratio: float
+    cold_k: float
+    hot_before_loss_k: float
+    hot_available_k: float
+    storage_loss_j_per_kg_air: float
+    charge_returns: tuple[tuple[float, float, float], ...]
+    protected_humidity_ratio: float
+    maximum_water_temperature_reached_k: float
+    levels: tuple[_ThermalLevel, ...] = ()
+    # Filled only for the final, validated charge train; provisional iterates
+    # skip the moisture analysis entirely (see _charge_with_ratios).
+    moisture: MoistureSummary | None = None
+
+    @property
+    def hottest(self) -> _ThermalLevel:
+        return self.levels[-1]
+
+
+@dataclass(frozen=True)
+class _CascadeStation:
+    """One user exchanger immediately before one group bleed.
+
+    The trunk flow is constant THROUGH a station and steps down between them,
+    because that is where the group bleed leaves. ``ratio`` is the suffix flow
+    this exchanger sees; only station zero sees total inventory.
+    """
+
+    ratio: float                     # kg-water/kg-air passing this exchanger
+    inlet_k: float
+    outlet_k: float
+
+    @property
+    def duty_j_per_kg_air(self) -> float:
+        return cascade_station_duty(self.ratio, self.inlet_k, self.outlet_k)
+
+
+@dataclass(frozen=True)
+class _DischargeDesign:
+    """The result of sizing all parallel interheater branches together."""
+
+    cycle: Cycle
+    returns: tuple[tuple[float, float, float], ...]
+    supply_k: float                  # hottest supply any stage sees
+    returned_mean_k: float
+    # Post-user temperature at which each STAGE group is bled, in train order.
+    stage_supplies: tuple[float, ...] = ()
+    # The user exchangers between the bleeds, hottest first.  Empty with no user.
+    stations: tuple[_CascadeStation, ...] = ()
+
+
+@dataclass(frozen=True)
+class _DischargeRequirement:
+    """Invariant minimum-duty air trajectory for one LTHP expansion stage."""
+
+    turbine_pressure_pa: float
+    duty_j_per_kg_air: float
+
+    def __iter__(self):
+        """Preserve the historical private ``(duty, pressure)`` unpacking."""
+        yield self.duty_j_per_kg_air
+        yield self.turbine_pressure_pa
+
+
+@dataclass(frozen=True)
+class _LadderEvaluation:
+    """Coolant-cascade result used while roots are still being refined."""
+
+    required_ratio: float
+    returns: tuple[tuple[float, float, float], ...]
+    supplies: tuple[float, ...]
+    returned_mean_k: float
+
+
+@dataclass(frozen=True)
+class _ColdReturnRecovery:
+    """Optimal placement and state of the single heat-only E-303."""
+
+    start_stage: int | None
+    branch_count: int
+    mass_ratio: float
+    inlet_k: float
+    outlet_k: float
+    mixed_tank_inlet_k: float
+    heat_absorbed_j_per_kg_air: float
 
 
 class CAESPlant:
-    """Simulate a cycle normalized to one kilogram of charged/discharged air."""
+    """Simulate one charge/discharge cycle, normalized to one kilogram of air."""
 
-    def __init__(self, config: PlantConfig):
+    def __init__(
+        self,
+        config: PlantConfig,
+        property_api: PropertyAPI | str = PropertyAPI.ABSTRACT_STATE,
+    ):
         self.config = config
+        self.property_api = PropertyAPI(property_api)
+        # Warm-start seed for the charge-side capacity-matching fixed point:
+        # the last converged branch split and its cold-tank temperature.
+        self._charge_seed: tuple[float, list[float]] | None = None
+        # Continuation seed for the coolant-loop closure: the inventory of the
+        # last accepted root and the mixed return it closed on.
+        self._cold_loop_seed: tuple[float, float] | None = None
+        # Continuation seed for the equal-drop cascade.  Stored as a fraction
+        # of the current maximum drop so it remains useful while inventory and
+        # hot-store temperature move in the outer searches.
+        self._cascade_drop_fraction_seed: float | None = None
+        # Per-stage duty targets keyed by protected humidity ratio.  Held on the
+        # instance so the plant can be collected when it goes out of scope.
+        self._requirements_cache: dict[
+            float, tuple[_DischargeRequirement, ...]
+        ] = {}
 
     @property
     def _p_ambient(self) -> float:
@@ -26,40 +390,561 @@ class CAESPlant:
     def _p_storage(self) -> float:
         return self.config.storage_pressure_bar * 1e5
 
-    def run(self) -> PlantResult:
+    def _absorbs_surplus(self) -> bool:
+        """Electricity-first dispatch: use all high-grade heat in the turbines.
+
+        E-302 is absent in LTA-CAES and bypassed in electricity-first LTHP-CAES.
+        In both cases every kilogram from the hot tank goes directly to an
+        interheater branch.  Combined-delivery LTHP instead keeps the minimum
+        moisture-safe turbine duty so the user cascade can export the greatest
+        feasible amount of high-grade heat.
+        """
         c = self.config
-        finite_hx = c.heat_exchanger_model is not HeatExchangerModel.PINCH
-        should_optimize = (
+        return (
             c.mode is PlantMode.ADIABATIC
-            and finite_hx
-            and c.water_flow_mode is not WaterFlowMode.SPECIFIED_RATIO
+            and not self._dispatches_heat_to_user()
         )
-        if not should_optimize:
-            ratio = c.water_air_mass_ratio if finite_hx else None
-            return self._simulate(ratio)
 
-        points = 81
-        low, high = log10(c.water_air_ratio_search_min), log10(c.water_air_ratio_search_max)
-        candidates = [10 ** (low + i * (high - low) / (points - 1)) for i in range(points)]
-        evaluated = [(ratio, self._simulate(ratio)) for ratio in candidates]
+    def _dispatches_heat_to_user(self) -> bool:
+        """Whether this solve actively routes coolant through the user HXs.
 
-        def objective(item: tuple[float, PlantResult]) -> float:
-            result = item[1]
-            if c.water_flow_mode is WaterFlowMode.MAX_ELECTRIC_EFFICIENCY:
-                return result.round_trip_efficiency
-            if c.water_flow_mode is WaterFlowMode.MAX_HOT_WATER_EXERGY:
-                return result.exergy.hot_water_exergy_j_per_kg_air
-            return result.exergy.total_useful_exergy_efficiency
+        ``heat_offtake`` describes installed/selected LTHP hardware; the
+        objective selects its dispatch.  Electricity-first operation bypasses
+        that hardware instead of imposing a small, unwanted heat sale before
+        ranking inventory candidates by electrical RTE.
+        """
+        c = self.config
+        return (
+            c.mode is PlantMode.ADIABATIC
+            and c.heat_offtake is HeatOfftake.HEAT_USER
+            and c.optimization_objective
+            is OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY
+        )
 
-        selected_ratio, result = max(evaluated, key=objective)
+    def run(self) -> PlantResult:
+        """Return an isolated copy because cached value objects must not be shared."""
+        return deepcopy(_solve_cached(self.config, self.property_api))
+
+    # ---------------------------------------------------------------- optimization
+
+    def _objective(self, result: PlantResult) -> float:
+        """Value of one design under the selected objective. Larger is better.
+
+        Shared by the inventory search and the coolant-loop root selection, so a
+        design can never be ranked by two different rules depending on which
+        loop happened to compare it.
+        """
+        if (
+            self.config.optimization_objective
+            is OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY
+        ):
+            return result.useful_energy_delivery_ratio
+        return result.round_trip_efficiency
+
+    def _run_uncached(self) -> PlantResult:
+        if self.config.mode is PlantMode.DIABATIC:
+            return self._simulate_diabatic()
+
+        c = self.config
+        objective = self._objective
+
+        # The outer variable is conserved coolant throughput, not a tank volume.
+        # A capacity-matched air/coolant branch normally needs cp_air/cp_coolant ~=
+        # 0.25 kg/kg, so the smaller train supplies a physically informed scale
+        # even when compressor and expander stage counts differ.
+        reference_inventory = 0.25 * min(c.compressor_stages, c.expander_stages)
+
+        profile_spread = _hx_profile_spread
+
+        evaluated = 0
+        last_dh_error: HeatOfftakeTemperatureError | None = None
+        failure_causes: Counter[str] = Counter()
+        attempted_values: set[float] = set()
+
+        # Set when an inventory was rejected because the hot tank could not
+        # reach the district-heating supply temperature.  That rejection IS
+        # directional: more water only makes the tank colder, so there is no
+        # point walking further up.  Every other rejection says nothing about
+        # which way to go and must not stop the search.
+        hot_end_exhausted = False
+
+        def scan(values: list[float]) -> list[tuple[float, PlantResult]]:
+            nonlocal evaluated, last_dh_error, hot_end_exhausted
+            solutions: list[tuple[float, PlantResult]] = []
+            for inventory in values:
+                if inventory in attempted_values:
+                    continue
+                attempted_values.add(inventory)
+                evaluated += 1
+                try:
+                    result = self._close_cold_loop(inventory)
+                except HeatOfftakeTemperatureError as exc:
+                    last_dh_error = exc
+                    hot_end_exhausted = True
+                    continue
+                except ValueError as exc:
+                    # Keep the physical cause: when every inventory fails, the
+                    # user must learn WHICH constraint rejected the plant, not
+                    # just that none was found.
+                    failure_causes[str(exc)] += 1
+                    continue
+                solutions.append((inventory, result))
+            return solutions
+
+        coarse_factors = (
+            (0.8, 1.0, 1.2)
+            if self._absorbs_surplus()
+            else (0.6, 0.8, 1.0, 1.2, 1.5)
+        )
+        # Walk OUTWARD from the physically informed reference, one side at a
+        # time.  Order is chosen for cost, not for the answer: the first design
+        # that closes seeds the coolant-loop continuation, and every later
+        # inventory then follows that branch instead of proving the whole
+        # return window out again.
+        #
+        # A failure does NOT end a side.  The feasible band can be an interval
+        # that does not contain the reference at all - measured at 200 bar with
+        # eight stages, where the reference is 2.0 and the band is [1.0, 1.3] -
+        # so giving up on the first rejection loses the only designs that work.
+        # The one exception is a hot-end district-heating rejection while
+        # walking UP: more water can only make the tank colder, so that
+        # direction is genuinely exhausted.
+        def clamp(value: float) -> float:
+            return min(INVENTORY_MAX, max(INVENTORY_MIN, value))
+
+        below = sorted(
+            {clamp(reference_inventory * f) for f in coarse_factors if f < 1.0},
+            reverse=True,
+        )
+        above = sorted(
+            {clamp(reference_inventory * f) for f in coarse_factors if f > 1.0}
+        )
+        coarse = scan([clamp(reference_inventory)])
+        for value in above:
+            coarse.extend(scan([value]))
+            if hot_end_exhausted:
+                break
+        for value in below:
+            coarse.extend(scan([value]))
+        if not coarse:
+            # A binding direct coolant limit can leave a narrow feasible band around
+            # 1.7 times the capacity-rate scale. Probe it before paying for the
+            # architecture-wide fallback.
+            coarse = scan([
+                reference_inventory * 1.5,
+                reference_inventory * 1.7,
+            ])
+        if not coarse:
+            # Unequal or single-stage trains can have a narrow feasible inventory
+            # window.  A deterministic fallback avoids making the ordinary solve
+            # expensive while still covering those architectures.
+            coarse = scan([0.2, 0.3, 0.5, 0.7, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0])
+            if not coarse:
+                if last_dh_error is not None:
+                    raise last_dh_error
+                message = (
+                    "no closed two-tank design is feasible for these pressures, "
+                    "stage counts, coolant temperature limits, and finite heat-"
+                    "exchanger settings"
+                )
+                if failure_causes:
+                    # Report the real binding constraints, most frequent first.
+                    reported = "; ".join(
+                        f"{count}x {cause}"
+                        for cause, count in failure_causes.most_common(3)
+                    )
+                    message += f". The constraints that rejected the candidate plants were: {reported}"
+                message += (
+                    ". Typical remedies, by cause: raise the selected coolant "
+                    "maximum if the hot-side limit binds; increase "
+                    "E-303 NTU if a selected sub-ambient return needs more recovery; add "
+                    "stages/NTU if the moisture-safe turbine duties cannot be "
+                    "reached; lower the heat-user temperatures or increase its "
+                    "exchanger NTU if its finite effectiveness binds"
+                )
+                raise ValueError(message)
+        # The selected objective always ranks the designs.  T-Q profile spread
+        # remains a reported equipment-quality metric, never a hidden veto over
+        # a better physical cycle: with no heat user every objective shares the
+        # same surplus-absorbing dispatch, and with district heating the
+        # minimum-turbine-duty topology is fixed by the heat export, so the
+        # objective is free to pick the inventory directly.
+        # Refine around the best *feasible* design while retaining infeasible
+        # samples as interval boundaries.  This matters at high NTU: the most
+        # parallel design can lie immediately below the DH hot-end limit, so a
+        # single fixed refinement pass can stop far from the real boundary.
+        solutions = list(coarse)
+        for _ in range(5):
+            solution_by_inventory = {item[0]: item for item in solutions}
+            best_inventory = max(
+                solutions, key=lambda item: objective(item[1])
+            )[0]
+            ordered = sorted(attempted_values)
+            index = ordered.index(best_inventory)
+            neighbours: list[float] = []
+            if index > 0:
+                neighbours.append(ordered[index - 1])
+            if index + 1 < len(ordered):
+                neighbours.append(ordered[index + 1])
+
+            if neighbours:
+                # An adjacent rejected point is the most valuable information:
+                # the optimum often lies immediately on its feasible side.  If
+                # both neighbours are feasible, refine toward the thermally
+                # better one.  Only one new full cycle is needed per round.
+                target = min(
+                    neighbours,
+                    key=lambda value: (
+                        value in solution_by_inventory,
+                        -objective(solution_by_inventory[value][1])
+                        if value in solution_by_inventory
+                        else abs(value - best_inventory),
+                    ),
+                )
+            elif best_inventory < INVENTORY_MAX:
+                target = min(INVENTORY_MAX, 1.25 * best_inventory)
+            elif best_inventory > INVENTORY_MIN:
+                target = 0.5 * (INVENTORY_MIN + best_inventory)
+            else:
+                break
+            refine_value = 0.5 * (best_inventory + target)
+            if refine_value in attempted_values:
+                # The bracket stopped moving: further rounds would recompute
+                # the same point without adding information.
+                break
+            solutions.extend(scan([refine_value]))
+
+        _, result = max(solutions, key=lambda item: objective(item[1]))
+        assert result.thermal_store is not None
         result.optimization = OptimizationSummary(
-            c.water_flow_mode.value,
-            selected_ratio,
-            objective((selected_ratio, result)),
-            points,
+            objective=c.optimization_objective.value,
+            objective_value=objective(result),
+            evaluated_points=evaluated,
+            max_hx_temperature_spread_k=profile_spread(result),
         )
-        result.selected_water_air_mass_ratio = selected_ratio
         return result
+
+    def _cold_loop_search_window(self) -> tuple[float, float]:
+        """Bounds of the mixed-return search coordinate [K].
+
+        The return is itself a coolant state, so it lives between the selected
+        direct coolant minimum and maximum.  The
+        window is kept a named margin above the frost-correlation domain limit
+        so every trial point stays where the moisture correlations are valid.
+        """
+        c = self.config
+        low = max(
+            MINIMUM_FROST_CORRELATION_TEMPERATURE_K + COLD_LOOP_CORRELATION_MARGIN_K,
+            c.ambient_temperature_k - COLD_LOOP_SEARCH_BELOW_AMBIENT_K,
+            c.coolant_minimum_temperature_k,
+        )
+        high = min(
+            c.ambient_temperature_k + COLD_LOOP_SEARCH_ABOVE_AMBIENT_K,
+            c.coolant_maximum_temperature_k,
+        )
+        return low, high
+
+    def _close_cold_loop(self, total_inventory: float) -> PlantResult:
+        """Close the coolant loop for one conserved coolant inventory.
+
+        The search coordinate is the cold-tank temperature. A trial builds the
+        charge and discharge trains, selects the best legal E-303 return suffix,
+        mixes its warmed outlet with the bypass returns, applies cold-tank
+        standing, and closes that produced tank state against the trial.
+        """
+        low, high = self._cold_loop_search_window()
+
+        candidates: list[PlantResult] = []
+        last_dh_error: HeatOfftakeTemperatureError | None = None
+        # Physical rejections counted by frequency.  Reporting the LAST
+        # exception is misleading: it is almost always an artifact of the scan
+        # probing an obviously unphysical end of the window, while the cause
+        # that rejected most of the window is the one the user must act on.
+        causes: Counter[str] = Counter()
+        # Most recent successful evaluation, reused by accept_root so the
+        # accepted root does not pay for a second identical full cycle solve.
+        last_evaluation: tuple[
+            float,
+            Cycle,
+            _ThermalStore,
+            _DischargeDesign | _LadderEvaluation,
+            _ColdReturnRecovery,
+        ] | None = None
+
+        def closure_residual(cold_k: float) -> tuple[float, float] | None:
+            nonlocal last_evaluation, last_dh_error
+            try:
+                charging, store = self._charge_adiabatic(cold_k, total_inventory)
+                if self._absorbs_surplus():
+                    design = self._discharge_absorbing(store)
+                else:
+                    solved = self._discharge_adiabatic_unchecked(store, cold_k)
+                    design = solved[1]
+                    if design is None:
+                        return None
+                assert design is not None
+                recovery = self._optimize_cold_return_recovery(design.returns)
+                produced_cold_k = self.config.ambient_temperature_k + (
+                    recovery.mixed_tank_inlet_k
+                    - self.config.ambient_temperature_k
+                ) * self._tank_decay(total_inventory)
+                residual = produced_cold_k - cold_k
+            except HeatOfftakeTemperatureError as exc:
+                last_dh_error = exc
+                causes[str(exc)] += 1
+                return None
+            except ValueError as exc:
+                causes[str(exc)] += 1
+                return None
+            if design is None:
+                causes[
+                    "the finite interheaters cannot transfer the moisture-safe "
+                    "stage duties from the available coolant temperature"
+                ] += 1
+                return None
+            last_evaluation = (cold_k, charging, store, design, recovery)
+            return cold_k, residual
+
+        def accept_root(cold_k: float) -> bool:
+            nonlocal last_dh_error
+            try:
+                if last_evaluation is not None and last_evaluation[0] == cold_k:
+                    # The residual evaluation just solved this exact cycle;
+                    # assemble the result from it instead of re-solving.
+                    _, charging, store, solved_discharge, _ = last_evaluation
+                    if isinstance(solved_discharge, _LadderEvaluation):
+                        design = self._materialize_ladder(
+                            store, solved_discharge
+                        )
+                        full_required = sum(
+                            ratio for ratio, _, _ in design.returns
+                        )
+                        if (
+                            abs(full_required - store.total_ratio)
+                            > MAX_WATER_MASS_CLOSURE_ERROR
+                        ):
+                            return False
+                    else:
+                        design = solved_discharge
+                    result = self._assemble_adiabatic(charging, store, design)
+                else:
+                    result = self._simulate_adiabatic(cold_k, total_inventory)
+            except HeatOfftakeTemperatureError as exc:
+                last_dh_error = exc
+                return False
+            except ValueError as exc:
+                causes[str(exc)] += 1
+                return False
+            assert result.thermal_store is not None
+            produced_cold_k = self.config.ambient_temperature_k + (
+                result.thermal_store.cold_return_exchanger_outlet_temperature_k
+                - self.config.ambient_temperature_k
+            ) * self._tank_decay(total_inventory)
+            if (
+                abs(produced_cold_k - cold_k)
+                > COLD_LOOP_RETURN_CLOSURE_K
+            ):
+                return False
+            candidates.append(result)
+            self._cold_loop_seed = (total_inventory, cold_k)
+            return True
+
+        # A feasible window can start between two coarse samples, and the root
+        # can lie less than a kelvin above that boundary.  Locate the boundary
+        # adaptively instead of discarding the first feasible point's left side.
+        def first_feasible(
+            infeasible_return_k: float, feasible: tuple[float, float]
+        ) -> tuple[float, float]:
+            left = infeasible_return_k
+            best = feasible
+            # Fourteen halvings locate a 2 K boundary to about 1e-4 K,
+            # already tighter than the final physical closure tolerance.
+            for _ in range(14):
+                middle_return_k = 0.5 * (left + best[0])
+                middle = closure_residual(middle_return_k)
+                if middle is None:
+                    left = middle_return_k
+                else:
+                    best = middle
+            return best
+
+        def bisect(
+            left: tuple[float, float], right: tuple[float, float]
+        ) -> float:
+            """Safeguarded Illinois refinement of one return-temperature root.
+
+            Both dispatch paths now close the coolant mass inside their own
+            solve, so this outer residual is always a return temperature that
+            the assembled result re-verifies to
+            ``COLD_LOOP_RETURN_CLOSURE_K``.
+            """
+            if left[0] == right[0]:
+                return left[0]
+            a, b = left, right
+            f_a, f_b = a[1], b[1]
+            last_side = 0
+            best = min((a, b), key=lambda item: abs(item[1]))
+            for _ in range(32):
+                denominator = f_b - f_a
+                trial_k = (
+                    0.5 * (a[0] + b[0])
+                    if abs(denominator) < 1e-30
+                    else (a[0] * f_b - b[0] * f_a) / denominator
+                )
+                if not a[0] < trial_k < b[0]:
+                    trial_k = 0.5 * (a[0] + b[0])
+                trial = closure_residual(trial_k)
+                if trial is None:
+                    break
+                if abs(trial[1]) < abs(best[1]):
+                    best = trial
+                if abs(trial[1]) <= COLD_LOOP_ROOT_RESIDUAL_K:
+                    return trial[0]
+                if f_a * trial[1] <= 0.0:
+                    b = trial
+                    f_b = trial[1]
+                    if last_side == -1:
+                        f_a *= 0.5
+                    last_side = -1
+                else:
+                    a = trial
+                    f_a = trial[1]
+                    if last_side == 1:
+                        f_b *= 0.5
+                    last_side = 1
+                if b[0] - a[0] <= COLD_LOOP_ROOT_RESIDUAL_K:
+                    break
+            return best[0]
+
+        def local_bracket(
+            centre_k: float, span_k: float
+        ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+            """Expand outward from a previous root until a sign change is caught.
+
+            Continuation along one solution branch.  The full window walk costs
+            about a hundred complete charge/discharge closures per inventory;
+            following the branch costs a handful, and it is also the physically
+            correct thing to do, because it keeps consecutive inventories on the
+            SAME root instead of letting the objective jump between branches.
+            """
+            here = closure_residual(centre_k)
+            if here is None:
+                return None
+            nearest_left = nearest_right = here
+            if abs(here[1]) <= COLD_LOOP_ROOT_RESIDUAL_K:
+                return here, here
+            # Geometric expansion catches the same interval in at most nine
+            # probes instead of walking ten equal steps in both directions.
+            for fraction in (1 / 16, 1 / 8, 1 / 4, 1 / 2, 1.0):
+                offset = fraction * span_k
+                for probe_k, going_left in (
+                    (centre_k - offset, True),
+                    (centre_k + offset, False),
+                ):
+                    if not low <= probe_k <= high:
+                        continue
+                    probe = closure_residual(probe_k)
+                    if probe is None:
+                        continue
+                    if going_left:
+                        if probe[1] * nearest_left[1] <= 0.0:
+                            return probe, nearest_left
+                        nearest_left = probe
+                    else:
+                        if probe[1] * nearest_right[1] <= 0.0:
+                            return nearest_right, probe
+                        nearest_right = probe
+            return None
+
+        def walk() -> None:
+            """Walk the whole return window, refining and accepting every root.
+
+            Refines every infeasible-to-feasible transition and accepts EVERY
+            residual sign change.  Stopping at the first one silently selected
+            the lowest-temperature root whenever the closure has more than one,
+            which is a selection error rather than a tolerance one.
+
+            The walk stops once it has entered the feasible interval and then
+            left it: the interval is single, so everything past it is a proven
+            waste of complete charge/discharge closures.
+            """
+            previous: tuple[float, float] | None = None
+            previous_return_k: float | None = None
+            entered = False
+            left_for = 0
+            steps = int((high - low) / COLD_LOOP_SCAN_STEP_K) + 1
+            for index in range(steps + 1):
+                return_k = min(high, low + index * COLD_LOOP_SCAN_STEP_K)
+                evaluated = closure_residual(return_k)
+                if evaluated is not None:
+                    entered = True
+                    left_for = 0
+                    if previous is None and previous_return_k is not None:
+                        boundary = first_feasible(previous_return_k, evaluated)
+                        if boundary[0] < evaluated[0] - 1e-9:
+                            previous = boundary
+                    if previous is not None and previous[1] * evaluated[1] <= 0.0:
+                        accept_root(bisect(previous, evaluated))
+                    previous = evaluated
+                else:
+                    # Never bridge a thermodynamically infeasible interval.
+                    previous = None
+                    if entered:
+                        left_for += 1
+                        if left_for >= COLD_LOOP_ABANDON_AFTER_LEAVING:
+                            return
+                previous_return_k = return_k
+                if return_k >= high:
+                    return
+
+        seed = self._cold_loop_seed
+        if seed is not None:
+            seed_inventory, seed_return_k = seed
+            # The branch moves with the inventory, so the probe span follows the
+            # RELATIVE change rather than being a fixed number of kelvin.
+            span_k = min(
+                COLD_LOOP_CONTINUATION_MAX_SPAN_K,
+                max(
+                    COLD_LOOP_CONTINUATION_MIN_SPAN_K,
+                    COLD_LOOP_CONTINUATION_SENSITIVITY_K
+                    * abs(total_inventory - seed_inventory)
+                    / seed_inventory,
+                ),
+            )
+            if low <= seed_return_k <= high:
+                bracket = local_bracket(seed_return_k, span_k)
+                if bracket is not None and accept_root(bisect(*bracket)):
+                    return candidates[0]
+
+        # First inventory: the physical return normally lies near ambient.
+        # Try that informed centre before walking upward from the cold edge of
+        # the full correlation window.
+        ambient_centre = min(
+            high, max(low, self.config.ambient_temperature_k)
+        )
+        initial_span = min(80.0, max(0.0, high - low))
+        bracket = local_bracket(ambient_centre, initial_span)
+        if bracket is not None and accept_root(bisect(*bracket)):
+            return candidates[0]
+
+        # No usable branch to continue from: prove the window out.
+        walk()
+
+        if not candidates:
+            if last_dh_error is not None:
+                raise last_dh_error
+            message = "no closed coolant-loop root exists for this coolant inventory"
+            if causes:
+                reported = "; ".join(
+                    f"{count}x {cause}" for cause, count in causes.most_common(2)
+                )
+                message += f"; the constraints that rejected it were: {reported}"
+            raise ValueError(message)
+        # Several roots can close the same inventory.  Rank them by the plant
+        # objective rather than by where the scan happened to meet them first.
+        return max(candidates, key=self._objective)
+
+    # ---------------------------------------------------------------- pressure layout
 
     def _compression_ratio(self) -> float:
         c = self.config
@@ -69,234 +954,2176 @@ class CAESPlant:
     def _expansion_ratio(self) -> float:
         c = self.config
         alpha = 1.0 - c.interheater_pressure_drop
-        if c.mode is PlantMode.ADIABATIC:
-            heaters = c.expander_stages
-        else:
-            heaters = c.expander_stages - 1 if c.use_ambient_reheat else 0
+        # Every expansion stage is preceded by one heat-exchanger/duct train, so
+        # every stage counts one pressure drop even if ambient reheat is bypassed.
+        heaters = c.expander_stages
         return ((self._p_ambient / self._p_storage) / alpha**heaters) ** (1.0 / c.expander_stages)
 
-    def _simulate(self, finite_water_ratio: float | None) -> PlantResult:
-        charging, water_returns = self._charge(finite_water_ratio)
-        store = self._build_hot_tank(water_returns) if self.config.mode is PlantMode.ADIABATIC else None
-        discharging, return_temperatures, external_heat = self._discharge(store)
+    # ---------------------------------------------------------------- A-CAES charge
+
+    def _tank_decay(self, total_ratio: float) -> float:
+        """Lumped-capacitance decay factor of one standing tank over the dwell.
+
+        Integrates ``C dT/dt = -UA (T - T_ambient)`` analytically between the
+        charged and discharged equilibrium states, so the plant stays a steady
+        two-state model rather than a transient one.  The same normalized UA
+        and standing time are applied to both tanks: the hot tank stands full
+        between charge and discharge, the cold tank between discharge and the
+        next charge.  UA is normalized to the one-kilogram-air analysis basis.
+        """
+        c = self.config
+        if c.thermal_storage_tank_ua_w_per_k <= 0.0 or total_ratio <= 0.0:
+            return 1.0
+        capacitance_j_per_k_per_kg_air = total_ratio * WATER_CP_J_PER_KGK
+        return exp(
+            -c.thermal_storage_tank_ua_w_per_k
+            * c.storage_duration_hours * 3600.0
+            / capacitance_j_per_k_per_kg_air
+        )
+
+    def _cold_return_exchanger_outlet_temperature(
+        self,
+        returned_temperature_k: float,
+    ) -> float:
+        """Heat-only E-303 outlet for one already mixed selected subgroup [K]."""
+        ambient_k = self.config.ambient_temperature_k
+        if (
+            self.config.cold_return_cooler_ntu <= 0.0
+            or returned_temperature_k >= ambient_k
+        ):
+            return returned_temperature_k
+        return ambient_k + (
+            returned_temperature_k - ambient_k
+        ) * exp(-self.config.cold_return_cooler_ntu)
+
+    def _optimize_cold_return_recovery(
+        self,
+        branches: tuple[tuple[float, float, float], ...],
+    ) -> _ColdReturnRecovery:
+        """Place one E-303 on the best contiguous suffix of stage returns.
+
+        A candidate cutoff ``s`` first mixes returns ``s..N-1``, heats that
+        mixture toward ambient through the finite-NTU exchanger, and only then
+        mixes it with returns ``0..s-1``. For constant coolant ``cp`` and one
+        implicitly resized NTU class, maximising the final cold-tank inlet is
+        exactly equivalent to maximising
+
+            R_s cp (T0 - T_s) (1 - exp(-NTU)),  T_s < T0.
+
+        Testing the N legal cutoffs is therefore the complete topology
+        optimisation under the user's ordered-manifold constraint; no nested
+        thermodynamic solve or 2**N subset search is needed.
+        """
+        positive = [
+            (index, ratio, temperature)
+            for index, (ratio, temperature, _) in enumerate(branches)
+            if ratio > 0.0
+        ]
+        if not positive:
+            raise ValueError("the discharge produced no coolant return flow")
+        total_ratio = sum(item[1] for item in positive)
+        raw_energy = sum(ratio * temperature for _, ratio, temperature in positive)
+        raw_mean = raw_energy / total_ratio
+        ambient_k = self.config.ambient_temperature_k
+
+        best: _ColdReturnRecovery | None = None
+        for position, (start_stage, _, _) in enumerate(positive):
+            suffix = positive[position:]
+            ratio = sum(item[1] for item in suffix)
+            inlet_k = sum(item[1] * item[2] for item in suffix) / ratio
+            if inlet_k >= ambient_k - 1e-12:
+                continue
+            outlet_k = self._cold_return_exchanger_outlet_temperature(inlet_k)
+            absorbed = ratio * WATER_CP_J_PER_KGK * (outlet_k - inlet_k)
+            bypass_energy = raw_energy - ratio * inlet_k
+            tank_inlet_k = (bypass_energy + ratio * outlet_k) / total_ratio
+            candidate = _ColdReturnRecovery(
+                start_stage=start_stage,
+                branch_count=len(suffix),
+                mass_ratio=ratio,
+                inlet_k=inlet_k,
+                outlet_k=outlet_k,
+                mixed_tank_inlet_k=tank_inlet_k,
+                heat_absorbed_j_per_kg_air=absorbed,
+            )
+            if best is None or absorbed > best.heat_absorbed_j_per_kg_air + 1e-9:
+                best = candidate
+
+        if best is not None:
+            return best
+        # No legal subgroup is colder than ambient: E-303 is bypassed, never
+        # reversed into a cooler.
+        return _ColdReturnRecovery(
+            start_stage=None,
+            branch_count=0,
+            mass_ratio=0.0,
+            inlet_k=raw_mean,
+            outlet_k=raw_mean,
+            mixed_tank_inlet_k=raw_mean,
+            heat_absorbed_j_per_kg_air=0.0,
+        )
+
+    def _charge_with_ratios(
+        self,
+        cold_k: float,
+        ratios: list[float],
+        *,
+        enforce_water_limit: bool = True,
+        analyze_moisture: bool = True,
+    ) -> tuple[Cycle, _ThermalStore]:
+        """Run the sequential compressor train for an explicit parallel-water split.
+
+        Provisional fixed-point iterates pass ``analyze_moisture=False``: the
+        humidity propagation and its validity screens only need to run - and
+        can only legitimately reject - on the final, validated train.
+        """
+        c = self.config
+        if cold_k < c.coolant_minimum_temperature_k - TEMPERATURE_LIMIT_TOLERANCE_K:
+            raise ValueError(
+                "cold TES temperature is below the selected coolant freezing point"
+            )
+        current = state_pt(self._p_ambient, c.ambient_temperature_k, WORKING_FLUID)
+        cycle = Cycle("charging", current)
+        pressure_ratio = self._compression_ratio()
+        branches: list[tuple[float, float, float]] = []
+
+        for stage in range(c.compressor_stages):
+            p_out = self._p_storage / (1.0 - c.intercooler_pressure_drop) if stage == c.compressor_stages - 1 else current.pressure_pa * pressure_ratio
+            compressor = compress(current, p_out, c.compressor_efficiency, WORKING_FLUID)
+            cycle.processes.append(compressor)
+            cooler = cool_air_with_water(
+                compressor.outlet, cold_k, c.intercooler_pressure_drop, WORKING_FLUID,
+                c.heat_exchanger_ntu, ratios[stage],
+            )
+            cycle.processes.append(cooler)
+            hx = cooler.heat_exchanger
+            if hx is None:
+                raise ValueError("charging water is not colder than a compressor outlet")
+            branches.append((ratios[stage], hx.water_outlet_temperature_k, hx.duty_j_per_kg_air))
+            current = cooler.outlet
+
+        if abs(current.temperature_k - c.ambient_temperature_k) > 1e-9:
+            cavern = exchange_with_environment(
+                current, c.ambient_temperature_k, 0.0, WORKING_FLUID,
+                "aftercooling", BOTH_WAYS,
+            )
+            cycle.processes.append(cavern)
+
+        total_ratio = sum(branch[0] for branch in branches)
+        recovered = sum(branch[2] for branch in branches)
+        hot_before = cold_k + recovered / (total_ratio * WATER_CP_J_PER_KGK)
+        maximum_water_reached = max(
+            cold_k,
+            hot_before,
+            *(temperature for _, temperature, _ in branches),
+        )
+        decay = self._tank_decay(total_ratio)
+        hot_available = c.ambient_temperature_k + (
+            hot_before - c.ambient_temperature_k
+        ) * decay
+        storage_loss = total_ratio * WATER_CP_J_PER_KGK * (
+            hot_before - hot_available
+        )
+        levels = self._build_levels(branches, decay)
+        store = _ThermalStore(
+            total_ratio=total_ratio,
+            cold_k=cold_k,
+            hot_before_loss_k=hot_before,
+            hot_available_k=hot_available,
+            storage_loss_j_per_kg_air=storage_loss,
+            charge_returns=tuple(branches),
+            protected_humidity_ratio=0.0,
+            maximum_water_temperature_reached_k=maximum_water_reached,
+            levels=levels,
+            moisture=None,
+        )
+        return self._finalize_charge(
+            cycle,
+            store,
+            enforce_water_limit=enforce_water_limit,
+            analyze_moisture=analyze_moisture,
+        )
+
+    def _finalize_charge(
+        self,
+        cycle: Cycle,
+        store: _ThermalStore,
+        *,
+        enforce_water_limit: bool,
+        analyze_moisture: bool,
+    ) -> tuple[Cycle, _ThermalStore]:
+        """Validate and annotate an already-built charge train exactly once."""
+
+        c = self.config
+        maximum_water_allowed = c.coolant_maximum_temperature_k
+        if (
+            enforce_water_limit
+            and store.maximum_water_temperature_reached_k
+            > maximum_water_allowed + TEMPERATURE_LIMIT_TOLERANCE_K
+        ):
+            raise ValueError(
+                "coolant maximum temperature limit exceeded: the hottest coolant reaches "
+                f"{store.maximum_water_temperature_reached_k - 273.15:.2f} °C, while "
+                f"the configured maximum of {maximum_water_allowed - 273.15:.2f} °C"
+            )
+        if not analyze_moisture:
+            return cycle, store
+
+        moisture = analyze_charge_moisture(c, cycle)
+        protected_humidity_ratio = (
+            moisture.stored_air_water_vapor_kg_per_kg_dry_air
+        )
+        if not reference_wet_expander_liquid_envelope_ok(
+            protected_humidity_ratio
+        ):
+            raise ValueError(
+                "remaining charge-side moisture exceeds the selected reference "
+                "wet-expander discharge liquid envelope; add deeper drying or "
+                "select an OEM machine with a larger guaranteed liquid capacity"
+            )
+        if not dry_air_wet_expansion_approximation_ok(
+            protected_humidity_ratio
+        ):
+            raise ValueError(
+                "possible wet-expander condensate exceeds the dry-air model's "
+                "0.1 wt% validity screen; use a coupled humid-air/two-phase "
+                "energy balance for this configuration"
+            )
+        return cycle, replace(
+            store,
+            protected_humidity_ratio=protected_humidity_ratio,
+            moisture=moisture,
+        )
+
+    def _build_levels(
+        self,
+        branches: list[tuple[float, float, float]],
+        decay: float,
+    ) -> tuple[_ThermalLevel, ...]:
+        """Return the one mixed hot store used by every cascade granularity.
+
+        ``coolant_cascade_groups`` controls discharge routing, never storage
+        stratification. All parallel intercooler returns therefore mix before
+        the standing period and the store owns one mass and one temperature.
+        """
+        ambient_k = self.config.ambient_temperature_k
+        mass = sum(ratio for ratio, _, _ in branches)
+        before = sum(
+            ratio * temperature for ratio, temperature, _ in branches
+        ) / mass
+        return (_ThermalLevel(
+            mass_ratio=mass,
+            temperature_before_loss_k=before,
+            temperature_available_k=ambient_k + (before - ambient_k) * decay,
+            charge_returns=tuple(branches),
+        ),)
+
+    def _charge_adiabatic(self, cold_k: float, total_inventory: float) -> tuple[Cycle, _ThermalStore]:
+        """Allocate charge water by heat-capacity matching, not by HX duty.
+
+        In a counter-current exchanger the two T-Q curves are locally parallel
+        when their heat-capacity rates match.  On the one-kilogram-air basis this
+        is ``r_i cp_water ~= cp_air,eff``.  The effective air heat capacity is
+        evaluated from the *real solved enthalpy and temperature change* of each
+        stage, so compressor inefficiency, pressure, variable cp and upstream HX
+        decisions are all included.
+
+        Because each cooler changes the inlet of the next compressor, the target
+        ratios are a small fixed-point problem.  Repeatedly solve the real train,
+        derive its capacity-matched ratios, and project them back onto the exact
+        conserved total inventory. This avoids starving an early stage and
+        propagating an unnecessarily hot inlet through the train.
+        """
+        capacity_matched = self._capacity_matched_ratios(cold_k, total_inventory)
+        allowed_k = self.config.coolant_maximum_temperature_k
+
+        # ``fits`` and the accepted path used to build the same charge train
+        # twice. Retain the most recent exact trial and add the expensive
+        # moisture annotation only after its split has been accepted.
+        last_trial: tuple[
+            tuple[float, ...], tuple[Cycle, _ThermalStore]
+        ] | None = None
+
+        def trial(ratios: list[float]) -> tuple[Cycle, _ThermalStore]:
+            nonlocal last_trial
+            key = tuple(ratios)
+            if last_trial is not None and last_trial[0] == key:
+                return last_trial[1]
+            solved = self._charge_with_ratios(
+                cold_k,
+                ratios,
+                enforce_water_limit=False,
+                analyze_moisture=False,
+            )
+            last_trial = (key, solved)
+            return solved
+
+        def finalize(ratios: list[float]) -> tuple[Cycle, _ThermalStore]:
+            return self._finalize_charge(
+                *trial(ratios),
+                enforce_water_limit=True,
+                analyze_moisture=True,
+            )
+
+        def peak_water_k(ratios: list[float]) -> float:
+            _, store = trial(ratios)
+            return store.maximum_water_temperature_reached_k
+
+        def fits(ratios: list[float]) -> bool:
+            return peak_water_k(ratios) <= allowed_k + TEMPERATURE_LIMIT_TOLERANCE_K
+
+        if fits(capacity_matched):
+            return finalize(capacity_matched)
+
+        # The ceiling binds.  Move toward the peak-minimizing split only as far
+        # as the ceiling actually requires, instead of jumping to it: that jump
+        # used to cost 35 kJ/kg of compression work (-1.6 points of round-trip
+        # efficiency) for a 0.5% change in inventory, because the relief split
+        # is chosen to minimize the hottest coolant state and not to minimize
+        # work, so a starved branch cools its stage badly.
+        relief = self._peak_minimizing_ratios(cold_k, total_inventory)
+
+        def blend(fraction: float) -> list[float]:
+            return [
+                (1.0 - fraction) * matched + fraction * relieved
+                for matched, relieved in zip(capacity_matched, relief)
+            ]
+
+        # The peak temperature is monotone along this segment in every case
+        # measured, but that is not guaranteed, so find the FIRST feasible
+        # coarse point and bisect only inside the interval that precedes it.
+        lower, upper = 0.0, None
+        for step in range(1, CHARGE_BLEND_COARSE_STEPS + 1):
+            fraction = step / CHARGE_BLEND_COARSE_STEPS
+            if fits(blend(fraction)):
+                upper = fraction
+                break
+            lower = fraction
+        if upper is None:
+            # Even the pure relief split exceeds the coolant maximum. Hand it to the validating call
+            # so the user gets the real temperatures in the error, not a bare
+            # search failure.
+            return finalize(relief)
+        for _ in range(CHARGE_BLEND_BISECTIONS):
+            middle = 0.5 * (lower + upper)
+            if fits(blend(middle)):
+                upper = middle
+            else:
+                lower = middle
+        return finalize(blend(upper))
+
+    def _capacity_matched_ratios(
+        self, cold_k: float, total_inventory: float
+    ) -> list[float]:
+        """Converge the capacity-rate-matched charge split for one cold state.
+
+        Iterated to a real tolerance rather than to a fixed iteration count.
+        Stopping early was not a cosmetic inaccuracy: an under-converged split
+        lands slightly above the coolant maximum and hands the design to
+        the much worse relief allocation, which is what produced the measured
+        discontinuity in the objective.
+        """
+        n = self.config.compressor_stages
+        # Warm start from the last converged split: neighbouring coolant-loop
+        # trial points then need one or two updates instead of the full walk.
+        seed = self._charge_seed
+        if seed is not None and abs(seed[0] - cold_k) <= 4.0 and len(seed[1]) == n:
+            ratios = [
+                ratio * total_inventory / sum(seed[1]) for ratio in seed[1]
+            ]
+        else:
+            ratios = [total_inventory / n] * n
+
+        previous_change = float("inf")
+        for iteration in range(CHARGE_FIXED_POINT_MAX_ITERATIONS):
+            provisional, _ = self._charge_with_ratios(
+                cold_k, ratios, enforce_water_limit=False, analyze_moisture=False
+            )
+            targets: list[float] = []
+            for process in provisional.processes:
+                if process.kind != "intercooling" or not process.heat_exchanger:
+                    continue
+                delta_t_air = process.inlet.temperature_k - process.outlet.temperature_k
+                duty = process.heat_exchanger.duty_j_per_kg_air
+                if delta_t_air <= 1e-9 or duty <= 0.0:
+                    raise ValueError("charging train recovers no usable heat")
+                # Q / DeltaT is the secant heat capacity of the real air path.
+                targets.append(duty / (WATER_CP_J_PER_KGK * delta_t_air))
+            scale = total_inventory / sum(targets)
+            projected = [target * scale for target in targets]
+            change = max(abs(new - old) for new, old in zip(projected, ratios))
+            ratios = projected
+            if change <= CHARGE_FIXED_POINT_TOLERANCE:
+                break
+            # Stagnation guard.  The update is a contraction in every case
+            # measured; if it stops contracting it will not converge, and the
+            # remaining iterations would only burn CoolProp calls.  The split
+            # is still an exactly conserved one, and the forward solve that
+            # follows validates the real physics, so this degrades accuracy
+            # rather than correctness.
+            if iteration >= 3 and change > CHARGE_FIXED_POINT_STAGNATION * previous_change:
+                break
+            previous_change = change
+
+        self._charge_seed = (cold_k, list(ratios))
+        return ratios
+
+    def _peak_minimizing_ratios(
+        self, cold_k: float, total_inventory: float
+    ) -> list[float]:
+        """Conserved charge split that minimizes the hottest coolant state.
+
+        Equalising the real branch water-temperature rises moves water from
+        cooler branches to hotter ones while preserving the exact inventory.
+        This is the split that best respects a low coolant-circuit pressure, and
+        it is deliberately never used on its own merits: it is only the far end
+        of the relief segment in :meth:`_charge_adiabatic`.
+        """
+        n = self.config.compressor_stages
+        ratios = [total_inventory / n] * n
+        best_ratios = list(ratios)
+        best_maximum = float("inf")
+        for _ in range(CHARGE_RELIEF_ITERATIONS):
+            _, provisional_store = self._charge_with_ratios(
+                cold_k, ratios, enforce_water_limit=False, analyze_moisture=False
+            )
+            maximum = provisional_store.maximum_water_temperature_reached_k
+            if maximum < best_maximum:
+                best_maximum = maximum
+                best_ratios = list(ratios)
+            rises = [
+                max(1e-6, temperature_k - cold_k)
+                for _, temperature_k, _ in provisional_store.charge_returns
+            ]
+            weighted_mean = sum(
+                ratio * rise for ratio, rise in zip(ratios, rises)
+            ) / total_inventory
+            projected = [
+                max(1e-6, ratio * rise / weighted_mean)
+                for ratio, rise in zip(ratios, rises)
+            ]
+            scale = total_inventory / sum(projected)
+            new_ratios = [ratio * scale for ratio in projected]
+            if max(abs(a - b) for a, b in zip(new_ratios, ratios)) <= 2e-6:
+                return new_ratios
+            ratios = new_ratios
+        return best_ratios
+
+    # ---------------------------------------------------------------- A-CAES discharge
+
+    def _heater_target(
+        self,
+        inlet,
+        turbine_outlet_pressure_pa: float,
+        protected_humidity_ratio: float,
+    ):
+        """Air state after the interheater that meets the local moisture limit."""
+        c = self.config
+        heater_pressure = inlet.pressure_pa * (1.0 - c.interheater_pressure_drop)
+        target_temperature_k = minimum_wet_expander_temperature_k(
+            turbine_outlet_pressure_pa,
+            protected_humidity_ratio,
+        )
+
+        # Start from an isenthalpic pressure drop. If no heat is needed, retain it.
+        base = state_ph(heater_pressure, inlet.enthalpy_j_per_kg, WORKING_FLUID)
+        if expand(
+            base, turbine_outlet_pressure_pa, c.expander_efficiency, WORKING_FLUID
+        ).outlet.temperature_k >= target_temperature_k:
+            return base
+
+        def outlet_at(heater_temperature_k: float) -> float:
+            return expand(
+                state_pt(heater_pressure, heater_temperature_k, WORKING_FLUID),
+                turbine_outlet_pressure_pa, c.expander_efficiency, WORKING_FLUID,
+            ).outlet.temperature_k
+
+        # Bracket the root adaptively: high stage pressure ratios combined with
+        # a high selected outlet limit can need heater temperatures far above
+        # the usual few hundred kelvin, so a fixed upper bound silently missed
+        # the root and surfaced later as an unrelated "infeasible" error.
+        low_t = base.temperature_k
+        high_t = max(base.temperature_k + 20.0, target_temperature_k + 400.0, 800.0)
+        for _ in range(20):
+            if outlet_at(high_t) >= target_temperature_k:
+                break
+            low_t = high_t
+            high_t = 2.0 * high_t
+        else:
+            raise ValueError(
+                "no pre-expansion temperature below "
+                f"{high_t:.0f} K keeps the expander outlet at the selected "
+                f"{target_temperature_k - 273.15:.1f} °C local moisture limit; "
+                "the stage pressure ratio is too large for one heating step"
+            )
+        for _ in range(55):
+            mid_t = 0.5 * (low_t + high_t)
+            if outlet_at(mid_t) < target_temperature_k:
+                low_t = mid_t
+            else:
+                high_t = mid_t
+            if high_t - low_t < 2e-5:
+                break
+        solved = state_pt(heater_pressure, 0.5 * (low_t + high_t), WORKING_FLUID)
+        return solved
+
+    def _discharge_requirements(
+        self,
+        protected_humidity_ratio: float,
+    ) -> tuple[_DischargeRequirement, ...]:
+        """Target duty and outlet pressure for each expansion stage.
+
+        These targets depend only on the pressure train and turbomachinery, not
+        on either tank temperature.  Computing them once avoids repeating the
+        expensive CoolProp root solve inside every thermal-design candidate -
+        tens of thousands of hits per solve.
+
+        The cache is PER INSTANCE, not an ``lru_cache`` on the bound method:
+        that keys on ``self`` and so pins every plant object it ever saw in a
+        module-level dictionary for the lifetime of the process.
+        """
+        cached = self._requirements_cache.get(protected_humidity_ratio)
+        if cached is not None:
+            return cached
+        computed = self._solve_discharge_requirements(protected_humidity_ratio)
+        self._requirements_cache[protected_humidity_ratio] = computed
+        return computed
+
+    def _solve_discharge_requirements(
+        self,
+        protected_humidity_ratio: float,
+    ) -> tuple[_DischargeRequirement, ...]:
+        c = self.config
+        current = state_pt(self._p_storage, c.ambient_temperature_k, WORKING_FLUID)
+        pressure_ratio = self._expansion_ratio()
+        requirements: list[_DischargeRequirement] = []
+        for stage in range(c.expander_stages):
+            heater_pressure = current.pressure_pa * (
+                1.0 - c.interheater_pressure_drop
+            )
+            turbine_pressure = self._p_ambient if stage == c.expander_stages - 1 else heater_pressure * pressure_ratio
+            target = self._heater_target(
+                current, turbine_pressure, protected_humidity_ratio
+            )
+            turbine = expand(
+                target, turbine_pressure, c.expander_efficiency, WORKING_FLUID
+            )
+            requirements.append(_DischargeRequirement(
+                turbine_pressure_pa=turbine_pressure,
+                duty_j_per_kg_air=max(
+                    0.0,
+                    target.enthalpy_j_per_kg - current.enthalpy_j_per_kg,
+                ),
+            ))
+            current = turbine.outlet
+        return tuple(requirements)
+
+    def _stage_levels(self, store: _ThermalStore) -> list[int]:
+        """Compatibility map: every stage draws from the one mixed hot store."""
+        del store
+        return [0] * self.config.expander_stages
+
+    def _stage_cascade_groups(self, store: _ThermalStore) -> list[int]:
+        """Assign contiguous expansion stages to discharge cascade groups.
+
+        Group zero is the first bleed and contains the highest-duty front of
+        the expansion train. Balancing cumulative minimum duty gives each
+        group a comparable turbine task while preserving physical stage order.
+        """
+        duties = [
+            requirement.duty_j_per_kg_air
+            for requirement in self._discharge_requirements(
+                store.protected_humidity_ratio
+            )
+        ]
+        return _balanced_partition(duties, self.config.coolant_cascade_groups)
+
+    def _level_supplies(self, store: _ThermalStore) -> list[float]:
+        """Direct hot-store supply used when the heat-user cascade is bypassed."""
+        return [store.hot_available_k] * self.config.expander_stages
+
+    def _discharge_at_supply(
+        self,
+        store: _ThermalStore,
+        supplies: list[float],
+        *,
+        enforce_coolant_freezing: bool = True,
+    ) -> tuple[float, _DischargeDesign | None]:
+        """Return minimum-duty water demand at ``supplies`` and the full train.
+
+        ``supplies`` is per stage: active LTHP cascades may assign several
+        stages to one post-user group temperature.
+
+        The minimum-duty construction is also the lower-bound seed for the
+        no-DH surplus-allocation solve. In that one use, an individual seed
+        branch may be colder than the coolant limit because conserved surplus
+        flow is added before a physical candidate is accepted. The final
+        :meth:`_discharge_with_ratios` call always enforces freezing.
+        """
+        c = self.config
+        current = state_pt(self._p_storage, c.ambient_temperature_k, WORKING_FLUID)
+        cycle = Cycle("discharging", current)
+        branches: list[tuple[float, float, float]] = []
+        required_total = 0.0
+
+        for supply_k, requirement in zip(
+            supplies,
+            self._discharge_requirements(store.protected_humidity_ratio),
+        ):
+            minimum_duty = requirement.duty_j_per_kg_air
+            turbine_pressure = requirement.turbine_pressure_pa
+            ratio, achievable = water_ratio_for_duty(
+                minimum_duty, current, supply_k, c.interheater_pressure_drop,
+                WORKING_FLUID, c.heat_exchanger_ntu, MAX_BRANCH_WATER_AIR_RATIO,
+            )
+            if minimum_duty > 0.0 and achievable < minimum_duty * (1.0 - 2e-6):
+                return float("inf"), None
+            heater = heat_air_with_water(
+                current, supply_k, ratio, c.interheater_pressure_drop,
+                WORKING_FLUID, c.heat_exchanger_ntu,
+                # A stage with zero moisture-safe duty legitimately gets an
+                # empty branch in the minimum-duty design.
+                allow_zero_flow=True,
+            )
+            if minimum_duty > 1e-8 and heater.heat_exchanger is None:
+                return float("inf"), None
+            cycle.processes.append(heater)
+            hx = heater.heat_exchanger
+            if hx is None:
+                branches.append((0.0, supply_k, 0.0))
+            else:
+                if (
+                    enforce_coolant_freezing
+                    and hx.water_outlet_temperature_k
+                    < c.coolant_minimum_temperature_k - TEMPERATURE_LIMIT_TOLERANCE_K
+                ):
+                    return float("inf"), None
+                branches.append((
+                    ratio,
+                    hx.water_outlet_temperature_k,
+                    hx.duty_j_per_kg_air,
+                ))
+            required_total += ratio
+
+            turbine = expand(
+                heater.outlet, turbine_pressure, c.expander_efficiency, WORKING_FLUID
+            )
+            cycle.processes.append(turbine)
+            current = turbine.outlet
+
+        if required_total <= 0.0:
+            return 0.0, None
+        returned_mean = sum(r * t for r, t, _ in branches) / required_total
+        # The reported supply is the hottest one any stage sees: it is what the
+        # upstream district-heating exchanger has to leave behind.
+        return required_total, _DischargeDesign(
+            cycle, tuple(branches), max(supplies), returned_mean
+        )
+
+    def _light_discharge_at_supply(
+        self,
+        store: _ThermalStore,
+        supplies: list[float],
+        *,
+        enforce_coolant_freezing: bool = True,
+    ) -> _LadderEvaluation | None:
+        """Evaluate an LTHP ladder without constructing a complete ``Cycle``.
+
+        The moisture-safe duty and outlet pressure are invariant, but the
+        inverse heat exchanger reaches that duty only to its numerical
+        tolerance.  Those tiny duty differences propagate through the next
+        turbine and therefore belong to the exact residual seen by the legacy
+        full-train solve.  This reduced path consequently advances the *real*
+        air state after every exchanger and turbine.  It skips only reporting
+        objects and the duplicate forward HX evaluation; the accepted root is
+        still materialized once by the complete model.
+        """
+
+        c = self.config
+        current = state_pt(self._p_storage, c.ambient_temperature_k, WORKING_FLUID)
+        branches: list[tuple[float, float, float]] = []
+        required_total = 0.0
+        for supply_k, requirement in zip(
+            supplies,
+            self._discharge_requirements(store.protected_humidity_ratio),
+        ):
+            minimum_duty = requirement.duty_j_per_kg_air
+            ratio, achievable = water_ratio_for_duty(
+                minimum_duty,
+                current,
+                supply_k,
+                c.interheater_pressure_drop,
+                WORKING_FLUID,
+                c.heat_exchanger_ntu,
+                MAX_BRANCH_WATER_AIR_RATIO,
+            )
+            if minimum_duty > 0.0 and achievable < minimum_duty * (1.0 - 2e-6):
+                return None
+            heater_pressure = current.pressure_pa * (1.0 - c.interheater_pressure_drop)
+            if ratio <= 0.0:
+                branches.append((0.0, supply_k, 0.0))
+                heater_outlet = state_ph(
+                    heater_pressure, current.enthalpy_j_per_kg, WORKING_FLUID
+                )
+            else:
+                water_outlet_k = supply_k - achievable / (
+                    ratio * WATER_CP_J_PER_KGK
+                )
+                if (
+                    enforce_coolant_freezing
+                    and water_outlet_k
+                    < c.coolant_minimum_temperature_k
+                    - TEMPERATURE_LIMIT_TOLERANCE_K
+                ):
+                    return None
+                branches.append((ratio, water_outlet_k, achievable))
+                heater_outlet = state_ph(
+                    heater_pressure,
+                    current.enthalpy_j_per_kg + achievable,
+                    WORKING_FLUID,
+                )
+            required_total += ratio
+            current = expand(
+                heater_outlet,
+                requirement.turbine_pressure_pa,
+                c.expander_efficiency,
+                WORKING_FLUID,
+            ).outlet
+
+        if required_total <= 0.0:
+            return None
+        returned_mean = sum(
+            ratio * temperature for ratio, temperature, _ in branches
+        ) / required_total
+        return _LadderEvaluation(
+            required_ratio=required_total,
+            returns=tuple(branches),
+            supplies=tuple(supplies),
+            returned_mean_k=returned_mean,
+        )
+
+    def _discharge_with_ratios(
+        self, store: _ThermalStore, ratios: list[float]
+    ) -> _DischargeDesign:
+        """Run the absorbing turbine train for an explicit conserved-water split.
+
+        With the user cascade bypassed, every stage draws from the one mixed
+        hot-store temperature and ``ratios`` is conserved globally.
+
+        A branch may legitimately carry NO water.  A stage whose moisture-safe
+        duty is already zero - the expansion stays above the anti-icing
+        envelope on its own - needs no reheat, and its exchanger degenerates
+        into the pressure drop it would impose anyway.  Rejecting a zero ratio
+        outright made every surplus-allocation candidate infeasible as soon as
+        one stage had no duty, because the candidates are built by adding the
+        surplus to ONE stage and leaving the others at their minimum.  The
+        plant then fell through to the bypass path and dumped the whole surplus
+        at E-303 - a large, silent loss caused purely by a guard disagreeing
+        with the candidate generator that feeds it.
+        """
+        c = self.config
+        if len(ratios) != c.expander_stages or any(ratio < 0.0 for ratio in ratios):
+            raise ValueError("interheater branch flows must be non-negative")
+        if sum(ratios) <= 0.0:
+            raise ValueError("the interheater train needs some coolant allocation")
+
+        current = state_pt(self._p_storage, c.ambient_temperature_k, WORKING_FLUID)
+        cycle = Cycle("discharging", current)
+        branches: list[tuple[float, float, float]] = []
+        supplies = self._level_supplies(store)
+        for supply_k, ratio, requirement in zip(
+            supplies,
+            ratios,
+            self._discharge_requirements(store.protected_humidity_ratio),
+        ):
+            minimum_duty = requirement.duty_j_per_kg_air
+            turbine_pressure = requirement.turbine_pressure_pa
+            heater = heat_air_with_water(
+                current,
+                supply_k,
+                ratio,
+                c.interheater_pressure_drop,
+                WORKING_FLUID,
+                c.heat_exchanger_ntu,
+                allow_zero_flow=True,
+            )
+            hx = heater.heat_exchanger
+            if hx is None or hx.duty_j_per_kg_air <= 0.0:
+                if minimum_duty > 0.0 or ratio > 0.0:
+                    raise ValueError("the hot tank cannot deliver useful turbine reheat")
+                # A dry branch on a stage that needs no heat: the exchanger is
+                # just its pressure drop, and it contributes nothing to the
+                # returns except the flow it does not carry.
+                cycle.processes.append(heater)
+                branches.append((0.0, supply_k, 0.0))
+                turbine = expand(
+                    heater.outlet,
+                    turbine_pressure,
+                    c.expander_efficiency,
+                    WORKING_FLUID,
+                )
+                if (
+                    turbine.outlet.temperature_k
+                    < minimum_wet_expander_temperature_k(
+                        turbine.outlet.pressure_pa,
+                        store.protected_humidity_ratio,
+                    )
+                    - TEMPERATURE_LIMIT_TOLERANCE_K
+                ):
+                    raise ValueError(
+                        "finite interheaters cannot reach the wet-expander "
+                        "anti-icing lower envelope"
+                    )
+                cycle.processes.append(turbine)
+                current = turbine.outlet
+                continue
+            if (
+                hx.water_outlet_temperature_k
+                < c.coolant_minimum_temperature_k - TEMPERATURE_LIMIT_TOLERANCE_K
+            ):
+                raise ValueError(
+                    "an interheater return is below the selected coolant "
+                    "freezing point"
+                )
+            cycle.processes.append(heater)
+            branches.append(
+                (ratio, hx.water_outlet_temperature_k, hx.duty_j_per_kg_air)
+            )
+
+            turbine = expand(
+                heater.outlet,
+                turbine_pressure,
+                c.expander_efficiency,
+                WORKING_FLUID,
+            )
+            local_minimum_k = minimum_wet_expander_temperature_k(
+                turbine.outlet.pressure_pa,
+                store.protected_humidity_ratio,
+            )
+            if (
+                turbine.outlet.temperature_k
+                < local_minimum_k - TEMPERATURE_LIMIT_TOLERANCE_K
+            ):
+                raise ValueError(
+                    "finite interheaters cannot reach the wet-expander "
+                    "anti-icing lower envelope"
+                )
+            cycle.processes.append(turbine)
+            current = turbine.outlet
+
+        total_ratio = sum(ratios)
+        returned_mean = sum(r * t for r, t, _ in branches) / total_ratio
+        return _DischargeDesign(
+            cycle,
+            tuple(branches),
+            max(supplies),
+            returned_mean,
+        )
+
+    def _discharge_absorbing(self, store: _ThermalStore) -> _DischargeDesign:
+        """Allocate the complete inventory to maximize turbine work.
+
+        First calculate the minimum branch flows that satisfy the wet-expander
+        anti-icing envelope at the mixed hot-store temperature.
+        The remaining conserved flow is then tested as additional conductance
+        at every possible stage, plus an even distribution.  The candidate
+        giving the greatest real multi-stage expansion work wins.  Thus branch
+        flows are chosen by the plant objective rather than by T-Q profile
+        matching.
+
+        The complete surplus is globally conserved because there is one hot
+        store. The level-shaped lists below are retained only as a one-element
+        compatibility representation.
+        """
+        supplies = self._level_supplies(store)
+        minimum_total, minimum_design = self._discharge_at_supply(
+            store,
+            supplies,
+            enforce_coolant_freezing=False,
+        )
+        if minimum_design is None or minimum_total > store.total_ratio + 2e-6:
+            raise ValueError(
+                "the conserved coolant inventory cannot provide the minimum "
+                "moisture-safe interheater duties"
+            )
+
+        minimum = [branch[0] for branch in minimum_design.returns]
+        assignment = self._stage_levels(store)
+        masses = (
+            [level.mass_ratio for level in store.levels]
+            if store.levels
+            else [store.total_ratio]
+        )
+        # One-store surplus, represented as a one-element list.
+        spare: list[float] = []
+        for index, mass in enumerate(masses):
+            drawn = sum(
+                ratio for ratio, level in zip(minimum, assignment) if level == index
+            )
+            if drawn > mass + 2e-6:
+                raise ValueError(
+                    "the mixed hot store cannot supply the moisture-safe duties"
+                )
+            spare.append(max(0.0, mass - drawn))
+
+        candidates: list[list[float]] = []
+        # Spread the store's spare evenly over all stages.
+        counts = [assignment.count(index) for index in range(len(masses))]
+        candidates.append([
+            ratio + (spare[level] / counts[level] if counts[level] else 0.0)
+            for ratio, level in zip(minimum, assignment)
+        ])
+        # ...or give the spare entirely to one stage.
+        for recipient, level in enumerate(assignment):
+            candidate = list(minimum)
+            candidate[recipient] += spare[level]
+            candidates.append(candidate)
+
+        feasible: list[_DischargeDesign] = []
+        for ratios in candidates:
+            try:
+                feasible.append(self._discharge_with_ratios(store, ratios))
+            except ValueError:
+                continue
+        if feasible:
+            return min(feasible, key=lambda design: design.cycle.work_j_per_kg)
+
+        # Last-resort physical dispatch.  When the conserved inventory holds
+        # more heat than the turbines can absorb (the wet-expander envelope or
+        # the turbine-inlet cap rejects every absorbing allocation), the
+        # turbines receive only their moisture-safe minimum duty and the
+        # unabsorbable water bypasses the interheaters straight into the cold
+        # return, so the existing E-303 ambient exchanger rejects the surplus.  No
+        # limit is relaxed: the plant simply uses the rejection path it
+        # already has instead of being declared infeasible.
+        minimum_total, fallback = self._discharge_at_supply(store, supplies)
+        if fallback is None or minimum_total > store.total_ratio + 2e-6:
+            raise ValueError(
+                "no conserved interheater-flow allocation satisfies the "
+                "wet-expander lower envelope and turbine-inlet limit, and the "
+                "minimum moisture-safe dispatch cannot absorb the surplus "
+                "either"
+            )
+        # Any unabsorbable spare bypasses at the one hot-store temperature.
+        bypassed = tuple(
+            (spare[index], store.levels[index].temperature_available_k
+             if store.levels else store.hot_available_k, 0.0)
+            for index in range(len(masses))
+            if spare[index] > 0.0
+        )
+        returns = fallback.returns + bypassed
+        returned_mean = sum(
+            ratio * temperature for ratio, temperature, _ in returns
+        ) / store.total_ratio
+        return _DischargeDesign(
+            fallback.cycle,
+            returns,
+            max(supplies),
+            returned_mean,
+        )
+
+    def _discharge_adiabatic(
+        self, store: _ThermalStore, returned_mean_k: float
+    ) -> _DischargeDesign:
+        """Close the discharge water side for the selected design.
+
+        Minimum-duty design: the user cascade fixes one supply per stage group.
+        Absorption design: the user is bypassed and conserved inventory is allocated for
+        maximum real expansion work.  In both, every kilogram passes through
+        exactly one interheater core and the outer root closes the coolant loop.
+        """
+        if self._absorbs_surplus():
+            return self._discharge_absorbing(store)
+
+        required, evaluation = self._discharge_adiabatic_unchecked(
+            store, returned_mean_k
+        )
+        if evaluation is None:
+            raise ValueError(
+                "finite interheaters cannot reach the selected expander outlet temperature"
+            )
+        if abs(required - store.total_ratio) > MAX_WATER_MASS_CLOSURE_ERROR:
+            raise ValueError("interheater branch flows do not close the stored-water mass balance")
+        design = self._materialize_ladder(store, evaluation)
+        full_required = sum(ratio for ratio, _, _ in design.returns)
+        if abs(full_required - store.total_ratio) > MAX_WATER_MASS_CLOSURE_ERROR:
+            raise ValueError(
+                "materialized interheater flows do not close the stored-water mass balance"
+            )
+        returned_mean = sum(r * t for r, t, _ in design.returns) / store.total_ratio
+        return replace(design, returned_mean_k=returned_mean)
+
+    def _discharge_adiabatic_unchecked(
+        self, store: _ThermalStore, returned_mean_k: float
+    ) -> tuple[float, _LadderEvaluation | None]:
+        """Minimum-duty discharge on the temperature ladder, mass balance UNCHECKED.
+
+        Split out because the coolant-loop root has to evaluate exactly the
+        construction it is going to accept.  Evaluating the residual on one
+        averaged supply and then assembling the design on the ladder closes a
+        plant that was never solved.
+        """
+        required, evaluation, _ = self._solve_ladder(store, returned_mean_k)
+        return required, evaluation
+
+    def _materialize_ladder(
+        self, store: _ThermalStore, evaluation: _LadderEvaluation
+    ) -> _DischargeDesign:
+        """Build the complete air train once from the accepted inverse-HX ratios.
+
+        Re-running :func:`water_ratio_for_duty` here would solve the same
+        inverse once more for reporting.  The accepted evaluation already owns
+        those exact ratios, so only the forward exchangers and the ``Cycle``
+        value objects are materialized.
+        """
+
+        c = self.config
+        current = state_pt(self._p_storage, c.ambient_temperature_k, WORKING_FLUID)
+        cycle = Cycle("discharging", current)
+        branches: list[tuple[float, float, float]] = []
+        for supply_k, light_branch, requirement in zip(
+            evaluation.supplies,
+            evaluation.returns,
+            self._discharge_requirements(store.protected_humidity_ratio),
+        ):
+            ratio = light_branch[0]
+            heater = heat_air_with_water(
+                current,
+                supply_k,
+                ratio,
+                c.interheater_pressure_drop,
+                WORKING_FLUID,
+                c.heat_exchanger_ntu,
+                allow_zero_flow=True,
+            )
+            hx = heater.heat_exchanger
+            if requirement.duty_j_per_kg_air > 1e-8 and hx is None:
+                raise ValueError(
+                    "the accepted ladder cannot be materialized by the complete "
+                    "interheater model"
+                )
+            if hx is None:
+                branches.append((0.0, supply_k, 0.0))
+            else:
+                if (
+                    hx.water_outlet_temperature_k
+                    < c.coolant_minimum_temperature_k
+                    - TEMPERATURE_LIMIT_TOLERANCE_K
+                ):
+                    raise ValueError(
+                        "the materialized interheater return violates the coolant "
+                        "freezing limit"
+                    )
+                branches.append((
+                    ratio,
+                    hx.water_outlet_temperature_k,
+                    hx.duty_j_per_kg_air,
+                ))
+            cycle.processes.append(heater)
+            turbine = expand(
+                heater.outlet,
+                requirement.turbine_pressure_pa,
+                c.expander_efficiency,
+                WORKING_FLUID,
+            )
+            cycle.processes.append(turbine)
+            current = turbine.outlet
+
+        returned_mean = sum(
+            ratio * temperature for ratio, temperature, _ in branches
+        ) / evaluation.required_ratio
+        return _DischargeDesign(
+            cycle=cycle,
+            returns=tuple(branches),
+            supply_k=max(evaluation.supplies),
+            returned_mean_k=returned_mean,
+            stage_supplies=evaluation.supplies,
+        )
+
+    def _solve_multilevel_ladder_legacy(
+        self, store: _ThermalStore, returned_mean_k: float
+    ) -> tuple[float, _LadderEvaluation | None, list[float]]:
+        """Pick the bleed temperature of every expansion stage, then build the train.
+
+        TURBINES FIRST.  Each stage's bleed carries exactly the flow its own
+        moisture-safe duty needs at the temperature the trunk offers it, and
+        what the turbines do not need stays in the trunk for the user.  So the
+        only thing to choose here is the SHAPE of the ladder, and the first law
+        of the interheater bank fixes its level.  Every kilogram of the
+        inventory passes exactly one interheater, entering at its own bleed
+        temperature and leaving at that exchanger's return, so
+
+            sum(r_i t_i) - sum(r_i t_out,i) = Q_total
+            sum(r_i t_out,i)                = R T_return
+        =>  flow-weighted mean bleed temperature = T_return + Q_total / (R cp)
+
+        which is exactly the single-tank supply temperature the mixed-store
+        model has always used.  With one level every stage draws the same
+        temperature, that mean IS the answer, and this method costs one train -
+        the same as before.  With more levels the mean is held while the spread
+        follows the levels: stage ``i`` is bled between the temperature its
+        level holds and the coldest the heat user can accept,
+
+            t_i(theta) = floor_i + theta (ceiling_i - floor_i),
+
+        and ``theta`` is refined until the flow-weighted mean lands on target.
+        The floor is the user's cold-end terminal limit, because no exchanger in
+        the cascade can push the trunk below it; a level already colder than
+        that has nothing to sell and simply hands its own temperature over.
+        """
+        c = self.config
+        stages = c.expander_stages
+        target_k = self._closed_loop_supply_temperature(store, returned_mean_k)
+        ceilings = self._level_supplies(store)
+        floor_k = c.heat_user_return_temperature_k
+        # The user exchangers are the ONLY thing that cools the trunk, so no
+        # bleed can be colder than the user's cold-end terminal limit, and
+        # therefore neither can their mean.  Checking it here reports the real
+        # cause once, instead of letting every interheater in the train fail
+        # separately with a message about its own duty.
+        if target_k < floor_k - 1e-9:
+            raise HeatOfftakeTemperatureError(
+                "the heat user cannot cool the plant coolant to the temperature "
+                f"the turbines need ({target_k - 273.15:.2f} °C): its return is "
+                f"{c.heat_user_return_temperature_c:.2f} °C and the required "
+                "finite heat-user exchanger cannot reach that limiting state, so the "
+                "lowest physically reachable plant outlet is "
+                f"{floor_k - 273.15:.2f} °C. Increasing the user's mass flow "
+                "cannot overcome this; use a colder return or a lower supply "
+                "temperature."
+            )
+        if len(store.levels) <= 1:
+            supplies = [target_k] * stages
+            evaluation = self._light_discharge_at_supply(store, supplies)
+            required = (
+                evaluation.required_ratio if evaluation is not None else float("inf")
+            )
+            return required, evaluation, supplies
+
+        floors = [min(ceiling, floor_k) for ceiling in ceilings]
+        if all(abs(top - low) < 1e-12 for top, low in zip(ceilings, floors)):
+            evaluation = self._light_discharge_at_supply(store, list(ceilings))
+            required = (
+                evaluation.required_ratio if evaluation is not None else float("inf")
+            )
+            return required, evaluation, list(ceilings)
+
+        def evaluate(
+            theta: float,
+        ) -> tuple[float, _LadderEvaluation | None, list[float], float]:
+            supplies = [
+                low + theta * (top - low) for low, top in zip(floors, ceilings)
+            ]
+            evaluation = self._light_discharge_at_supply(store, supplies)
+            if evaluation is None or evaluation.required_ratio <= 0.0:
+                return float("inf"), None, supplies, float("nan")
+            mean_k = sum(
+                ratio * supply_k
+                for (ratio, _, _), supply_k in zip(evaluation.returns, supplies)
+            ) / evaluation.required_ratio
+            return evaluation.required_ratio, evaluation, supplies, mean_k
+
+        # theta = 1 is the plain ladder: every stage takes its level's full
+        # temperature.  It is the hottest and therefore the thriftiest in flow,
+        # so if the interheaters cannot work here they cannot work at all.
+        hottest = evaluate(1.0)
+        if hottest[1] is None:
+            return float("inf"), None, list(ceilings)
+        if hottest[3] <= target_k:
+            return hottest[:3]
+
+        coldest = evaluate(0.0)
+        low_theta = 0.0
+        if coldest[1] is None:
+            # Find the coldest ladder the finite exchangers still close on.
+            infeasible, feasible = 0.0, 1.0
+            for _ in range(LADDER_FEASIBILITY_BISECTIONS):
+                middle = 0.5 * (infeasible + feasible)
+                probe = evaluate(middle)
+                if probe[1] is None:
+                    infeasible = middle
+                else:
+                    feasible, coldest = middle, probe
+            low_theta = feasible
+        if coldest[1] is None or coldest[3] >= target_k:
+            return coldest[:3] if coldest[1] is not None else hottest[:3]
+
+        # Bracketed and continuous: refine by Illinois on the weighted mean.
+        left, right = low_theta, 1.0
+        f_left = coldest[3] - target_k
+        f_right = hottest[3] - target_k
+        best = coldest
+        for _ in range(LADDER_REFINEMENTS):
+            denominator = f_right - f_left
+            theta = (
+                0.5 * (left + right)
+                if abs(denominator) < 1e-30
+                else (left * f_right - right * f_left) / denominator
+            )
+            if not left < theta < right:
+                theta = 0.5 * (left + right)
+            probe = evaluate(theta)
+            if probe[1] is None:
+                left = theta
+                f_right *= 0.5
+                continue
+            best = probe
+            residual = probe[3] - target_k
+            if abs(residual) <= LADDER_MEAN_TOLERANCE_K:
+                break
+            if residual < 0.0:
+                left, f_left = theta, residual
+                f_right *= 0.5
+            else:
+                right, f_right = theta, residual
+                f_left *= 0.5
+        return best[:3]
+
+    def _solve_ladder(
+        self, store: _ThermalStore, returned_mean_k: float
+    ) -> tuple[float, _LadderEvaluation | None, list[float]]:
+        """Solve the equal-drop single-store cascade for exact coolant mass.
+
+        At group ``g`` the complete remaining trunk crosses one user exchanger,
+        cools by the common increment ``delta_t``, and only then is that group's
+        coolant bled to its interheaters. For ``B`` groups::
+
+            T_supply,g = T_hot - (g + 1) delta_t
+
+        The stage inverse-HX solves make required coolant flow increase as the
+        common drop grows. Bisection finds the ``delta_t`` for which the group
+        bleeds consume the conserved inventory. The first user exchanger sees
+        the complete inventory; later ones see only the residual after earlier
+        bleeds.
+
+        One and many groups use the same conserved-mass root. The second
+        argument remains only for private API compatibility; branch-selective
+        recovery means a guessed mixed return is no longer a state variable.
+        """
+        del returned_mean_k
+        c = self.config
+        groups = self._stage_cascade_groups(store)
+        count = c.coolant_cascade_groups
+        hot_k = store.hot_available_k
+        floor_k = c.heat_user_return_temperature_k
+        if hot_k <= floor_k:
+            raise HeatOfftakeTemperatureError(
+                "the mixed hot store is not warmer than the heat-user return"
+            )
+
+        def evaluate(
+            delta_t: float,
+        ) -> tuple[float, _LadderEvaluation | None, list[float]]:
+            group_supplies = [
+                hot_k - (index + 1) * delta_t for index in range(count)
+            ]
+            supplies = [group_supplies[index] for index in groups]
+            evaluation = self._light_discharge_at_supply(store, supplies)
+            required = (
+                evaluation.required_ratio if evaluation is not None else float("inf")
+            )
+            return required, evaluation, supplies
+
+        maximum_drop = (hot_k - floor_k) / count
+        hottest = evaluate(0.0)
+        if hottest[1] is None or hottest[0] > store.total_ratio + 2e-6:
+            return hottest
+
+        # Warm-start at the last accepted normalized drop.  Neighbouring cold-
+        # loop and inventory candidates move this root only slightly.
+        seed = self._cascade_drop_fraction_seed
+        if seed is not None and 0.0 < seed < 1.0:
+            seeded = evaluate(seed * maximum_drop)
+        else:
+            seeded = None
+        if (
+            seeded is not None
+            and seeded[1] is not None
+            and abs(seeded[0] - store.total_ratio)
+            <= WATER_MASS_CLOSURE_SEARCH_ERROR
+        ):
+            return seeded
+
+        # Smooth continuation fast path. The mass residual is monotone in the
+        # common temperature drop, so a secant predictor from the previous
+        # normalized root normally converges in 2-4 new trains. The global
+        # safeguarded bracket below remains the proof path near feasibility
+        # boundaries or topology changes.
+        if seeded is not None and seeded[1] is not None:
+            x0 = seed * maximum_drop
+            p0 = seeded
+            mass_residual0 = p0[0] - store.total_ratio
+            f0 = 1.0 / p0[0] - 1.0 / store.total_ratio
+            direction = 1.0 if mass_residual0 < 0.0 else -1.0
+            x1 = min(
+                maximum_drop,
+                max(0.0, x0 + direction * 0.002 * maximum_drop),
+            )
+            p1 = evaluate(x1) if abs(x1 - x0) > 1e-15 else None
+            if p1 is not None and p1[1] is not None:
+                f1 = 1.0 / p1[0] - 1.0 / store.total_ratio
+                for _ in range(7):
+                    if abs(p1[0] - store.total_ratio) <= WATER_MASS_CLOSURE_SEARCH_ERROR:
+                        self._cascade_drop_fraction_seed = x1 / maximum_drop
+                        return p1
+                    denominator = f1 - f0
+                    if abs(denominator) < 1e-30:
+                        break
+                    x2 = x1 - f1 * (x1 - x0) / denominator
+                    if not 0.0 < x2 < maximum_drop:
+                        break
+                    p2 = evaluate(x2)
+                    if p2[1] is None:
+                        break
+                    x0, p0, f0 = x1, p1, f1
+                    x1, p1 = x2, p2
+                    f1 = 1.0 / p1[0] - 1.0 / store.total_ratio
+
+        left_x, left_probe = 0.0, hottest
+        right_x, right_probe = maximum_drop, evaluate(maximum_drop)
+        if seeded is not None and seeded[1] is not None:
+            seed_x = seed * maximum_drop
+            if seeded[0] < store.total_ratio:
+                left_x, left_probe = seed_x, seeded
+            else:
+                right_x, right_probe = seed_x, seeded
+
+        if (
+            right_probe[1] is not None
+            and right_probe[0]
+            < store.total_ratio - MAX_WATER_MASS_CLOSURE_ERROR
+        ):
+            raise HeatOfftakeTemperatureError(
+                "the conserved coolant inventory is larger than the minimum-duty "
+                "interheater bleeds can consume before the final user exchanger "
+                "reaches the heat-user return temperature"
+            )
+
+        # An infeasible cold endpoint has no finite residual.  Move toward the
+        # feasible side only until a finite over-inventory point brackets the
+        # mass root; this work is needed only near an HX feasibility boundary.
+        if right_probe[1] is None:
+            for _ in range(CASCADE_FEASIBILITY_BISECTIONS):
+                middle_x = 0.5 * (left_x + right_x)
+                middle_probe = evaluate(middle_x)
+                if middle_probe[1] is None:
+                    right_x = middle_x
+                elif middle_probe[0] >= store.total_ratio:
+                    right_x, right_probe = middle_x, middle_probe
+                    break
+                else:
+                    left_x, left_probe = middle_x, middle_probe
+            else:
+                return left_probe
+
+        # Inverse mass is almost affine in temperature driving force; refining
+        # that transformed residual avoids the long false-position tail of
+        # ``required_mass - inventory`` near cold endpoint pinches.
+        f_left = 1.0 / left_probe[0] - 1.0 / store.total_ratio
+        f_right = 1.0 / right_probe[0] - 1.0 / store.total_ratio
+        best = left_probe
+        for _ in range(CASCADE_ROOT_REFINEMENTS):
+            denominator = f_right - f_left
+            trial_x = (
+                0.5 * (left_x + right_x)
+                if abs(denominator) < 1e-30
+                else (left_x * f_right - right_x * f_left) / denominator
+            )
+            if not left_x < trial_x < right_x:
+                trial_x = 0.5 * (left_x + right_x)
+            probe = evaluate(trial_x)
+            if probe[1] is None:
+                right_x = trial_x
+                continue
+            residual = probe[0] - store.total_ratio
+            if abs(residual) <= WATER_MASS_CLOSURE_SEARCH_ERROR:
+                self._cascade_drop_fraction_seed = trial_x / maximum_drop
+                return probe
+            if residual < 0.0:
+                left_x, left_probe, f_left = (
+                    trial_x,
+                    probe,
+                    1.0 / probe[0] - 1.0 / store.total_ratio,
+                )
+                f_right *= 0.5
+                best = probe
+            else:
+                right_x, right_probe, f_right = (
+                    trial_x,
+                    probe,
+                    1.0 / probe[0] - 1.0 / store.total_ratio,
+                )
+                f_left *= 0.5
+
+        self._cascade_drop_fraction_seed = left_x / maximum_drop
+        return best
+
+    def _build_multilevel_cascade_legacy(
+        self,
+        store: _ThermalStore,
+        supplies: list[float],
+        design: _DischargeDesign,
+    ) -> tuple[_CascadeStation, ...]:
+        """Walk the trunk down in temperature and cut a user exchanger in every gap.
+
+        Two kinds of event happen on the way down, and sorting them by
+        temperature is the whole algorithm:
+
+        * a storage LEVEL joins the trunk when the trunk reaches its
+          temperature.  Joining at matching temperature is free - this is the
+          reason the cascade exists rather than one mixed tank, and it is why
+          the levels never need their masses matched to their stages;
+        * an expansion stage BLEEDS its flow off at the temperature it was sized
+          for, and the trunk continues thinner.
+
+        Between two consecutive events the trunk is a single stream at a single
+        flow, and cooling it is a user exchanger.  Nothing else in the plant can
+        cool it, so the trunk can never go below the user's cold-end terminal
+        limit; a level colder than that must therefore find the trunk already
+        empty, or it would have to mix into warmer water and lose the grade the
+        levels exist to preserve.  That is checked, not assumed.
+        """
+        levels = store.levels or (
+            _ThermalLevel(
+                store.total_ratio,
+                store.hot_before_loss_k,
+                store.hot_available_k,
+                store.charge_returns,
+            ),
+        )
+        c = self.config
+        floor_k = (
+            c.heat_user_return_temperature_k
+            if c.heat_offtake is HeatOfftake.HEAT_USER
+            else -float("inf")
+        )
+        # Injections before bleeds at the same temperature, so a stage drawing
+        # exactly at a level's temperature can be served by that level.
+        events: list[tuple[float, int, float]] = [
+            (level.temperature_available_k, 0, level.mass_ratio) for level in levels
+        ]
+        events += [
+            (supply_k, 1, -ratio)
+            for supply_k, (ratio, _, _) in zip(supplies, design.returns)
+            if ratio > 0.0
+        ]
+        events.sort(key=lambda event: (-event[0], event[1]))
+
+        tolerance = MAX_WATER_MASS_CLOSURE_ERROR
+        stations: list[_CascadeStation] = []
+        mass = 0.0
+        trunk_k = events[0][0]
+        for temperature_k, kind, amount in events:
+            if mass <= tolerance:
+                # Nothing in the trunk: it simply adopts whatever arrives next.
+                trunk_k = temperature_k
+            elif temperature_k < trunk_k - 1e-12:
+                if temperature_k < floor_k - 1e-9:
+                    raise ValueError(
+                        f"thermal level {temperature_k - 273.15:.1f} °C is colder "
+                        "than the heat user's cold-end terminal limit "
+                        f"({floor_k - 273.15:.1f} °C) while water is still in the "
+                        "cascade: no exchanger can take the trunk down to meet it, "
+                        "so it could only join by mixing into warmer water. Use a "
+                        "colder user return, fewer thermal levels, or accept the "
+                        "single mixed store"
+                    )
+                stations.append(_CascadeStation(mass, trunk_k, temperature_k))
+                trunk_k = temperature_k
+            if kind == 0:
+                mass += amount
+                continue
+            if -amount > mass + tolerance:
+                raise ValueError(
+                    "the cascade trunk runs dry: the stages above "
+                    f"{temperature_k - 273.15:.1f} °C draw more water than the "
+                    "levels feeding them hold"
+                )
+            mass += amount
+        return tuple(stations)
+
+    def _build_cascade(
+        self,
+        store: _ThermalStore,
+        supplies: list[float],
+        design: _DischargeDesign,
+    ) -> tuple[_CascadeStation, ...]:
+        """Build exactly one user HX before each interheater-group bleed.
+
+        All coolant starts in one hot trunk. Station zero sees the complete
+        inventory; after it, group zero bleeds off. The residual crosses station
+        one, group one bleeds off, and so on. The final station is followed by
+        the final bleed, so no exchanger is drawn with zero downstream flow.
+        """
+        groups = self._stage_cascade_groups(store)
+        count = self.config.coolant_cascade_groups
+        group_flows = [0.0] * count
+        group_supplies: list[float | None] = [None] * count
+        for group, supply_k, branch in zip(groups, supplies, design.returns):
+            group_flows[group] += branch[0]
+            previous = group_supplies[group]
+            if previous is not None and abs(previous - supply_k) > 1e-7:
+                raise ValueError(
+                    "stages assigned to one cascade group have inconsistent "
+                    "coolant supply temperatures"
+                )
+            group_supplies[group] = supply_k
+
+        if any(flow <= 0.0 for flow in group_flows):
+            raise ValueError(
+                "every coolant cascade group must own a non-empty interheater bleed"
+            )
+
+        stations: list[_CascadeStation] = []
+        inlet_k = store.hot_available_k
+        for index in range(count):
+            outlet_k = group_supplies[index]
+            assert outlet_k is not None
+            trunk_flow = sum(group_flows[index:])
+            if outlet_k > inlet_k + 1e-9:
+                raise ValueError("coolant cascade temperature rises toward a later bleed")
+            stations.append(_CascadeStation(trunk_flow, inlet_k, outlet_k))
+            inlet_k = outlet_k
+
+        if abs(sum(group_flows) - store.total_ratio) > MAX_WATER_MASS_CLOSURE_ERROR:
+            raise ValueError("coolant cascade bleeds do not consume the hot-store flow")
+        return tuple(stations)
+
+    def _closed_loop_supply_temperature(
+        self, store: _ThermalStore, returned_mean_k: float
+    ) -> float:
+        """Common post-tap temperature required by the selected discharge design.
+
+        Minimum-duty design: the lowest `T_x` containing exactly the turbine
+        heat demand, hence maximum surplus for the heat user, in one shot from
+        the first law against the mixed return the loop is being closed on.
+        Absorption design: there is no upstream exchanger, so the complete
+        hot-tank stream reaches the interheaters at `T_hot`.  The branch-flow
+        closure then decides how much of that available heat the finite-NTU
+        exchangers can transfer while conserving the complete coolant inventory.
+        """
+        if self._absorbs_surplus():
+            if store.hot_available_k <= returned_mean_k:
+                raise ValueError(
+                    "the hot tank is not warmer than the mixed coolant return, "
+                    "so no surplus heat is available for turbine reheat"
+                )
+            return store.hot_available_k
+
+        total_duty = sum(
+            item.duty_j_per_kg_air
+            for item in self._discharge_requirements(
+                store.protected_humidity_ratio
+            )
+        )
+        supply_k = returned_mean_k + total_duty / (
+            store.total_ratio * WATER_CP_J_PER_KGK
+        )
+        if supply_k >= store.hot_available_k:
+            raise ValueError(
+                "hot tank cannot supply all interheater duties required by the selected "
+                "expander outlet temperature"
+            )
+        return supply_k
+
+    def _build_offtake_taps(
+        self, store: _ThermalStore, discharge: _DischargeDesign
+    ) -> tuple[OfftakeTap, ...]:
+        """Size/check the serial heat-user HXs with one finite NTU class.
+
+        The user flow follows from its requested supply/return span and the
+        cascade duty. At each counterflow station the required effectiveness
+        ``Q/[Cmin (Th,in-Tc,in)]`` must not exceed the effectiveness available
+        from ``heat_user_exchanger_ntu`` and the local capacity ratio. This
+        replaces the former endpoint-approach surrogate with the same NTU
+        discipline used by every other exchanger in the model.
+        """
+        c = self.config
+        stations = [
+            station for station in discharge.stations
+            if station.duty_j_per_kg_air > 0.0
+        ]
+        hottest_available_k = store.hot_available_k
+        if c.heat_user_supply_temperature_k >= hottest_available_k - 1e-9:
+            raise HeatOfftakeTemperatureError(
+                "the mixed hot store cannot deliver the requested heat-user supply "
+                f"temperature ({c.heat_user_supply_temperature_c:.2f} °C): "
+                f"the hottest plant coolant is only "
+                f"{hottest_available_k - 273.15:.2f} °C"
+            )
+        if not stations:
+            raise HeatOfftakeTemperatureError(
+                "the turbines already need every kelvin the store holds, so the "
+                "cascade has no gap left to put a user exchanger in: the trunk "
+                f"leaves the store at {hottest_available_k - 273.15:.2f} °C and "
+                f"is bled at {discharge.supply_k - 273.15:.2f} °C. Lower the "
+                "expander stage count, raise the storage pressure, or accept "
+                "electricity only."
+            )
+
+        total_duty = sum(station.duty_j_per_kg_air for station in stations)
+        # (17): the user side is a slave. Its flow is whatever absorbs the duty
+        # across the span its operator fixed; it is never a free variable here.
+        user_water = total_duty / (
+            WATER_CP_J_PER_KGK
+            * (c.heat_user_supply_temperature_k - c.heat_user_return_temperature_k)
+        )
+        taps: list[OfftakeTap] = []
+        user_inlet_k = c.heat_user_return_temperature_k
+        for station in reversed(stations):     # coldest station meets the return
+            user_outlet_k = user_inlet_k + station.duty_j_per_kg_air / (
+                user_water * WATER_CP_J_PER_KGK
+            )
+            hot_capacity = station.ratio * WATER_CP_J_PER_KGK
+            user_capacity = user_water * WATER_CP_J_PER_KGK
+            c_min = min(hot_capacity, user_capacity)
+            c_max = max(hot_capacity, user_capacity)
+            q_max = c_min * (station.inlet_k - user_inlet_k)
+            if q_max <= 0.0:
+                raise HeatOfftakeTemperatureError(
+                    "a heat-user station has no positive inlet temperature "
+                    "driving force"
+                )
+            required_effectiveness = station.duty_j_per_kg_air / q_max
+            available_effectiveness = counterflow_effectiveness(
+                c.heat_user_exchanger_ntu, c_min / c_max
+            )
+            if required_effectiveness > available_effectiveness + 2e-6:
+                raise HeatOfftakeTemperatureError(
+                    "the heat-user exchanger class is too small at the station "
+                    f"between {station.inlet_k - 273.15:.1f} and "
+                    f"{station.outlet_k - 273.15:.1f} °C: required "
+                    f"effectiveness={required_effectiveness:.4f}, available="
+                    f"{available_effectiveness:.4f} at NTU="
+                    f"{c.heat_user_exchanger_ntu:g}"
+                )
+            taps.append(OfftakeTap(
+                station_index=0,               # renumbered hottest-first below
+                plant_inlet_temperature_k=station.inlet_k,
+                plant_outlet_temperature_k=station.outlet_k,
+                plant_water_per_kg_air=station.ratio,
+                user_inlet_temperature_k=user_inlet_k,
+                user_outlet_temperature_k=user_outlet_k,
+                user_water_per_kg_air=user_water,
+                heat_j_per_kg_air=station.duty_j_per_kg_air,
+                required_effectiveness=required_effectiveness,
+                available_effectiveness=available_effectiveness,
+            ))
+            user_inlet_k = user_outlet_k
+        taps.reverse()
+        return tuple(
+            replace(tap, station_index=index) for index, tap in enumerate(taps)
+        )
+
+    def _simulate_adiabatic(
+        self, cold_k: float, total_inventory: float
+    ) -> PlantResult:
+        """One complete cycle for a trial cold-tank temperature."""
+        charging, store = self._charge_adiabatic(cold_k, total_inventory)
+        discharge = self._discharge_adiabatic(store, cold_k)
+        return self._assemble_adiabatic(charging, store, discharge)
+
+    def _assemble_adiabatic(
+        self,
+        charging: Cycle,
+        store: _ThermalStore,
+        discharge: _DischargeDesign,
+    ) -> PlantResult:
+        """Build the result from an already-solved charge/discharge pair.
+
+        The coolant-loop root acceptance reuses this directly on the cycle its
+        residual evaluation just computed, instead of paying for a second
+        identical solve.
+
+        The air train scavenges no ambient heat directly: every joule delivered
+        to an interheater comes from the coolant. E-303 can nevertheless add
+        zero-dead-state-exergy ambient heat to a selected cold return subgroup;
+        that real external energy is reported on the result rather than hidden.
+
+        The user-side cascade is cut HERE, and only here, because a station is
+        only meaningful on a design whose branch flows already sum to the
+        inventory: everything upstream of this point is a trial iterate whose
+        trunk deliberately does not balance.
+        """
+        if self._dispatches_heat_to_user() and not discharge.stations:
+            discharge = replace(
+                discharge,
+                stations=self._build_cascade(
+                    store, list(discharge.stage_supplies), discharge
+                ),
+            )
         charging = self._annotate_exergy(charging)
-        discharging = self._annotate_exergy(discharging)
-        thermal_store, exergy = self._summarize(charging, discharging, store, return_temperatures)
-        selected_ratio = None
-        if store and self.config.compressor_stages:
-            selected_ratio = store[0] / self.config.compressor_stages
-        return PlantResult(
+        discharging = self._annotate_exergy(discharge.cycle)
+        thermal, exergy, district = self._summarize_adiabatic(charging, discharging, store, discharge)
+        # The validated charge train already ran the moisture analysis once;
+        # its summary is reused, not recomputed.
+        assert store.moisture is not None
+        result = PlantResult(
             mode=self.config.mode.value,
             charging=charging,
             discharging=discharging,
-            thermal_store=thermal_store,
+            thermal_store=thermal,
             exergy=exergy,
-            selected_water_air_mass_ratio=selected_ratio,
-            external_heat_input_j_per_kg=external_heat,
+            heat_offtake=district,
+            external_heat_input_j_per_kg=(
+                thermal.cold_return_heat_absorbed_from_ambient_j_per_kg_air
+            ),
+            moisture=store.moisture,
         )
+        return result
 
-    def _charge(self, finite_water_ratio: float | None) -> tuple[Cycle, list[tuple[float, float, float]]]:
+    # ---------------------------------------------------------------- D-CAES
+
+    def _safe_diabatic_pressure_reduction(
+        self,
+        inlet,
+        outlet_pressure_pa: float,
+        protected_humidity_ratio: float,
+    ) -> tuple[Process, ...]:
+        """Take maximum safe turbine work, then throttle the remaining pressure.
+
+        A complete turbine expansion is used whenever its outlet stays above
+        the wet-rated anti-icing envelope: 10 degC in the permitted liquid
+        region or local frost point plus 10 K in the dry sub-zero region.
+        Otherwise the
+        turbine stops at the lowest safe intermediate pressure and an
+        isenthalpic valve completes the stage. If even an infinitesimal turbine
+        drop starts below the protected boundary, the complete stage is
+        throttled.
+        """
+
         c = self.config
-        current = state_pt(self._p_ambient, c.ambient_temperature_k, c.fluid)
-        cycle = Cycle("charging", current)
-        ratio = self._compression_ratio()
-        water_returns: list[tuple[float, float, float]] = []
 
+        def safe_margin(pressure_pa: float) -> float:
+            candidate = expand(
+                inlet, pressure_pa, c.expander_efficiency, WORKING_FLUID
+            )
+            return (
+                candidate.outlet.temperature_k
+                - minimum_wet_expander_temperature_k(
+                    pressure_pa, protected_humidity_ratio
+                )
+            )
+
+        full = expand(
+            inlet, outlet_pressure_pa, c.expander_efficiency, WORKING_FLUID
+        )
+        if (
+            full.outlet.temperature_k
+            >= minimum_wet_expander_temperature_k(
+                outlet_pressure_pa, protected_humidity_ratio
+            )
+            - TEMPERATURE_LIMIT_TOLERANCE_K
+        ):
+            return (full,)
+
+        near_inlet_pressure = inlet.pressure_pa * (1.0 - 1e-9)
+        if safe_margin(near_inlet_pressure) <= 0.0:
+            valve = throttle(inlet, outlet_pressure_pa, WORKING_FLUID)
+            if (
+                valve.outlet.temperature_k
+                < wet_expander_hard_floor_temperature_k(
+                    outlet_pressure_pa, protected_humidity_ratio
+                )
+                - TEMPERATURE_LIMIT_TOLERANCE_K
+            ):
+                raise ValueError(
+                    "even full isenthalpic throttling crosses the local pressure "
+                    "wet-expander freezing/frost boundary before ambient trim "
+                    "heat can be applied"
+                )
+            return (valve,)
+
+        low_pressure = outlet_pressure_pa
+        high_pressure = near_inlet_pressure
+        # At low pressure the full expansion is unsafe; at high pressure it is
+        # safe. Geometric bisection respects the logarithmic pressure scale.
+        for _ in range(60):
+            middle_pressure = (low_pressure * high_pressure) ** 0.5
+            if safe_margin(middle_pressure) >= 0.0:
+                high_pressure = middle_pressure
+            else:
+                low_pressure = middle_pressure
+            if high_pressure / low_pressure - 1.0 < 1e-10:
+                break
+
+        turbine = expand(
+            inlet, high_pressure, c.expander_efficiency, WORKING_FLUID
+        )
+        valve = throttle(turbine.outlet, outlet_pressure_pa, WORKING_FLUID)
+        if (
+            valve.outlet.temperature_k
+            < wet_expander_hard_floor_temperature_k(
+                outlet_pressure_pa, protected_humidity_ratio
+            )
+            - TEMPERATURE_LIMIT_TOLERANCE_K
+        ):
+            # A real-gas Joule-Thomson shift could make the two-step path less
+            # safe than a full throttle. Prefer the safe, lower-work fallback.
+            valve = throttle(inlet, outlet_pressure_pa, WORKING_FLUID)
+            if (
+                valve.outlet.temperature_k
+                < wet_expander_hard_floor_temperature_k(
+                    outlet_pressure_pa, protected_humidity_ratio
+                )
+                - TEMPERATURE_LIMIT_TOLERANCE_K
+            ):
+                raise ValueError(
+                    "no fuel-free turbine/throttle split satisfies the local "
+                    "wet-expander anti-icing envelope"
+                )
+            return (valve,)
+        return turbine, valve
+
+    def _simulate_diabatic(self) -> PlantResult:
+        """Fuel-free D-CAES with ambient reheat and anti-icing throttling."""
+        c = self.config
+        current = state_pt(self._p_ambient, c.ambient_temperature_k, WORKING_FLUID)
+        charging = Cycle("charging", current)
+        ratio = self._compression_ratio()
         for stage in range(c.compressor_stages):
             p_out = self._p_storage / (1.0 - c.intercooler_pressure_drop) if stage == c.compressor_stages - 1 else current.pressure_pa * ratio
-            compressor = compress(current, p_out, c.compressor_efficiency, c.fluid)
-            cycle.processes.append(compressor)
-            current = compressor.outlet
-
-            if c.mode is PlantMode.ADIABATIC:
-                cooler = cool_air_with_water(
-                    current,
-                    c.cold_tank_temperature_k,
-                    c.intercooler_pressure_drop,
-                    c.fluid,
-                    c.heat_exchanger_model,
-                    c.heat_exchanger_pinch_c,
-                    c.heat_exchanger_effectiveness,
-                    c.heat_exchanger_ntu,
-                    finite_water_ratio,
-                )
-                if cooler.heat_exchanger and cooler.heat_exchanger.water_air_mass_ratio > 0:
-                    hx = cooler.heat_exchanger
-                    water_returns.append((hx.water_air_mass_ratio, hx.water_outlet_temperature_k, hx.duty_j_per_kg_air))
-            else:
-                target = c.ambient_temperature_k if stage == c.compressor_stages - 1 else c.ambient_temperature_k + c.ambient_heat_exchanger_approach_c
-                cooler = exchange_with_environment(
-                    current,
-                    target,
-                    c.intercooler_pressure_drop,
-                    c.fluid,
-                    "intercooling",
-                    "compression heat rejected to ambient",
-                )
-            cycle.processes.append(cooler)
-            current = cooler.outlet
-
-        if abs(current.temperature_k - c.ambient_temperature_k) > 1e-8:
-            cavern = exchange_with_environment(
-                current,
-                c.ambient_temperature_k,
-                0.0,
-                c.fluid,
-                "cavern_equilibration",
-                "air equilibrates with cavern",
+            compressor = compress(current, p_out, c.compressor_efficiency, WORKING_FLUID)
+            charging.processes.append(compressor)
+            cooler = exchange_air_with_ambient_ntu(
+                compressor.outlet, c.ambient_temperature_k, c.intercooler_pressure_drop,
+                WORKING_FLUID, c.ambient_heat_exchanger_ntu, "intercooling", COOL_ONLY,
             )
-            cycle.processes.append(cavern)
-        return cycle, water_returns
+            charging.processes.append(cooler)
+            current = cooler.outlet
+        if abs(current.temperature_k - c.ambient_temperature_k) > 1e-9:
+            charging.processes.append(exchange_with_environment(
+                current, c.ambient_temperature_k, 0.0, WORKING_FLUID,
+                "aftercooling", BOTH_WAYS,
+            ))
 
-    def _build_hot_tank(self, returns: list[tuple[float, float, float]]) -> tuple[float, float, float, float, list[tuple[float, float, float]]]:
-        c = self.config
-        total_ratio = sum(ratio for ratio, _, _ in returns)
-        recovered = sum(duty for _, _, duty in returns)
-        if total_ratio <= 0 or recovered <= 0:
-            raise ValueError("selected heat-exchanger settings recover no compression heat")
-        hot_before_loss = c.cold_tank_temperature_k + recovered / (total_ratio * WATER_CP_J_PER_KGK)
-        hot_available = c.cold_tank_temperature_k + (
-            hot_before_loss - c.cold_tank_temperature_k
-        ) * (1.0 - c.thermal_storage_loss_fraction)
-        storage_loss = total_ratio * WATER_CP_J_PER_KGK * (hot_before_loss - hot_available)
-        return total_ratio, hot_before_loss, hot_available, storage_loss, returns
-
-    def _discharge(
-        self,
-        store: tuple[float, float, float, float, list[tuple[float, float, float]]] | None,
-    ) -> tuple[Cycle, list[tuple[float, float, float]], float]:
-        c = self.config
-        current = state_pt(self._p_storage, c.ambient_temperature_k, c.fluid)
-        cycle = Cycle("discharging", current)
+        moisture = analyze_charge_moisture(c, charging)
+        protected_humidity_ratio = (
+            moisture.stored_air_water_vapor_kg_per_kg_dry_air
+        )
+        if not reference_wet_expander_liquid_envelope_ok(
+            protected_humidity_ratio
+        ):
+            raise ValueError(
+                "remaining charge-side moisture exceeds the selected reference "
+                "wet-expander discharge liquid envelope; add deeper drying or "
+                "select an OEM machine with a larger guaranteed liquid capacity"
+            )
+        if not dry_air_wet_expansion_approximation_ok(
+            protected_humidity_ratio
+        ):
+            raise ValueError(
+                "possible wet-expander condensate exceeds the dry-air model's "
+                "0.1 wt% validity screen; use a coupled humid-air/two-phase "
+                "energy balance for this configuration"
+            )
+        current = state_pt(self._p_storage, c.ambient_temperature_k, WORKING_FLUID)
+        discharging = Cycle("discharging", current)
         pressure_ratio = self._expansion_ratio()
-        water_returns: list[tuple[float, float, float]] = []
         external_heat = 0.0
-        water_ratio = store[0] / c.expander_stages if store else 0.0
-        hot_temperature = store[2] if store else 0.0
-
         for stage in range(c.expander_stages):
-            if c.mode is PlantMode.ADIABATIC:
-                heater = heat_air_with_water(
-                    current,
-                    hot_temperature,
-                    water_ratio,
-                    c.interheater_pressure_drop,
-                    c.fluid,
-                    c.heat_exchanger_model,
-                    c.heat_exchanger_pinch_c,
-                    c.heat_exchanger_effectiveness,
-                    c.heat_exchanger_ntu,
-                )
-                cycle.processes.append(heater)
-                current = heater.outlet
-                if heater.heat_exchanger:
-                    hx = heater.heat_exchanger
-                    water_returns.append((hx.water_air_mass_ratio, hx.water_outlet_temperature_k, hx.duty_j_per_kg_air))
-                else:
-                    water_returns.append((water_ratio, hot_temperature, 0.0))
-            elif c.use_ambient_reheat and stage > 0:
-                heater = exchange_with_environment(
-                    current,
-                    c.ambient_temperature_k - c.ambient_heat_exchanger_approach_c,
-                    c.interheater_pressure_drop,
-                    c.fluid,
-                    "interheating",
-                    "external ambient heat",
-                )
-                cycle.processes.append(heater)
-                current = heater.outlet
-                external_heat += max(0.0, heater.heat_to_air_j_per_kg)
+            heater_pressure = current.pressure_pa * (1.0 - c.interheater_pressure_drop)
+            turbine_pressure = self._p_ambient if stage == c.expander_stages - 1 else heater_pressure * pressure_ratio
 
-            p_out = self._p_ambient if stage == c.expander_stages - 1 else current.pressure_pa * pressure_ratio
-            turbine = expand(current, p_out, c.expander_efficiency, c.fluid)
-            cycle.processes.append(turbine)
-            current = turbine.outlet
-        return cycle, water_returns, external_heat
+            # AD-CAES always recovers ambient heat before each expansion.  A
+            # no-reheat branch is physically unusable here: the expansion
+            # temperatures would cross the icing envelope.
+            reheater = exchange_air_with_ambient_ntu(
+                current, c.ambient_temperature_k, c.interheater_pressure_drop,
+                WORKING_FLUID, c.ambient_heat_exchanger_ntu, "ambient_reheat", HEAT_ONLY,
+            )
+            discharging.processes.append(reheater)
+            current = reheater.outlet
+            external_heat += max(0.0, reheater.heat_to_air_j_per_kg)
+
+            reductions = self._safe_diabatic_pressure_reduction(
+                current,
+                turbine_pressure,
+                protected_humidity_ratio,
+            )
+            discharging.processes.extend(reductions)
+            current = reductions[-1].outlet
+            local_minimum_k = minimum_wet_expander_temperature_k(
+                current.pressure_pa,
+                protected_humidity_ratio,
+            )
+            if current.temperature_k < local_minimum_k - TEMPERATURE_LIMIT_TOLERANCE_K:
+                anti_icing_reheat = exchange_air_with_ambient_ntu(
+                    current,
+                    c.ambient_temperature_k,
+                    0.0,
+                    WORKING_FLUID,
+                    c.ambient_heat_exchanger_ntu,
+                    "ambient_anti_icing_reheat",
+                    HEAT_ONLY,
+                )
+                discharging.processes.append(anti_icing_reheat)
+                current = anti_icing_reheat.outlet
+                external_heat += max(
+                    0.0, anti_icing_reheat.heat_to_air_j_per_kg
+                )
+                if current.temperature_k < local_minimum_k - TEMPERATURE_LIMIT_TOLERANCE_K:
+                    raise ValueError(
+                        "ambient trim heat cannot restore the wet-expander "
+                        "anti-icing margin after D-CAES throttling"
+                    )
+
+        charging = self._annotate_exergy(charging)
+        discharging = self._annotate_exergy(discharging)
+        exergy = self._summarize_diabatic(charging, discharging)
+        return PlantResult(
+            mode=c.mode.value, charging=charging, discharging=discharging,
+            thermal_store=None, exergy=exergy,
+            external_heat_input_j_per_kg=external_heat,
+            moisture=moisture,
+        )
+
+    # ---------------------------------------------------------------- exergy books
 
     def _annotate_exergy(self, cycle: Cycle) -> Cycle:
         c = self.config
-        processes = [
-            replace(
-                process,
-                exergy_destruction_j_per_kg=process_exergy_destruction(
-                    process, c.ambient_temperature_k, self._p_ambient, c.fluid
-                ),
-            )
-            for process in cycle.processes
-        ]
-        return Cycle(cycle.name, cycle.inlet, processes)
+        return Cycle(cycle.name, cycle.inlet, [
+            replace(process, exergy_destruction_j_per_kg=process_exergy_destruction(
+                process, c.ambient_temperature_k, self._p_ambient, WORKING_FLUID
+            )) for process in cycle.processes
+        ])
 
-    def _summarize(
+    def _base_books(
         self,
         charging: Cycle,
         discharging: Cycle,
-        store: tuple[float, float, float, float, list[tuple[float, float, float]]] | None,
-        water_returns: list[tuple[float, float, float]],
-    ) -> tuple[TwoTankSummary | None, ExergySummary]:
+    ) -> tuple[float, float, dict[str, float], dict[str, float]]:
         c = self.config
-        compression_work = charging.work_j_per_kg
-        expansion_work = -discharging.work_j_per_kg
         component: dict[str, float] = {}
         for process in charging.processes + discharging.processes:
             component[process.kind] = component.get(process.kind, 0.0) + process.exergy_destruction_j_per_kg
+        losses = {"exhaust_air": max(0.0, air_exergy(
+            discharging.outlet, c.ambient_temperature_k, self._p_ambient, WORKING_FLUID
+        ))}
+        return charging.work_j_per_kg, -discharging.work_j_per_kg, component, losses
 
-        if store is None:
-            electrical = expansion_work / compression_work
-            exergy = ExergySummary(electrical, electrical, 0.0, 0.0, 0.0, component, sum(component.values()))
-            return None, exergy
+    def _summarize_diabatic(self, charging: Cycle, discharging: Cycle) -> ExergySummary:
+        compression, expansion, component, losses = self._base_books(
+            charging, discharging
+        )
+        destruction, loss = sum(component.values()), sum(losses.values())
+        electrical = expansion / compression
+        return ExergySummary(
+            total_useful_exergy_efficiency=electrical,
+            hot_water_exergy_j_per_kg_air=0.0,
+            useful_heat_exergy_j_per_kg_air=0.0,
+            component_destruction_j_per_kg_air=component,
+            loss_j_per_kg_air=losses,
+            total_destruction_j_per_kg_air=destruction,
+            total_loss_j_per_kg_air=loss,
+            balance_residual_j_per_kg_air=compression - (expansion + destruction + loss),
+        )
 
-        total_ratio, hot_before, hot_available, storage_loss, charge_returns = store
-        cold = c.cold_tank_temperature_k
-        recovered = sum(duty for _, _, duty in charge_returns)
-        delivered = sum(duty for _, _, duty in water_returns)
-        returned_temperature = (
-            sum(ratio * temperature for ratio, temperature, _ in water_returns) / total_ratio
-            if water_returns
-            else hot_available
+    def _summarize_adiabatic(
+        self, charging: Cycle, discharging: Cycle,
+        store: _ThermalStore, discharge: _DischargeDesign,
+    ) -> tuple[TwoTankSummary, ExergySummary, HeatOfftakeSummary | None]:
+        c = self.config
+        t0 = c.ambient_temperature_k
+        compression, expansion, component, losses = self._base_books(
+            charging, discharging
         )
-        returned_temperature = max(cold, returned_temperature)
-        surplus = total_ratio * WATER_CP_J_PER_KGK * (returned_temperature - cold)
-        surplus_exergy = total_ratio * (water_exergy(returned_temperature, c.ambient_temperature_k) - water_exergy(cold, c.ambient_temperature_k))
+        recovered = sum(branch[2] for branch in store.charge_returns)
+        delivered = sum(branch[2] for branch in discharge.returns)
 
-        branch_exergy = sum(
-            ratio * (water_exergy(temperature, c.ambient_temperature_k) - water_exergy(cold, c.ambient_temperature_k))
-            for ratio, temperature, _ in charge_returns
+        # The upstream temperature drop is zero in the no-user absorption
+        # design.  In DH mode the series exchanger removes
+        # T_hot,available -> T_x and the network must absorb ALL of it: there
+        # is deliberately no upstream rejection cooler, so the exported duty
+        # always equals the whole upstream drop by construction.  We never add
+        # a hidden cooler to rescue an infeasible DH temperature match.
+        dh_duty = dh_water = dh_exergy = 0.0
+        dh_supply_actual = c.heat_user_supply_temperature_k
+        taps: tuple[OfftakeTap, ...] = ()
+        if self._dispatches_heat_to_user():
+            taps = self._build_offtake_taps(store, discharge)
+            dh_duty = sum(tap.heat_j_per_kg_air for tap in taps)
+            # ONE user stream through the whole cascade, so its flow is the
+            # same on every tap. Summing it would count the same water once per
+            # station and inflate the network side by the station count.
+            dh_water = taps[0].user_water_per_kg_air
+            dh_supply_actual = c.heat_user_supply_temperature_k
+            dh_exergy = dh_water * (
+                water_exergy(dh_supply_actual, t0)
+                - water_exergy(c.heat_user_return_temperature_k, t0)
+            )
+            plant_drop_exergy = sum(
+                tap.plant_water_per_kg_air * (
+                    water_exergy(tap.plant_inlet_temperature_k, t0)
+                    - water_exergy(tap.plant_outlet_temperature_k, t0)
+                )
+                for tap in taps
+            )
+            if dh_duty > 0.0:
+                component["heat_offtake_taps"] = max(0.0, plant_drop_exergy - dh_exergy)
+
+        def branch_exergy(branches: tuple[tuple[float, float, float], ...]) -> float:
+            return sum(r * water_exergy(t, t0) for r, t, _ in branches)
+
+        # The active store owns one mixed temperature. Keep the one-element
+        # level representation so result serialization remains compatible.
+        levels = store.levels or (
+            _ThermalLevel(
+                store.total_ratio,
+                store.hot_before_loss_k,
+                store.hot_available_k,
+                store.charge_returns,
+            ),
         )
-        hot_before_exergy = total_ratio * (
-            water_exergy(hot_before, c.ambient_temperature_k) - water_exergy(cold, c.ambient_temperature_k)
+        hot_before_exergy = sum(
+            level.mass_ratio * water_exergy(level.temperature_before_loss_k, t0)
+            for level in levels
         )
-        hot_available_exergy = total_ratio * (
-            water_exergy(hot_available, c.ambient_temperature_k) - water_exergy(cold, c.ambient_temperature_k)
+        hot_available_exergy = sum(
+            level.mass_ratio * water_exergy(level.temperature_available_k, t0)
+            for level in levels
         )
-        component["hot_tank_mixing"] = max(0.0, branch_exergy - hot_before_exergy)
+        recovery = self._optimize_cold_return_recovery(discharge.returns)
+        cold_tank_inlet_k = recovery.mixed_tank_inlet_k
+        cold_tank_inlet_exergy = store.total_ratio * water_exergy(
+            cold_tank_inlet_k, t0
+        )
+        component["hot_tank_mixing"] = max(0.0, branch_exergy(store.charge_returns) - hot_before_exergy)
         component["thermal_storage_loss"] = max(0.0, hot_before_exergy - hot_available_exergy)
-        useful = c.thermal_surplus_use is ThermalSurplusUse.USEFUL_HEAT
-        if not useful:
-            component["surplus_heat_rejection"] = max(0.0, surplus_exergy)
+        selected_inlet_exergy = recovery.mass_ratio * water_exergy(
+            recovery.inlet_k, t0
+        )
+        selected_outlet_exergy = recovery.mass_ratio * water_exergy(
+            recovery.outlet_k, t0
+        )
+        cold_return_exergy_destruction = max(
+            0.0, selected_inlet_exergy - selected_outlet_exergy
+        )
+        component["cold_tank_mixing"] = max(
+            0.0,
+            branch_exergy(discharge.returns)
+            - cold_tank_inlet_exergy
+            - cold_return_exergy_destruction,
+        )
+        component["cold_return_ambient_exchange"] = cold_return_exergy_destruction
+        # The cold tank also stands for the configured dwell and drifts toward
+        # ambient. The drift always lowers the water's exergy (toward the
+        # dead-state minimum), so the leaked amount is destruction too.
+        component["cold_tank_standing_loss"] = max(0.0, store.total_ratio * (
+            water_exergy(cold_tank_inlet_k, t0)
+            - water_exergy(store.cold_k, t0)
+        ))
+        cold_storage_loss = store.total_ratio * WATER_CP_J_PER_KGK * (
+            cold_tank_inlet_k - store.cold_k
+        )
+        minimum_water_reached_k = min(
+            store.cold_k,
+            cold_tank_inlet_k,
+            recovery.inlet_k,
+            recovery.outlet_k,
+            discharge.returned_mean_k,
+            *(temperature for _, temperature, _ in discharge.returns),
+        )
+        if (
+            minimum_water_reached_k
+            < c.coolant_minimum_temperature_k - TEMPERATURE_LIMIT_TOLERANCE_K
+        ):
+            raise ValueError(
+                "the closed coolant loop falls below the selected coolant "
+                "freezing point"
+            )
 
-        electrical = expansion_work / compression_work
-        useful_heat_exergy = surplus_exergy if useful else 0.0
-        total_efficiency = (expansion_work + useful_heat_exergy) / compression_work
         thermal = TwoTankSummary(
-            cold,
-            hot_before,
-            hot_available,
-            returned_temperature,
-            total_ratio,
-            recovered,
-            delivered,
-            storage_loss,
-            max(0.0, surplus),
-            max(0.0, surplus_exergy),
-            useful,
+            cold_temperature_k=store.cold_k,
+            hot_temperature_before_loss_k=store.hot_before_loss_k,
+            hot_temperature_available_k=store.hot_available_k,
+            returned_temperature_k=discharge.returned_mean_k,
+            total_water_mass_ratio=store.total_ratio,
+            recovered_heat_j_per_kg_air=recovered,
+            delivered_heat_j_per_kg_air=delivered,
+            offtake_heat_j_per_kg_air=dh_duty,
+            storage_loss_j_per_kg_air=store.storage_loss_j_per_kg_air,
+            storage_duration_hours=c.storage_duration_hours,
+            thermal_storage_tank_ua_w_per_k=c.thermal_storage_tank_ua_w_per_k,
+            cold_return_heat_rejected_to_ambient_j_per_kg_air=0.0,
+            cold_return_heat_absorbed_from_ambient_j_per_kg_air=(
+                recovery.heat_absorbed_j_per_kg_air
+            ),
+            cold_return_exergy_destruction_j_per_kg_air=(
+                cold_return_exergy_destruction
+            ),
+            cold_storage_loss_j_per_kg_air=cold_storage_loss,
+            cold_return_exchanger_ntu=c.cold_return_cooler_ntu,
+            cold_return_exchanger_outlet_temperature_k=cold_tank_inlet_k,
+            cold_return_recovery_start_stage=recovery.start_stage,
+            cold_return_recovery_branch_count=recovery.branch_count,
+            cold_return_recovery_mass_ratio=recovery.mass_ratio,
+            cold_return_recovery_inlet_temperature_k=recovery.inlet_k,
+            cold_return_recovery_outlet_temperature_k=recovery.outlet_k,
+            cold_loop_closure_error_k=(
+                c.ambient_temperature_k
+                + (cold_tank_inlet_k - c.ambient_temperature_k)
+                * self._tank_decay(store.total_ratio)
+                - store.cold_k
+            ),
+            coolant_maximum_temperature_k=c.coolant_maximum_temperature_k,
+            coolant_maximum_temperature_reached_k=(
+                store.maximum_water_temperature_reached_k
+            ),
+            coolant_minimum_temperature_k=c.coolant_minimum_temperature_k,
+            coolant_minimum_temperature_reached_k=minimum_water_reached_k,
+            hot_level_temperatures_k=tuple(
+                level.temperature_available_k for level in levels
+            ),
+            hot_level_water_mass_ratios=tuple(
+                level.mass_ratio for level in levels
+            ),
         )
+
+        district = None
+        if c.heat_offtake is HeatOfftake.HEAT_USER:
+            district = HeatOfftakeSummary(
+                mode=c.heat_offtake.value,
+                hot_tank_temperature_k=max(
+                    (tap.plant_inlet_temperature_k for tap in taps),
+                    default=store.hot_available_k,
+                ),
+                turbine_supply_temperature_k=discharge.supply_k,
+                supply_temperature_k=dh_supply_actual,
+                return_temperature_k=c.heat_user_return_temperature_k,
+                heat_j_per_kg_air=dh_duty,
+                exergy_j_per_kg_air=dh_exergy,
+                network_water_per_kg_air=dh_water,
+                taps=taps,
+                heat_exchanger_ntu=c.heat_user_exchanger_ntu,
+                maximum_required_effectiveness=max(
+                    (tap.required_effectiveness for tap in taps), default=0.0
+                ),
+                minimum_effectiveness_margin=min(
+                    (
+                        tap.available_effectiveness - tap.required_effectiveness
+                        for tap in taps
+                    ),
+                    default=0.0,
+                ),
+            )
+
+        total_efficiency = (expansion + dh_exergy) / compression
+        destruction, loss = sum(component.values()), sum(losses.values())
         exergy = ExergySummary(
-            electrical,
-            total_efficiency,
-            hot_available_exergy,
-            useful_heat_exergy,
-            0.0 if useful else max(0.0, surplus_exergy),
-            component,
-            sum(component.values()),
+            total_useful_exergy_efficiency=total_efficiency,
+            hot_water_exergy_j_per_kg_air=hot_available_exergy,
+            useful_heat_exergy_j_per_kg_air=dh_exergy,
+            component_destruction_j_per_kg_air=component,
+            loss_j_per_kg_air=losses,
+            total_destruction_j_per_kg_air=destruction,
+            total_loss_j_per_kg_air=loss,
+            balance_residual_j_per_kg_air=compression - (expansion + dh_exergy + destruction + loss),
         )
-        return thermal, exergy
+        return thermal, exergy, district
+
+
+@lru_cache(maxsize=128)
+def _solve_cached(config: PlantConfig, property_api: PropertyAPI) -> PlantResult:
+    with using_property_api(property_api):
+        return CAESPlant(config, property_api)._run_uncached()

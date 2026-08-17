@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "caes-storage"
 version = "2.0.0"
-description = "Normalized D-CAES and water LTA-CAES efficiency and exergy simulator"
+description = "Normalized AD-CAES, LTA-CAES and LTHP-CAES efficiency and exergy simulator"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "CoolProp>=6.4",
     "matplotlib>=3.7",
+    "schemdraw>=0.19",
 ]
 
 [project.optional-dependencies]
@@ -18,7 +19,12 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 caes-simulate = "caes.cli:main"
-caes-gui = "caes.gui:main"
+
+# The desktop application is a gui-script, not a console script: on Windows that
+# launcher uses pythonw, so the Tk window opens without a dead console behind it.
+# There is deliberately no second console-mode alias for the same entry point.
+[project.gui-scripts]
+caes-storage = "caes.gui:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

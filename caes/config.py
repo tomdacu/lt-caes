@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from enum import Enum
+import json
+from pathlib import Path
 from typing import Any
+import warnings
+
+from .constants import (
+    ABSOLUTE_ZERO_CELSIUS,
+    MINIMUM_FROST_CORRELATION_TEMPERATURE_K,
+)
 
 
 class PlantMode(str, Enum):
@@ -14,28 +22,53 @@ class PlantMode(str, Enum):
     DIABATIC = "diabatic"
 
 
-class HeatExchangerModel(str, Enum):
-    """Mutually exclusive heat-exchanger specifications."""
+class OptimizationObjective(str, Enum):
+    """Objective used to optimize the normalized water/air mass ratio.
 
-    PINCH = "pinch"
-    EFFECTIVENESS = "effectiveness"
-    COUNTERFLOW_NTU = "counterflow_ntu"
+    AD-CAES and LTA-CAES maximize electrical round-trip efficiency (with no
+    heat user, maximum electrical work and maximum useful exergy are the same
+    dispatch).  LTHP-CAES maximizes the combined electricity-plus-heat
+    delivery ratio.  Total useful exergy efficiency remains a reported
+    metric, but is no longer a selectable objective: it either coincides with
+    one of these two or misclassifies the free ambient heat input.
+    """
 
-
-class WaterFlowMode(str, Enum):
-    """How the normalized water/air mass ratio is selected."""
-
-    SPECIFIED_RATIO = "specified_ratio"
     MAX_ELECTRIC_EFFICIENCY = "max_electric_efficiency"
-    MAX_HOT_WATER_EXERGY = "max_hot_water_exergy"
-    MAX_TOTAL_EXERGY_EFFICIENCY = "max_total_exergy_efficiency"
+    MAX_COMBINED_ENERGY_DELIVERY = "max_combined_energy_delivery"
 
 
-class ThermalSurplusUse(str, Enum):
-    """Destination of hot-water energy remaining after air reheat."""
+# Removed objective kept as a compatibility alias when loading old JSON files:
+# it coincides with max_electric_efficiency without a heat user and maps to
+# max_combined_energy_delivery with district heating.
+_LEGACY_EXERGY_OBJECTIVE = "max_total_exergy_efficiency"
 
-    REJECT = "reject"
-    USEFUL_HEAT = "useful_heat"
+
+class HeatOfftake(str, Enum):
+    """Whether an external HEAT USER draws from the store before the turbines.
+
+    This is a heat-and-power plant, not a store with a district-heating bolt-on.
+    The off-take is specified by three inputs - the temperature the user wants,
+    the temperature it hands back, and its exchanger NTU class - so it
+    describes a district-heating network, an industrial process loop, an
+    absorption chiller, a greenhouse, or a drying plant equally well. District
+    heating is the most likely application, not the model's subject.
+
+    Without an off-take the E-302 taps are absent and every objective converts
+    as much stored heat as possible to shaft work. With one, the taps export
+    the feasible high-grade fraction and the turbines receive the remaining
+    moisture-safe duty, entirely from the coolant loop.
+    """
+
+    NONE = "none"
+    HEAT_USER = "heat_user"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "HeatOfftake | None":
+        # ``district_heating`` was the original name, from back when the heat
+        # user was assumed to be a network.  Old configurations keep loading.
+        if isinstance(value, str) and value == "district_heating":
+            return cls.HEAT_USER
+        return None
 
 
 @dataclass(frozen=True)
@@ -49,51 +82,107 @@ class PlantConfig:
 
     # Plant and boundary conditions.
     mode: PlantMode = PlantMode.ADIABATIC
-    fluid: str = "Air"
     ambient_temperature_c: float = 15.0
     ambient_pressure_bar: float = 1.01325
-    storage_pressure_bar: float = 100.0
+    ambient_relative_humidity: float = 0.60
+    # Six nominal 2.1 pressure-ratio stages: 2.1**6 = 85.766... bar.
+    storage_pressure_bar: float = 85.8
 
     # Turbomachinery.
-    compressor_stages: int = 4
-    expander_stages: int = 4
+    compressor_stages: int = 6
+    expander_stages: int = 6
     compressor_efficiency: float = 0.85
     expander_efficiency: float = 0.85
     intercooler_pressure_drop: float = 0.02
     interheater_pressure_drop: float = 0.02
+    # Ambient heat exchange. AD-CAES ONLY: it rejects compression heat through
+    # fin-fans and scavenges ambient heat before each fuel-free expansion, and
+    # that is the whole of its discharge heat supply. The adiabatic concepts
+    # take every joule of reheat from the coolant loop; they used to carry
+    # optional AH-20x preheaters ahead of each interheater, and those are gone.
+    # Every ambient exchanger is a finite counter-current HX against the
+    # atmosphere (infinite capacity rate), sized by its own NTU - the same
+    # discipline as the coolant-side exchangers, no idealized approach target.
+    ambient_heat_exchanger_ntu: float = 5.0
+    # A-CAES two-tank coolant loop.  AD-CAES always uses the ambient reheat
+    # path; it is not a selectable operating mode because disabling it drives
+    # the expansion train below the icing-safe temperature envelope.
 
-    # D-CAES ambient heat exchange.
-    ambient_heat_exchanger_approach_c: float = 5.0
-    use_ambient_reheat: bool = True
+    # A-CAES two-tank coolant loop.
+    heat_exchanger_ntu: float = 5.0
+    # One finite coolant-to-ambient recovery exchanger (E-303). The solver
+    # places it on the best contiguous suffix of interheater returns, before
+    # that subgroup is mixed with the warmer bypass returns. It is heat-only:
+    # a return at or above ambient bypasses it and is never cooled.
+    cold_return_cooler_ntu: float = 5.0
+    # Direct coolant temperature limits.  The model retains a constant liquid
+    # heat capacity internally, but does not infer a temperature limit from
+    # any pressure or phase-equilibrium correlation.
+    coolant_maximum_temperature_c: float = 200.0
+    coolant_minimum_temperature_c: float = -80.0
+    # Number of serial heat-user stations and interheater branch groups. The
+    # hot store itself is always one perfectly mixed inventory. At station g,
+    # the complete remaining trunk crosses the user HX, one group bleeds off,
+    # and only the residual flow continues to station g+1. Groups are
+    # contiguous along the expansion train, so the count is bounded only by
+    # the number of expander stages.
+    coolant_cascade_groups: int = 1
+    optimization_objective: OptimizationObjective = OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY
+    # Combined per-tank conductance on the normalized one-kilogram-air basis,
+    # applied to BOTH tanks (hot tank standing between charge and discharge,
+    # cold tank standing between discharge and charge).
+    # A physical plant value is normalized as UA_tank / stored_air_mass.
+    thermal_storage_tank_ua_w_per_k: float = 0.0
+    storage_duration_hours: float = 4.0
 
-    # A-CAES two-tank water loop.
-    cold_tank_temperature_c: float = 20.0
-    heat_exchanger_model: HeatExchangerModel = HeatExchangerModel.PINCH
-    heat_exchanger_pinch_c: float = 5.0
-    heat_exchanger_effectiveness: float = 0.85
-    heat_exchanger_ntu: float = 3.0
-    water_flow_mode: WaterFlowMode = WaterFlowMode.SPECIFIED_RATIO
-    water_air_mass_ratio: float = 1.0
-    water_air_ratio_search_min: float = 0.05
-    water_air_ratio_search_max: float = 10.0
-    thermal_storage_loss_fraction: float = 0.0
-    thermal_surplus_use: ThermalSurplusUse = ThermalSurplusUse.REJECT
+    # Heat-user off-take. IN SERIES: all hot coolant crosses the first user HX;
+    # each group then bleeds and only the remainder crosses the next.
+    heat_offtake: HeatOfftake = HeatOfftake.HEAT_USER
+    heat_user_supply_temperature_c: float = 80.0
+    heat_user_return_temperature_c: float = 45.0
+    # Installed performance class of every serial plant/user exchanger. As for
+    # all other HXs, constant NTU means the body is implicitly resized when the
+    # plant flow changes.
+    heat_user_exchanger_ntu: float = 5.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", PlantMode(self.mode))
-        object.__setattr__(self, "heat_exchanger_model", HeatExchangerModel(self.heat_exchanger_model))
-        object.__setattr__(self, "water_flow_mode", WaterFlowMode(self.water_flow_mode))
-        object.__setattr__(self, "thermal_surplus_use", ThermalSurplusUse(self.thermal_surplus_use))
+        object.__setattr__(self, "heat_offtake", HeatOfftake(self.heat_offtake))
+        objective = self.optimization_objective
+        if isinstance(objective, str) and objective == _LEGACY_EXERGY_OBJECTIVE:
+            objective = (
+                OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY
+                if self.heat_offtake is HeatOfftake.HEAT_USER
+                else OptimizationObjective.MAX_ELECTRIC_EFFICIENCY
+            )
+            warnings.warn(
+                f"optimization_objective '{_LEGACY_EXERGY_OBJECTIVE}' was "
+                f"removed and is mapped to '{objective.value}' for this "
+                "configuration; exergy efficiency remains a reported metric",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        object.__setattr__(
+            self, "optimization_objective", OptimizationObjective(objective)
+        )
 
         if self.storage_pressure_bar <= self.ambient_pressure_bar:
             raise ValueError("storage_pressure_bar must exceed ambient_pressure_bar")
+        if not 0 < self.ambient_relative_humidity <= 1:
+            raise ValueError("ambient_relative_humidity must be in (0, 1]")
         if self.compressor_stages < 1 or self.expander_stages < 1:
             raise ValueError("stage counts must be at least one")
-        for name in ("compressor_efficiency", "expander_efficiency", "heat_exchanger_effectiveness"):
+        if not 1 <= self.coolant_cascade_groups <= self.expander_stages:
+            raise ValueError(
+                "coolant_cascade_groups must be between 1 and "
+                f"expander_stages = {self.expander_stages}: each non-empty "
+                "group must feed at least one expansion stage"
+            )
+        for name in ("compressor_efficiency", "expander_efficiency"):
             value = getattr(self, name)
             if not 0 < value <= 1:
                 raise ValueError(f"{name} must be in (0, 1]")
-        for name in ("intercooler_pressure_drop", "interheater_pressure_drop", "thermal_storage_loss_fraction"):
+        for name in ("intercooler_pressure_drop", "interheater_pressure_drop"):
             value = getattr(self, name)
             if not 0 <= value < 1:
                 raise ValueError(f"{name} must be in [0, 1)")
@@ -101,28 +190,161 @@ class PlantConfig:
             "ambient_pressure_bar",
             "storage_pressure_bar",
             "heat_exchanger_ntu",
-            "water_air_mass_ratio",
-            "water_air_ratio_search_min",
-            "water_air_ratio_search_max",
+            "ambient_heat_exchanger_ntu",
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        for name in ("ambient_heat_exchanger_approach_c", "heat_exchanger_pinch_c"):
-            if getattr(self, name) < 0:
-                raise ValueError(f"{name} must be non-negative")
-        if self.water_air_ratio_search_max < self.water_air_ratio_search_min:
-            raise ValueError("water_air_ratio_search_max must not be below the minimum")
+        if self.thermal_storage_tank_ua_w_per_k < 0:
+            raise ValueError("thermal_storage_tank_ua_w_per_k must be non-negative")
+        if self.cold_return_cooler_ntu < 0:
+            raise ValueError("cold_return_cooler_ntu must be non-negative")
+        if self.storage_duration_hours < 0:
+            raise ValueError("storage_duration_hours must be non-negative")
+        if self.heat_user_exchanger_ntu <= 0:
+            raise ValueError("heat_user_exchanger_ntu must be positive")
+        # Domain validity first, then cross-field consistency: a temperature
+        # below absolute zero is meaningless regardless of any other field.
+        for name in (
+            "ambient_temperature_c",
+            "heat_user_supply_temperature_c",
+            "heat_user_return_temperature_c",
+            "coolant_maximum_temperature_c",
+            "coolant_minimum_temperature_c",
+        ):
+            if getattr(self, name) <= ABSOLUTE_ZERO_CELSIUS:
+                raise ValueError(f"{name} must be above absolute zero")
+        if (
+            self.ambient_temperature_k
+            < MINIMUM_FROST_CORRELATION_TEMPERATURE_K
+        ):
+            raise ValueError(
+                "ambient_temperature_c is below the validity domain of the "
+                "moisture correlations "
+                f"({MINIMUM_FROST_CORRELATION_TEMPERATURE_K:.0f} K)"
+            )
+        # A network cannot return coolant hotter than it supplies it.
+        if self.heat_user_return_temperature_c >= self.heat_user_supply_temperature_c:
+            raise ValueError(
+                "heat_user_return_temperature_c must be below heat_user_supply_temperature_c"
+            )
+        if self.coolant_maximum_temperature_c <= self.coolant_minimum_temperature_c:
+            raise ValueError(
+                "coolant_maximum_temperature_c must exceed "
+                "coolant_minimum_temperature_c"
+            )
 
     @property
     def ambient_temperature_k(self) -> float:
         return self.ambient_temperature_c + 273.15
 
     @property
-    def cold_tank_temperature_k(self) -> float:
-        return self.cold_tank_temperature_c + 273.15
+    def heat_user_supply_temperature_k(self) -> float:
+        return self.heat_user_supply_temperature_c + 273.15
+
+    @property
+    def heat_user_return_temperature_k(self) -> float:
+        return self.heat_user_return_temperature_c + 273.15
+
+    @property
+    def coolant_maximum_temperature_k(self) -> float:
+        return self.coolant_maximum_temperature_c + 273.15
+
+    @property
+    def coolant_minimum_temperature_k(self) -> float:
+        return self.coolant_minimum_temperature_c + 273.15
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        for name in ("mode", "heat_exchanger_model", "water_flow_mode", "thermal_surplus_use"):
+        for name in ("mode", "optimization_objective", "heat_offtake"):
             data[name] = getattr(self, name).value
         return data
+
+
+# The heat off-take was originally written as if the only possible user were a
+# district-heating network.  It is not - the same three numbers describe an
+# industrial process loop, an absorption chiller, a dryer.  The keys were
+# renamed to say so; the old ones keep loading, because a configuration file is
+# a record of an experiment and old records must stay readable.
+_LEGACY_FIELD_NAMES = {
+    "district_heating_supply_temperature_c": "heat_user_supply_temperature_c",
+    "district_heating_return_temperature_c": "heat_user_return_temperature_c",
+}
+
+# An approach temperature and an NTU are not interchangeable. Silently copying
+# an old 5 K value into an NTU field would alter the experiment while pretending
+# to migrate it. Old approach-only inputs are therefore ignored explicitly and
+# the current NTU default is used.
+_REMOVED_LEGACY_FIELDS = {
+    "district_heating_approach_c",
+    "heat_user_approach_c",
+}
+
+_LEGACY_FIELD_NAMES.update({
+    "coolant_freezing_temperature_c": "coolant_minimum_temperature_c",
+    "thermal_storage_levels": "coolant_cascade_groups",
+})
+
+
+def config_from_dict(data: dict[str, Any]) -> PlantConfig:
+    """Build a configuration from the JSON-compatible public schema."""
+    if not isinstance(data, dict):
+        raise ValueError("configuration root must be a JSON object")
+    translated: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in _REMOVED_LEGACY_FIELDS:
+            warnings.warn(
+                f"configuration field '{key}' was removed because terminal "
+                "approach is not an exchanger sizing model; "
+                "heat_user_exchanger_ntu keeps its default unless explicitly set",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            continue
+        canonical = _LEGACY_FIELD_NAMES.get(key, key)
+        if canonical != key:
+            if canonical in data:
+                raise ValueError(
+                    f"configuration sets both '{key}' and its current name "
+                    f"'{canonical}'; keep only one"
+                )
+            if key == "coolant_freezing_temperature_c":
+                reason = (
+                    "the coolant loop now uses direct minimum/maximum "
+                    "temperature limits"
+                )
+            elif key == "thermal_storage_levels":
+                reason = (
+                    "the hot store is now always mixed; this count controls "
+                    "serial coolant-cascade groups"
+                )
+            else:
+                reason = (
+                    "the heat off-take describes ANY heat user, not only a "
+                    "district-heating network"
+                )
+            warnings.warn(
+                f"configuration field '{key}' was renamed to '{canonical}': {reason}",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        translated[canonical] = value
+    allowed = {field.name for field in fields(PlantConfig)}
+    unknown = set(translated) - allowed
+    if unknown:
+        raise ValueError(f"unknown configuration fields: {', '.join(sorted(unknown))}")
+    return PlantConfig(**translated)
+
+
+def load_config(path: str | Path) -> PlantConfig:
+    """Load and validate the configuration format shared by GUI and CLI."""
+    source = Path(path)
+    data = json.loads(source.read_text(encoding="utf-8"))
+    return config_from_dict(data)
+
+
+def save_config(config: PlantConfig, path: str | Path) -> Path:
+    """Write the shared configuration format and return its path."""
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(config.to_dict(), indent=2) + "\n", encoding="utf-8")
+    return output

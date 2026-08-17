@@ -1,19 +1,25 @@
-"""Normalized D-CAES and water-based LTA-CAES efficiency models."""
+"""Normalized AD-CAES, LTA-CAES and LTHP-CAES efficiency and exergy models."""
 
 from .config import (
-    HeatExchangerModel,
+    OptimizationObjective,
     PlantConfig,
     PlantMode,
-    ThermalSurplusUse,
-    WaterFlowMode,
+    HeatOfftake,
+    config_from_dict,
+    load_config,
+    save_config,
 )
 from .plant import CAESPlant
+from .thermodynamics import PropertyAPI
 
 __all__ = [
     "CAESPlant",
-    "HeatExchangerModel",
+    "OptimizationObjective",
     "PlantConfig",
     "PlantMode",
-    "ThermalSurplusUse",
-    "WaterFlowMode",
+    "PropertyAPI",
+    "HeatOfftake",
+    "config_from_dict",
+    "load_config",
+    "save_config",
 ]

@@ -33,6 +33,9 @@ def test_expander_count_drives_the_discharging_train(stages):
     diagram = pid.layout(PlantConfig(compressor_stages=stages, expander_stages=stages))
     assert len(diagram.of_kind("expander")) == stages
     assert [e.tag for e in diagram.of_kind("expander")] == [f"T-{201 + i}" for i in range(stages)]
+    assert not diagram.of_kind("moisture_separator")
+    assert diagram.by_tag("MS-200") is None
+    assert all(diagram.by_tag(f"MS-{201 + i}") is None for i in range(stages))
 
 
 def test_stage_counts_are_independent():
@@ -42,12 +45,12 @@ def test_stage_counts_are_independent():
 
 
 def test_adiabatic_plant_has_the_whole_water_loop():
-    diagram = pid.layout(PlantConfig())
-    for tag in ("TK-301", "TK-302", "P-301", "P-302", "V-401", "M-101", "G-201", "F-101", "S-201"):
+    diagram = pid.layout(PlantConfig(heat_offtake=HeatOfftake.NONE))
+    for tag in ("TK-301", "TK-302", "P-301", "P-302", "E-303", "V-401", "M-101", "G-201", "F-101", "S-201"):
         assert diagram.by_tag(tag) is not None, f"{tag} missing from the adiabatic plant"
     assert diagram.has_water_loop
-    # E-302 is the one upstream surplus-rejection device when there is no user.
-    assert diagram.by_tag("E-302") is not None
+    # With no heat user the hot tank feeds the turbine header directly.
+    assert diagram.by_tag("E-302") is None
 
 
 def test_diabatic_plant_drops_the_tanks_and_grows_fin_fans():
@@ -58,52 +61,57 @@ def test_diabatic_plant_drops_the_tanks_and_grows_fin_fans():
         assert diagram.by_tag(tag) is None, f"{tag} must not exist without a thermal store"
     assert not diagram.of_kind("water_hx"), "diabatic plants have no water exchangers at all"
     # The intercoolers become air-cooled, the reheaters pull from atmosphere,
-    # and every expander gets its mandatory gas topping burner.
-    assert len(diagram.of_kind("air_cooler")) == 4
-    assert len(diagram.of_kind("ambient_heater")) == 3   # no reheat before the first expander
-    assert len(diagram.of_kind("gas_burner")) == 4
+    # and every expander gets an anti-icing throttle path.
+    assert len(diagram.of_kind("air_cooler")) == diagram.compressor_stages
+    assert len(diagram.of_kind("ambient_heater")) == diagram.expander_stages
+    assert all(diagram.by_tag(f"TV-{201 + i}") for i in range(diagram.expander_stages))
 
 
-def test_diabatic_first_expander_has_no_reheater():
-    """Air leaves the cavern at ambient, so there is nothing an ambient reheater
-    could add ahead of stage 1. The diagram must not draw one."""
+def test_diabatic_every_stage_has_reheater_and_throttle_control():
     diagram = pid.layout(PlantConfig(mode=PlantMode.DIABATIC, expander_stages=4))
-    assert diagram.by_tag("E-201") is None
-    assert diagram.by_tag("CC-201") is not None
-    for i in range(1, 4):
-        assert diagram.by_tag(f"E-{201 + i}") is not None
-        assert diagram.by_tag(f"CC-{201 + i}") is not None
+    for i in range(4):
+        assert diagram.by_tag(f"AH-{201 + i}") is not None
+        assert diagram.by_tag(f"TV-{201 + i}") is not None
 
 
-def test_ambient_reheat_can_be_switched_off_entirely():
-    diagram = pid.layout(PlantConfig(mode=PlantMode.DIABATIC, use_ambient_reheat=False))
-    assert not diagram.of_kind("ambient_heater")
-    assert len(diagram.of_kind("gas_burner")) == 4
+def test_pid_omits_dryers_separators_and_pdp_trim_labels():
+    diagram = pid.layout(PlantConfig())
+    assert not diagram.of_kind("moisture_separator")
+    assert all("dryer" not in item.label.lower() for item in diagram.equipment)
+    assert all("separator" not in item.label.lower() for item in diagram.equipment)
+    assert all("AC-101" not in item.label for item in diagram.equipment)
 
 
-def test_district_heating_branch_appears_only_when_configured():
+def test_diabatic_pid_always_contains_mandatory_ambient_reheat():
+    diagram = pid.layout(PlantConfig(mode=PlantMode.DIABATIC))
+    assert len(diagram.of_kind("ambient_heater")) == diagram.expander_stages
+    assert all(diagram.by_tag(f"AH-{201 + i}") for i in range(diagram.expander_stages))
+    assert all(diagram.by_tag(f"TV-{201 + i}") for i in range(diagram.expander_stages))
+
+
+def test_heat_offtake_branch_appears_only_when_configured():
     """The DH exchanger and the network block are one unit: either the plant sells heat
     or it does not."""
     none = pid.layout(PlantConfig(heat_offtake=HeatOfftake.NONE))
-    assert none.by_tag("E-302") is not None, "upstream rejection exchanger is always required"
+    assert none.by_tag("E-302") is None
     assert none.by_tag("H-301") is None
     assert not none.exports_heat
 
-    for offtake in (HeatOfftake.DISTRICT_HEATING,):
+    for offtake in (HeatOfftake.HEAT_USER,):
         selling = pid.layout(PlantConfig(heat_offtake=offtake))
         assert selling.by_tag("E-302") is not None, "DH exchanger missing"
         assert selling.by_tag("H-301") is not None, "DH network block missing"
         assert selling.exports_heat
 
 
-def test_district_heating_sits_in_series_between_the_hot_tank_and_the_turbines():
+def test_heat_offtake_sits_in_series_between_the_hot_tank_and_the_turbines():
     """THE structural point. E-302 is ON the hot supply line - downstream of the tank,
     upstream of the interheaters - not on a parallel branch and not on the spent-water
     return (where the water is only ~46 C and no network would take it).
 
     The pump moves with it: with an off-take, the water leaves the tank SIDEWAYS through
     P-301 and into E-302, rather than dropping straight onto the header."""
-    diagram = pid.layout(PlantConfig(heat_offtake=HeatOfftake.DISTRICT_HEATING))
+    diagram = pid.layout(PlantConfig(heat_offtake=HeatOfftake.HEAT_USER))
     hot_tank = diagram.by_tag("TK-301")
     dh = diagram.by_tag("E-302")
     pump = diagram.by_tag("P-301")
@@ -116,10 +124,36 @@ def test_district_heating_sits_in_series_between_the_hot_tank_and_the_turbines()
     assert pump.y == pytest.approx(pid.Y_DH_BRANCH)
     assert hot_tank.x < pump.x < dh.x
 
-    # Without an off-take the same series exchanger rejects the surplus.
+    # Without an off-take there is no E-302: the pump feeds the header directly.
     plain = pid.layout(PlantConfig(heat_offtake=HeatOfftake.NONE))
     assert plain.by_tag("P-301").y == pytest.approx(pid.Y_DH_BRANCH)
-    assert plain.by_tag("E-302") is not None
+    assert plain.by_tag("E-302") is None
+
+
+def test_no_adiabatic_concept_draws_an_ambient_heater():
+    """The AH-20x preheaters are gone from every adiabatic architecture.
+
+    They were up to eight extra high-pressure gas/ambient exchangers, and the
+    only ones in the model that paid no air-side pressure drop. Ambient reheat
+    now belongs to AD-CAES alone, where it is the sole discharge heat source,
+    and it carries the AH tag there so E-20x means "water interheater" and
+    nothing else.
+    """
+    for offtake in (HeatOfftake.NONE, HeatOfftake.HEAT_USER):
+        for reheat in (True, False):
+            adiabatic = pid.layout(PlantConfig(
+                heat_offtake=offtake,
+            ))
+            assert not adiabatic.of_kind("ambient_heater")
+            assert all(adiabatic.by_tag(f"AH-{201 + i}") is None for i in range(adiabatic.expander_stages))
+
+    diabatic = pid.layout(PlantConfig(
+        mode=PlantMode.DIABATIC,
+    ))
+    assert len(diabatic.of_kind("ambient_heater")) == diabatic.expander_stages
+    assert all(diabatic.by_tag(f"AH-{201 + i}") for i in range(diabatic.expander_stages))
+    # E-20x is a water interheater, so a diabatic plant must not own one.
+    assert all(diabatic.by_tag(f"E-{201 + i}") is None for i in range(diabatic.expander_stages))
 
 
 def test_equipment_tags_are_unique():
@@ -129,7 +163,7 @@ def test_equipment_tags_are_unique():
         PlantConfig(),
         PlantConfig(mode=PlantMode.DIABATIC),
         PlantConfig(compressor_stages=8, expander_stages=8),
-        PlantConfig(heat_offtake=HeatOfftake.DISTRICT_HEATING),
+        PlantConfig(heat_offtake=HeatOfftake.HEAT_USER),
     ):
         tags = pid.layout(config).tags
         assert len(tags) == len(set(tags)), f"duplicate tags: {sorted(t for t in tags if tags.count(t) > 1)}"
@@ -159,7 +193,7 @@ def test_water_corridors_stay_clear_of_every_symbol():
         PlantConfig(mode=PlantMode.DIABATIC),
         PlantConfig(compressor_stages=1, expander_stages=1),
         PlantConfig(compressor_stages=6, expander_stages=3),
-        PlantConfig(heat_offtake=HeatOfftake.DISTRICT_HEATING),
+        PlantConfig(heat_offtake=HeatOfftake.HEAT_USER),
     ],
 )
 def test_render_survives_every_architecture(config):
@@ -168,7 +202,13 @@ def test_render_survives_every_architecture(config):
     solver fails but the configuration still describes a real layout)."""
     figure, axis = plt.subplots(figsize=(12, 7))
     try:
-        pid.render(axis, config, CAESPlant(config).run())
+        try:
+            result = CAESPlant(config).run()
+        except ValueError:
+            # Direct coolant limits and moisture-safe duty can intentionally
+            # make some few-stage layouts thermodynamically infeasible.
+            result = None
+        pid.render(axis, config, result)
         pid.render(axis, config, None)
     finally:
         plt.close(figure)
@@ -207,3 +247,41 @@ def test_hero_symbols_reach_the_canvas():
         assert len(polygons) >= 18, f"machines/exchangers missing from canvas: {len(polygons)} polygons"
     finally:
         plt.close(figure)
+
+
+def test_group_count_draws_one_hot_tank_and_exactly_that_many_user_hxs():
+    """K changes discharge routing, not the number of stored hot states."""
+    for groups in (1, 2, 3, 4):
+        diagram = pid.layout(PlantConfig(
+            heat_offtake=HeatOfftake.HEAT_USER,
+            coolant_cascade_groups=groups,
+        ))
+        assert diagram.by_tag("TK-301") is not None
+        assert diagram.by_tag("TK-301A") is None
+        exchangers = sorted(
+            diagram.of_kind("offtake_tap"), key=lambda item: item.x
+        )
+        assert len(exchangers) == groups
+        assert len({item.tag for item in exchangers}) == groups
+        expected_tags = (
+            ["E-302"] if groups == 1
+            else [f"E-302{chr(ord('A') + index)}" for index in range(groups)]
+        )
+        assert [item.tag for item in exchangers] == expected_tags
+        assert [item.x for item in exchangers] == sorted(item.x for item in exchangers)
+
+
+def test_the_heat_user_is_not_called_a_district_heating_network():
+    """This is a heat-and-power plant; the user is whoever wants the heat.
+
+    Supply, return and finite exchanger NTU can describe a network, a process
+    loop, an absorption chiller or a dryer equally. The drawing must not name
+    one of them as if it were the only one.
+    """
+    diagram = pid.layout(PlantConfig(heat_offtake=HeatOfftake.HEAT_USER))
+    user = diagram.by_tag("H-301")
+    assert user is not None
+    assert "district" not in user.label.lower()
+    assert "heat user" in user.label.lower()
+    tap = diagram.by_tag("E-302")
+    assert tap is not None and "district" not in tap.label.lower()

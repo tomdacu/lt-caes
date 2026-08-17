@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
-from .config import HeatExchangerModel, PlantConfig, PlantMode, WaterFlowMode
+from .config import HeatOfftake, PlantConfig, PlantMode
 
 
 Predicate = Callable[[PlantConfig], bool]
@@ -17,7 +17,7 @@ class FieldRule:
     unit: str = ""
     help: str = ""
     active_when: Predicate = lambda config: True
-    inactive_reason: str = "Not used by the selected model"
+    editable_when: Predicate = lambda config: True
 
 
 def _adiabatic(c: PlantConfig) -> bool:
@@ -28,33 +28,22 @@ def _diabatic(c: PlantConfig) -> bool:
     return c.mode is PlantMode.DIABATIC
 
 
-def _pinch(c: PlantConfig) -> bool:
-    return _adiabatic(c) and c.heat_exchanger_model is HeatExchangerModel.PINCH
-
-
-def _effectiveness(c: PlantConfig) -> bool:
-    return _adiabatic(c) and c.heat_exchanger_model is HeatExchangerModel.EFFECTIVENESS
-
-
-def _ntu(c: PlantConfig) -> bool:
-    return _adiabatic(c) and c.heat_exchanger_model is HeatExchangerModel.COUNTERFLOW_NTU
-
-
-def _finite_hx(c: PlantConfig) -> bool:
-    return _effectiveness(c) or _ntu(c)
-
-
-def _specified_flow(c: PlantConfig) -> bool:
-    return _finite_hx(c) and c.water_flow_mode is WaterFlowMode.SPECIFIED_RATIO
-
-
-def _optimized_flow(c: PlantConfig) -> bool:
-    return _finite_hx(c) and c.water_flow_mode is not WaterFlowMode.SPECIFIED_RATIO
+def _offtake(c: PlantConfig) -> bool:
+    """Any external heat off-take at all."""
+    return _adiabatic(c) and c.heat_offtake is not HeatOfftake.NONE
 
 
 CONFIG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Plant concept", ("mode", "fluid")),
-    ("Boundary conditions", ("ambient_temperature_c", "ambient_pressure_bar", "storage_pressure_bar")),
+    ("Plant concept", ("mode",)),
+    (
+        "Boundary conditions",
+        (
+            "ambient_temperature_c",
+            "ambient_pressure_bar",
+            "ambient_relative_humidity",
+            "storage_pressure_bar",
+        ),
+    ),
     (
         "Turbomachinery",
         (
@@ -62,30 +51,61 @@ CONFIG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "intercooler_pressure_drop", "interheater_pressure_drop",
         ),
     ),
-    ("D-CAES ambient exchangers", ("ambient_heat_exchanger_approach_c", "use_ambient_reheat")),
     (
-        "A-CAES heat exchangers",
+        "AD-CAES ambient recovery and throttling",
         (
-            "cold_tank_temperature_c", "heat_exchanger_model", "heat_exchanger_pinch_c",
-            "heat_exchanger_effectiveness", "heat_exchanger_ntu",
+            "ambient_heat_exchanger_ntu",
         ),
     ),
     (
-        "Normalized water flow",
+        "LTA/LTHP-CAES coolant heat exchangers",
         (
-            "water_flow_mode", "water_air_mass_ratio", "water_air_ratio_search_min",
-            "water_air_ratio_search_max",
+            "heat_exchanger_ntu",
+            "cold_return_cooler_ntu",
+            "coolant_maximum_temperature_c",
+            "coolant_minimum_temperature_c",
         ),
     ),
-    ("Thermal surplus", ("thermal_storage_loss_fraction", "thermal_surplus_use")),
+    (
+        "Coolant-flow optimization",
+        ("optimization_objective",),
+    ),
+    (
+        "Thermal store",
+        (
+            "thermal_storage_tank_ua_w_per_k",
+            "storage_duration_hours",
+        ),
+    ),
+    (
+        "Heat off-take",
+        (
+            "heat_offtake",
+            "coolant_cascade_groups",
+            "heat_user_supply_temperature_c",
+            "heat_user_return_temperature_c",
+            "heat_user_exchanger_ntu",
+        ),
+    ),
 )
 
 
 FIELD_RULES: dict[str, FieldRule] = {
-    "mode": FieldRule("Plant mode", help="D-CAES rejects compression heat; A-CAES stores it in water."),
-    "fluid": FieldRule("Working fluid"),
+    "mode": FieldRule(
+        "Plant mode",
+        help="AD-CAES (ambient diabatic) rejects compression heat and scavenges "
+             "ambient heat on discharge; the adiabatic concepts (LTA-CAES, "
+             "LTHP-CAES) store it in a two-tank coolant loop.",
+    ),
     "ambient_temperature_c": FieldRule("Ambient temperature", "°C"),
     "ambient_pressure_bar": FieldRule("Ambient pressure", "bar"),
+    "ambient_relative_humidity": FieldRule(
+        "Ambient relative humidity",
+        "(0,1]",
+        help="Humidity diagnostic inlet condition. Charge coolers are followed "
+             "by ideal liquid separators in the moisture post-processing; this "
+             "does not add latent heat to the dry-air energy balance.",
+    ),
     "storage_pressure_bar": FieldRule("Storage pressure", "bar"),
     "compressor_stages": FieldRule("Compressor stages"),
     "expander_stages": FieldRule("Expander stages"),
@@ -93,19 +113,100 @@ FIELD_RULES: dict[str, FieldRule] = {
     "expander_efficiency": FieldRule("Expander isentropic efficiency", "0-1"),
     "intercooler_pressure_drop": FieldRule("Intercooler pressure drop", "fraction"),
     "interheater_pressure_drop": FieldRule("Interheater pressure drop", "fraction"),
-    "ambient_heat_exchanger_approach_c": FieldRule("Ambient HX approach", "K", active_when=_diabatic),
-    "use_ambient_reheat": FieldRule("Use ambient reheat", active_when=_diabatic),
-    "cold_tank_temperature_c": FieldRule("Cold-tank temperature", "°C", active_when=_adiabatic),
-    "heat_exchanger_model": FieldRule("HX specification", active_when=_adiabatic),
-    "heat_exchanger_pinch_c": FieldRule("Terminal pinch", "K", active_when=_pinch),
-    "heat_exchanger_effectiveness": FieldRule("Specified effectiveness", "0-1", active_when=_effectiveness),
-    "heat_exchanger_ntu": FieldRule("Counterflow NTU", active_when=_ntu),
-    "water_flow_mode": FieldRule("Water-flow selection", active_when=_finite_hx),
-    "water_air_mass_ratio": FieldRule("Water/air mass ratio per HX", "kg/kg", active_when=_specified_flow),
-    "water_air_ratio_search_min": FieldRule("Ratio search minimum", "kg/kg", active_when=_optimized_flow),
-    "water_air_ratio_search_max": FieldRule("Ratio search maximum", "kg/kg", active_when=_optimized_flow),
-    "thermal_storage_loss_fraction": FieldRule("Normalized TES loss", "fraction", active_when=_adiabatic),
-    "thermal_surplus_use": FieldRule("Surplus heat destination", active_when=_adiabatic),
+    "ambient_heat_exchanger_ntu": FieldRule(
+        "Ambient HX NTU", "UA/Cair",
+        help="Finite counter-flow sizing of every air/atmosphere exchanger; the "
+             "atmosphere is an infinite capacity rate, so effectiveness is 1-exp(-NTU). "
+             "AD-CAES only: the adiabatic concepts have no air/ambient exchanger.",
+        active_when=_diabatic,
+    ),
+    "heat_exchanger_ntu": FieldRule(
+        "Counterflow NTU", "UA/Cmin",
+        help="Common finite-area sizing input for every air/coolant stage HX.",
+        active_when=_adiabatic,
+    ),
+    "coolant_maximum_temperature_c": FieldRule(
+        "Coolant maximum temperature",
+        "°C",
+        help="Direct upper limit for every coolant state. The model no longer "
+             "derives a ceiling from circuit pressure or saturation.",
+        active_when=_adiabatic,
+    ),
+    "coolant_minimum_temperature_c": FieldRule(
+        "Coolant minimum temperature",
+        "°C",
+        help="Direct lower limit for every coolant state. A negative value is "
+             "allowed for a characterized low-freezing coolant; its real "
+             "properties still require vendor validation.",
+        active_when=_adiabatic,
+    ),
+    "cold_return_cooler_ntu": FieldRule(
+        "E-303 ambient recovery NTU",
+        "UA/Ccoolant",
+        help="One heat-only coolant/ambient exchanger. After solving the "
+             "interheater returns, the backend places it on the contiguous "
+             "cold suffix that maximizes ambient heat pickup, then remixes "
+             "that subgroup with the warmer bypass returns.",
+        active_when=_adiabatic,
+    ),
+    "optimization_objective": FieldRule(
+        "Optimization objective",
+        help="Electrical RTE bypasses the LTHP heat-user exchangers and sends "
+             "all available coolant to turbine reheat. Combined delivery "
+             "activates heat export and ranks electricity plus useful heat "
+             "over charge work; that delivery ratio is not an efficiency.",
+        active_when=_adiabatic,
+    ),
+    "coolant_cascade_groups": FieldRule(
+        "Coolant cascade groups",
+        "1..expander stages",
+        help="Number of interheater branch groups and serial heat-user "
+             "exchangers. The hot TES always remains one mixed store. Each "
+             "station cools the complete remaining trunk; its group then "
+             "bleeds off and only the residual reaches the next station.",
+        active_when=_offtake,
+    ),
+    "thermal_storage_tank_ua_w_per_k": FieldRule(
+        "Normalized tank UA",
+        "W/K per kg-air",
+        help="Combined per-tank conductance on the normalized one-kilogram-air "
+             "basis; applied to both the hot and the cold tank.",
+        active_when=_adiabatic,
+    ),
+    "storage_duration_hours": FieldRule(
+        "Thermal storage duration",
+        "h",
+        help="Standing time between charge and discharge; evaluated analytically without timestepping.",
+        active_when=_adiabatic,
+    ),
+    "heat_offtake": FieldRule(
+        "External heat off-take",
+        help="LTHP-CAES: add E-302 and send the complete feasible upstream "
+             "surplus to an external heat user of any kind - a heat network, a "
+             "process loop, an absorption chiller. With no user (LTA-CAES) "
+             "E-302 is absent and stored heat is used for additional turbine work.",
+        active_when=_adiabatic,
+    ),
+    "heat_user_supply_temperature_c": FieldRule(
+        "Heat-user supply temperature", "°C",
+        help="What the external user demands. The finite-NTU capacity check "
+             "rejects a station that cannot deliver it.",
+        active_when=_offtake,
+    ),
+    "heat_user_return_temperature_c": FieldRule(
+        "Heat-user return temperature", "°C",
+        help="What the external user gives back. This sets how cold the plant "
+             "coolant can leave the exchanger, and hence the duty; the user-side "
+             "mass flow then follows from it.",
+        active_when=_offtake,
+    ),
+    "heat_user_exchanger_ntu": FieldRule(
+        "Heat-user exchanger NTU", "UA/Cmin",
+        help="Performance class of every serial plant/user exchanger. The "
+             "physical area is implicitly resized with plant capacity, as for "
+             "the air/coolant exchangers.",
+        active_when=_offtake,
+    ),
 }
 
 
@@ -113,10 +214,10 @@ def active_fields(config: PlantConfig) -> set[str]:
     return {name for name, rule in FIELD_RULES.items() if rule.active_when(config)}
 
 
-def inactive_fields(config: PlantConfig) -> set[str]:
-    return set(FIELD_RULES) - active_fields(config)
-
-
-def active_config(config: PlantConfig) -> dict[str, Any]:
-    data = config.to_dict()
-    return {name: data[name] for name in active_fields(config)}
+def editable_fields(config: PlantConfig) -> set[str]:
+    """Fields that are both relevant and user-editable for this configuration."""
+    return {
+        name
+        for name, rule in FIELD_RULES.items()
+        if rule.active_when(config) and rule.editable_when(config)
+    }

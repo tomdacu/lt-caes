@@ -9,9 +9,9 @@ configuration, using the symbol vocabulary an engineer already reads fluently
 (ISO 10628 / ISA 5.1 shapes, ISA equipment tags).
 
 The diagram is DERIVED, never hand-drawn. Change ``compressor_stages`` from 4 to
-6 and two more compressor bodies, two more intercoolers, two more water branches
+6 and two more compressor bodies, two more intercoolers, two more coolant branches
 and two more tank tie-ins appear, correctly tagged and correctly piped. Switch
-``mode`` to diabatic and the entire water loop - tanks, pumps, headers - vanishes
+``mode`` to diabatic and the entire coolant loop - tanks, pumps, headers - vanishes
 and is replaced by fin-fan coolers venting to atmosphere. That is the whole point:
 the picture cannot drift out of sync with the model, because it is generated from
 the same :class:`~caes.config.PlantConfig` the solver runs on.
@@ -31,7 +31,7 @@ counter-flow exchanger blocks (:class:`CounterflowHX`) - are `schemdraw`_ elemen
 drawn onto the axis via ``schemdraw.Drawing(canvas=ax)``. Everything else - the
 orthogonal pipe routing, the annotations, and the peripheral ISA symbols (tanks,
 pumps, valves, filter, stack, cavern, drivers, grid, air-cooled and
-district-heating exchangers) - is drawn straight onto the same axis with
+heat-user taps) - is drawn straight onto the same axis with
 matplotlib, in the same data coordinates, so a schemdraw body placed at ``(x, y)``
 lands exactly where the router expects its pipe stub.
 
@@ -43,9 +43,9 @@ plant has six intercoolers tied into two tanks without ever opening a GUI.
 READING THE DRAWING
 -------------------
     dark grey  process air                  thin arrows show flow direction
-    red        HOT water   - tank -> interheaters, and intercoolers -> tank
-    orange     turbine-supply water after the upstream surplus exchanger E-302
-    blue       COLD water  - at cold-tank temperature, ready to be used again
+    red        HOT coolant   - tank -> interheaters, and intercoolers -> tank
+    orange     turbine-supply coolant downstream of the heat-user tap E-302
+    blue       COLD coolant  - at cold-tank temperature, ready to be used again
     green      MECHANICAL power on a shaft (motor -> compressors, expanders -> generator)
     purple     ELECTRICAL power crossing the plant boundary (grid <-> plant)
     dashed     instrument signal (to the ISA balloons)
@@ -57,13 +57,14 @@ penetration.
 
 EQUIPMENT TAG SCHEME (ISA-style, 100=charge, 200=discharge, 300=thermal, 400=storage)
     F-101   inlet filter / silencer      K-101..  compressor stages
-    M-101   compressor motor             E-101..  intercoolers
-    T-201.. expander stages              E-201..  interheaters / ambient reheaters
-    CC-201.. mandatory gas topping burners (D-CAES)
+    M-101   compressor motor             E-101..  intercoolers / final cooler
+    T-201.. expander stages              E-201..  coolant interheaters (adiabatic only)
+    TV-201.. anti-icing throttle valves (AD-CAES)
     G-201   generator                    S-201    exhaust stack
-    TK-301  hot water tank               TK-302   cold water tank
-    P-301   hot water pump               P-302    cold water pump
-    E-302   upstream surplus exchanger / H-301 district-heating network when selected
+    TK-301  hot coolant tank             TK-302   cold coolant tank
+    P-301   hot coolant pump             P-302    cold coolant pump
+    AH-201.. ambient reheaters (AD-CAES only; its sole discharge heat source)
+    E-302A.. heat-user cascade (present only with an external heat off-take)
     V-401   cavern                       XV-401/402  charge / discharge block valves
     W-101 / W-201  grid tie-in points
 """
@@ -78,18 +79,20 @@ from schemdraw import elements as elm
 from schemdraw.segments import Segment, SegmentPoly
 
 from .config import HeatOfftake, PlantConfig, PlantMode
+from .constants import WATER_FREEZING_TEMPERATURE_K
 from .models import PlantResult
+from .nomenclature import plant_concept_label
+from .thermal_limits import EXPANDER_ICE_MARGIN_K
 
 # --------------------------------------------------------------------------- palette
 
 AIR = "#37474f"        # process air
-HOT = "#c62828"        # highest-temperature water: intercoolers -> hot tank -> E-302
-WARM = "#ef6c00"       # optimized turbine-supply water downstream of E-302
-COLD = "#1565c0"       # cold water, at cold-tank temperature
+HOT = "#c62828"        # highest-temperature water: intercoolers -> hot tank
+WARM = "#ef6c00"       # minimum-duty turbine supply downstream of DH E-302
+COLD = "#1565c0"       # cold coolant, at cold-tank temperature
 SHAFT = "#2e7d32"      # MECHANICAL power on a shaft
 ELEC = "#6a1b9a"       # ELECTRICAL power across the plant boundary
 VENT = "#90a4ae"       # atmosphere
-FUEL = "#d84315"       # natural-gas fuel into the topping burners
 ROCK = "#8d6e63"       # geology
 FILL = "#ffffff"
 INK = "#263238"        # symbol outlines and text
@@ -198,7 +201,7 @@ class Diagram:
 # --------------------------------------------------------------------------- layout
 
 
-def layout(config: PlantConfig) -> Diagram:
+def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
     """Turn a configuration into the equipment list and its geometry.
 
     This function is the single source of truth for "what does this plant contain".
@@ -206,9 +209,8 @@ def layout(config: PlantConfig) -> Diagram:
     the plant, which depends solely on the discrete architectural choices:
 
         compressor_stages / expander_stages  -> how many machines and exchangers
-        mode                                 -> water loop, or fin-fans to atmosphere
-        use_ambient_reheat  (diabatic only)  -> ambient reheaters after stage 1
-        D-CAES                              -> one mandatory burner per expander
+        mode                                 -> coolant loop, or fin-fans to atmosphere
+        AD-CAES                              -> mandatory ambient reheat plus throttle bypass
         heat_offtake        (adiabatic only) -> district-heating exchanger + network
     """
     adiabatic = config.mode is PlantMode.ADIABATIC
@@ -223,20 +225,31 @@ def layout(config: PlantConfig) -> Diagram:
     cx = [X_ORIGIN + i * STAGE_PITCH for i in range(n_c)]
     for i, x in enumerate(cx):
         items.append(Equipment(f"K-{101 + i}", "compressor", f"Compressor stage {i + 1}", x, Y_KC, flow=+1))
+        cooler_name = (
+            f"Intercooler {i + 1}"
+            if i < n_c - 1
+            else f"Final cooler {i + 1}"
+        )
         items.append(Equipment(
             f"E-{101 + i}", "water_hx" if adiabatic else "air_cooler",
-            f"Intercooler {i + 1}" if i < n_c - 1 else "Aftercooler",
+            cooler_name,
             x + STAGE_PITCH / 2, Y_EC, flow=+1))
-    # Motor at the LEFT END of the shaft, its grid tie above it; filter on the inlet.
+    # Motor at the LEFT END of the shaft, its grid tie IN LINE with it (to the left,
+    # same band) rather than stacked above - so the drawing spends no vertical space
+    # on a tall electrical stub; filter on the inlet.
     items.append(Equipment("M-101", "motor", "Compressor motor", X_ORIGIN - 3.4, Y_KC))
-    items.append(Equipment("W-101", "grid", "Grid import", X_ORIGIN - 3.4, Y_GRID_TOP))
+    items.append(Equipment("W-101", "grid", "Grid import", X_ORIGIN - 3.4 - 2.9, Y_KC))
     items.append(Equipment("F-101", "filter", "Inlet filter\n& silencer", X_ORIGIN - 1.9, Y_KC - HALF_H - 0.1))
 
     # ---- DISCHARGING TRAIN (mirror; air flows RIGHT TO LEFT) -------------------
     # Expanders contiguous on the shaft at Y_KE; each interheater on the row ABOVE
     # (Y_EE), facing the centre - air toward the expanders, water toward the tanks.
     x_dstart = cx[-1] + STAGE_PITCH / 2 + 1.4
-    ex = [x_dstart - i * STAGE_PITCH for i in range(n_e)]
+    # D-CAES needs room for its ambient reheater and anti-icing throttle path.
+    # Moisture separators/dryers are intentionally omitted from this simplified
+    # process schematic; the separate humidity diagnostic remains available.
+    disc_pitch = STAGE_PITCH * (1.35 if adiabatic else 1.90)
+    ex = [x_dstart - i * disc_pitch for i in range(n_e)]
     for i, x in enumerate(ex):
         if adiabatic:
             items.append(Equipment(
@@ -244,45 +257,85 @@ def layout(config: PlantConfig) -> Diagram:
                 x + STAGE_PITCH / 2, Y_EE, flow=-1,
             ))
         else:
-            # Air flows right-to-left: optional ambient recovery comes first,
-            # followed by the mandatory burner immediately before the expander.
-            # The first cavern stream is already at ambient, so stage 1 has no
-            # zero-duty ambient exchanger but still has its topping burner.
-            if config.use_ambient_reheat and i > 0:
-                items.append(Equipment(
-                    f"E-{201 + i}", "ambient_heater", f"Ambient reheater {i + 1}",
-                    x + 2.50, Y_EE, flow=-1,
-                ))
+            # Air flows right-to-left: ambient recovery comes first, followed
+            # by the turbine/throttle pressure-reduction pair.  The ambient
+            # reheater carries its own AH tag: E-20x means "coolant interheater"
+            # and nothing else, so a tag can never mean two different devices
+            # depending on which concept is drawn.
+            # AD-CAES always includes ambient reheat; without it the expander
+            # outlet temperatures violate the icing envelope.
             items.append(Equipment(
-                f"CC-{201 + i}", "gas_burner", f"Gas topping burner {i + 1}",
-                x + 1.25, Y_EE, flow=-1,
+                f"AH-{201 + i}", "ambient_heater", f"Ambient reheater {i + 1}",
+                x + 3.0, Y_EE, flow=-1,
+            ))
+            items.append(Equipment(
+                f"TV-{201 + i}", "valve", f"Anti-icing throttle {i + 1}",
+                x - 1.45, Y_EE, flow=-1,
             ))
         items.append(Equipment(f"T-{201 + i}", "expander", f"Expander stage {i + 1}", x, Y_KE, flow=-1))
-    # Generator at the left end of the expander shaft, grid tie below; exhaust stack.
+    # Generator at the left end of the expander shaft, grid tie IN LINE with it; stack.
     items.append(Equipment("G-201", "generator", "Generator", ex[-1] - 3.0, Y_KE))
-    items.append(Equipment("W-201", "grid", "Grid export", ex[-1] - 3.0, Y_GRID_BOT))
+    items.append(Equipment("W-201", "grid", "Grid export", ex[-1] - 3.0 - 2.9, Y_KE))
     items.append(Equipment("S-201", "stack", "Exhaust\nto atmosphere", ex[-1] - STAGE_PITCH / 2 - 1.6, Y_EE))
 
     # ---- CAVERN (underground, on the right, shared by both trains) -------------
     x_cavern = max(cx[-1] + STAGE_PITCH / 2, x_dstart) + 4.6
+    # The block valves sit ON the shared wellhead air riser (which the router runs
+    # 1.4 to the right of the cavern centre), aligned on one vertical, not floating
+    # over the cavern centreline where they read as disconnected.
+    x_well = x_cavern + 1.4
     items.append(Equipment("V-401", "cavern", "Salt cavern", x_cavern, Y_CAVERN))
-    items.append(Equipment("XV-401", "valve", "Charge block valve", x_cavern, Y_EC, flow=+1))
-    items.append(Equipment("XV-402", "valve", "Discharge block valve", x_cavern, Y_EE, flow=-1))
+    items.append(Equipment("XV-401", "valve", "Charge block valve", x_well, Y_EC, flow=+1))
+    items.append(Equipment("XV-402", "valve", "Discharge block valve", x_well, Y_EE, flow=-1))
 
     # ---- THERMAL STORE (adiabatic only), centred between the trains ------------
     if adiabatic:
-        items.append(Equipment("TK-302", "cold_tank", "Cold water\ntank", X_COLD_TANK, Y_TANKS))
-        items.append(Equipment("TK-301", "hot_tank", "Hot water\ntank", X_HOT_TANK, Y_TANKS))
-        items.append(Equipment("P-302", "pump", "Cold water pump", X_COLD_TANK, (Y_TANKS + Y_CHDR_C) / 2, flow=+1))
-        items.append(Equipment("P-301", "pump", "Hot water pump", X_HOT_TANK + 2.1, Y_TANKS, flow=+1))
-        # E-302 sits in series between the hot tank and the interheaters, on the
-        # discharging water side. It exports heat when a network is selected, else rejects.
+        items.append(Equipment("TK-302", "cold_tank", "Cold coolant\ntank", X_COLD_TANK, Y_TANKS))
+        # Cascade granularity is a discharge-routing choice.  Charge-side
+        # returns mix into one hot store for every value of K.
         items.append(Equipment(
-            "E-302", "dh_exchanger" if selling else "air_cooler",
-            "District-heating\nexchanger" if selling else "Surplus heat\nrejection",
-            X_HOT_TANK + 4.4, Y_TANKS))
+            "TK-301", "hot_tank", "Mixed hot coolant\ntank",
+            X_HOT_TANK, Y_TANKS,
+        ))
+        items.append(Equipment("P-302", "pump", "Cold coolant pump", X_COLD_TANK, (Y_TANKS + Y_CHDR_C) / 2, flow=+1))
+        items.append(Equipment("P-301", "pump", "Hot coolant pump", X_HOT_TANK + 2.1, Y_TANKS, flow=+1))
+        items.append(Equipment(
+            "E-303",
+            "water_trim_cooler",
+            (
+                "Ambient recovery\n"
+                + (
+                    f"returns {result.thermal_store.cold_return_recovery_start_stage + 1}–"
+                    f"{config.expander_stages}"
+                    if result is not None
+                    and result.thermal_store is not None
+                    and result.thermal_store.cold_return_recovery_start_stage is not None
+                    else "bypassed"
+                )
+            ),
+            X_COLD_TANK + 2.2,
+            Y_DHDR_C,
+            flow=-1,
+        ))
         if selling:
-            items.append(Equipment("H-301", "heat_network", "District heating\nnetwork", X_HOT_TANK + 8.6, Y_TANKS))
+            # Exactly one physical exchanger precedes each group bleed.  The
+            # first sees the complete trunk; later bodies see its remainder.
+            groups = config.coolant_cascade_groups
+            first_x = X_HOT_TANK + 4.4
+            pitch = 1.9
+            for index in range(groups):
+                tag = "E-302" if groups == 1 else f"E-302{chr(ord('A') + index)}"
+                items.append(Equipment(
+                    tag,
+                    "offtake_tap",
+                    f"User HX {index + 1}/{groups}",
+                    first_x + index * pitch,
+                    Y_TANKS,
+                ))
+            items.append(Equipment(
+                "H-301", "heat_user", "External\nheat user",
+                first_x + (groups - 1) * pitch + 4.2, Y_TANKS,
+            ))
 
     xs = [e.x for e in items]
     # The water corridors are dedicated verticals kept LEFT of every symbol, so
@@ -302,7 +355,9 @@ def layout(config: PlantConfig) -> Diagram:
         x_min=min(xs) - 5.0,
         x_max=max(xs) + 6.4,          # room for the cavern instrument balloons
         y_min=Y_CAVERN - 2.6,
-        y_max=Y_GRID_TOP + 1.6,
+        # The grid ties now sit on the machine bands instead of on tall stubs at
+        # +/-9, so the frame closes just above the compressor duty callouts.
+        y_max=Y_KC + 2.9,
     )
 
 
@@ -312,6 +367,9 @@ HALF_W = 0.85          # half-width of a machine body
 HALF_H = 0.70          # half-height of a machine body at its TALL end
 HX_R = 0.68            # heat-exchanger circle radius
 TANK_W, TANK_H = 2.3, 2.2
+# A multi-level store is drawn as a stack of shorter vessels occupying the same
+# total height as the single tank it replaces, so nothing else in the layout has
+# to move when the level count changes.
 
 
 HXW, HXH = 1.9, 1.05       # counter-flow block width / height
@@ -384,8 +442,10 @@ class CounterflowHX(elm.Element):
         apts[0], apts[-1] = (-w / 2, ya), (w / 2, ya)
         self.segments.append(Segment(apts, color=AIR, lw=2.0))
         self.anchors["center"] = (0, 0)
-        self.anchors["wat_l"] = (-w / 2, yw); self.anchors["wat_r"] = (w / 2, yw)
-        self.anchors["air_l"] = (-w / 2, ya); self.anchors["air_r"] = (w / 2, ya)
+        self.anchors["wat_l"] = (-w / 2, yw)
+        self.anchors["wat_r"] = (w / 2, yw)
+        self.anchors["air_l"] = (-w / 2, ya)
+        self.anchors["air_r"] = (w / 2, ya)
 
 
 def _hx_circle(ax, x, y, fc: str):
@@ -434,36 +494,6 @@ def _ambient_heater(ax, x, y):
     ax.annotate(
         "", xy=(x, y - HX_R - 0.15), xytext=(x, y - HX_R - 1.35),
         arrowprops=dict(arrowstyle="-|>", color=VENT, lw=1.4, mutation_scale=11), zorder=5,
-    )
-
-
-def _gas_burner(ax, x, y):
-    """Mandatory D-CAES topping burner with a natural-gas inlet."""
-    from matplotlib.patches import Polygon, Rectangle
-
-    port_y = y - _HX_AY
-    ax.add_patch(Rectangle(
-        (x - 0.48, port_y - 0.52), 0.96, 1.04,
-        facecolor="#fbe9e7", edgecolor=INK, lw=1.3, zorder=4,
-    ))
-    # A small stylized flame identifies combustion without implying that the
-    # products are modelled as a separate working-fluid stream.
-    ax.add_patch(Polygon(
-        [
-            (x, port_y - 0.31),
-            (x - 0.20, port_y + 0.03),
-            (x - 0.05, port_y + 0.27),
-            (x + 0.02, port_y + 0.08),
-            (x + 0.19, port_y + 0.31),
-            (x + 0.22, port_y - 0.02),
-        ],
-        closed=True, facecolor=FUEL, edgecolor=FUEL, lw=0.8, zorder=5,
-    ))
-    ax.annotate(
-        "NG", xy=(x, port_y + 0.52), xytext=(x, port_y + 1.45),
-        ha="center", va="bottom", fontsize=7, color=FUEL,
-        arrowprops=dict(arrowstyle="-|>", color=FUEL, lw=1.4, mutation_scale=10),
-        zorder=5,
     )
 
 
@@ -587,7 +617,7 @@ def _stack(ax, x, y):
         Polygon([(x - 0.46, y - 0.78), (x + 0.46, y - 0.78), (x + 0.64, y + 0.78), (x - 0.64, y + 0.78)],
                 closed=True, facecolor=FILL, edgecolor=INK, lw=1.2, zorder=4)
     )
-    # Kept short: the spent-water return header runs across above it.
+    # Kept short: the spent-coolant return header runs across above it.
     ax.annotate(
         "", xy=(x, y + 1.55), xytext=(x, y + 0.88),
         arrowprops=dict(arrowstyle="-|>", color=VENT, lw=1.5, mutation_scale=12), zorder=3,
@@ -689,11 +719,10 @@ def render(ax, config: PlantConfig, result: PlantResult | None = None, *, show_v
         this is a fraction of a percent of compression work; it is not nothing.
       * the transformer/drive-train losses between the GRID symbol and the M/G
         circle. The model's round trip is shaft-to-shaft, not grid-to-grid.
-      * gas burners and their LHV inputs are represented, but the fuel mass
-        addition and combustion-product composition are not separate air-path
-        streams. See CAESPlant._simulate_diabatic.
+      * D-CAES throttle valves expose the pressure drop deliberately sacrificed
+        when ambient reheat cannot support a frost-safe turbine expansion.
     """
-    diagram = layout(config)
+    diagram = layout(config, result)
     ax.clear()
 
     # FILL THE CANVAS, AND STAY CENTRED. `adjustable="datalim"` tells matplotlib to
@@ -716,7 +745,7 @@ def render(ax, config: PlantConfig, result: PlantResult | None = None, *, show_v
     coolers = _processes(result, "charging", "intercooling")
     heaters = _processes(result, "discharging", "interheating")
     ambient_heaters = _processes(result, "discharging", "ambient_reheat")
-    burners = _processes(result, "discharging", "gas_topping")
+    throttles = _processes(result, "discharging", "throttling")
     expanders = _processes(result, "discharging", "expansion")
 
     _draw_ground(ax, diagram, fs)
@@ -733,7 +762,7 @@ def render(ax, config: PlantConfig, result: PlantResult | None = None, *, show_v
             mid, Y_TANKS,
             "NO THERMAL STORE\nall compression heat is rejected to atmosphere;\n"
             "ambient heat is recovered where available;\n"
-            "natural-gas topping is mandatory before every expansion",
+            "unsafe anti-icing pressure drop is completed by throttling",
             ha="center", va="center", fontsize=fs * 1.1, color=VENT, style="italic", zorder=8,
             bbox=dict(boxstyle="round,pad=0.7", facecolor="#fafafa", edgecolor=VENT, lw=1.0, ls="--"),
         )
@@ -742,7 +771,7 @@ def render(ax, config: PlantConfig, result: PlantResult | None = None, *, show_v
     if show_values and result is not None:
         _annotate_values(
             ax, diagram, result, compressors, coolers, heaters,
-            ambient_heaters, burners, expanders, fs,
+            ambient_heaters, throttles, expanders, fs,
         )
         _draw_instruments(ax, diagram, config, result, fs)
     _draw_title_block(ax, diagram, config, result, fs)
@@ -820,8 +849,8 @@ def _hx_air(e: Equipment) -> tuple[tuple[float, float], tuple[float, float]]:
     return (e.x - HXW / 2, e.y + s * _HX_AY), (e.x + HXW / 2, e.y + s * _HX_AY)
 
 
-def _burner_air(e: Equipment) -> tuple[tuple[float, float], tuple[float, float]]:
-    """The (left, right) process-air connections of a topping burner."""
+def _control_valve_air(e: Equipment) -> tuple[tuple[float, float], tuple[float, float]]:
+    """The (left, right) process-air connections of a stage throttle valve."""
     return (e.x - 0.48, e.y - _HX_AY), (e.x + 0.48, e.y - _HX_AY)
 
 
@@ -861,19 +890,26 @@ def _draw_air_lines(ax, diagram: Diagram, fs: float):
     _, last_r = _hx_air(coolers[-1])
     _pipe(ax, [last_r, (x_cav + 1.4, last_r[1]), (x_cav + 1.4, Y_CAVERN + 1.4)], AIR, arrow_at=0.6)
 
-    # discharging: cavern -> [ambient HX? -> burner -> expander] right-to-left
-    # -> stack. D-CAES always has the burner; A-CAES has one water heater.
+    # discharging: cavern ->
+    # [AH-20x ambient reheater? -> E-20x water reheater? -> expander -> throttle?]
+    # right-to-left -> stack.  The two heater kinds are mutually exclusive: the
+    # adiabatic concepts have one water reheater per stage and no ambient one,
+    # AD-CAES has an ambient reheater and its fuel-free trim throttle.
     seq: list[tuple[tuple[float, float], tuple[float, float]]] = []
     for i in range(diagram.expander_stages):
+        ambient = diagram.by_tag(f"AH-{201 + i}")
+        if ambient is not None:
+            al, ar = _hx_air(ambient)
+            seq.append((ar, al))
         heater = diagram.by_tag(f"E-{201 + i}")
         if heater is not None:
             hl, hr = _hx_air(heater)
             seq.append((hr, hl))                       # air enters the reheater from the right
-        burner = diagram.by_tag(f"CC-{201 + i}")
-        if burner is not None:
-            bl, br = _burner_air(burner)
-            seq.append((br, bl))
         seq.append(_mach_air(diagram.by_tag(f"T-{201 + i}")))
+        valve = diagram.by_tag(f"TV-{201 + i}")
+        if valve is not None:
+            vl, vr = _control_valve_air(valve)
+            seq.append((vr, vl))
     _pipe(ax, [(x_cav + 1.4, Y_CAVERN + 1.4), (x_cav + 1.4, seq[0][0][1]), seq[0][0]], AIR, arrow_at=0.6)
     for (_, prev_out), (nxt_in, _) in zip(seq, seq[1:]):
         _elbow(ax, prev_out, nxt_in, AIR)
@@ -895,8 +931,10 @@ def _draw_power(ax, diagram: Diagram, fs: float):
     comps = sorted(diagram.of_kind("compressor"), key=lambda e: e.x)
     exps = sorted(diagram.of_kind("expander"), key=lambda e: e.x)   # left to right
 
-    _pipe(ax, [(grid_in.x, grid_in.y - 0.55), (motor.x, motor.y + 0.58)], ELEC, lw=1.8, arrow_at=0.6)
-    _pipe(ax, [(gen.x, gen.y - 0.58), (grid_out.x, grid_out.y + 0.55)], ELEC, lw=1.8, arrow_at=0.6)
+    # Both grid ties are now level with their driver, so the electrical line is a
+    # short horizontal run from the grid box into the motor / generator circle.
+    _pipe(ax, [(grid_in.x + 1.5, grid_in.y), (motor.x - 0.58, motor.y)], ELEC, lw=1.8, arrow_at=0.6)
+    _pipe(ax, [(gen.x - 0.58, gen.y), (grid_out.x + 1.5, grid_out.y)], ELEC, lw=1.8, arrow_at=0.6)
 
     # The shaft is a real object: a solid green line connecting the machine centres in
     # the gaps, motor at the left end of the compressor string, generator at the left
@@ -930,7 +968,7 @@ def _bridge(ax, x, ya, yb, color, lw=1.6, arrow=True, hops=()):
 
 
 def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float):
-    """Route the two-tank water circuit, center-facing.
+    """Route the two-tank coolant circuit, center-facing.
 
     Every exchanger's water side faces the tanks, so each drop is short. The headers
     live between the exchanger row and the tanks; where a red drop crosses the blue
@@ -939,13 +977,17 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
 
         charging:  cold tank -> cold header -> intercooler (blue) ;
                    intercooler (red) -> hot header -> hot tank
-        discharge: hot tank -> P-301 -> E-302 -> turbine header (orange) ->
-                   interheater ; interheater (blue) -> cold-return header -> cold tank
+        discharge without DH: hot tank -> P-301 -> turbine header (red);
+        discharge with heat user: hot tank -> pump -> HX 1 -> bleed 1 ->
+                   HX 2 -> bleed 2 -> ... -> final HX -> final bleed;
+                   then interheater ; interheater (blue) -> cold-return header ->
+                   E-303 ambient exchanger -> cold tank
     """
     cold = diagram.by_tag("TK-302")
+    trim_cooler = diagram.by_tag("E-303")
     hot = diagram.by_tag("TK-301")
     p_hot = diagram.by_tag("P-301")
-    dh_hx = diagram.by_tag("E-302")
+    user_hxs = sorted(diagram.of_kind("offtake_tap"), key=lambda item: item.x)
     network = diagram.by_tag("H-301")
     coolers = sorted([e for e in diagram.of_kind("water_hx") if e.y == Y_EC], key=lambda e: e.x)
     heaters = sorted([e for e in diagram.of_kind("water_hx") if e.y == Y_EE], key=lambda e: e.x)
@@ -969,26 +1011,205 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
     if not heaters:
         return
 
-    # --- E-302 in series: hot tank -> P-301 -> E-302 (red) -> warm out.
+    # --- Hot tank discharge.  Every user HX is in SERIES on the plant trunk.
     _pipe(ax, [(x_ht + TANK_W / 2, Y_TANKS), (p_hot.x - 0.42, Y_TANKS)], HOT, lw=1.6, arrow_at=0.6)
-    _pipe(ax, [(p_hot.x + 0.42, Y_TANKS), (dh_hx.x - HX_R, Y_TANKS)], HOT, lw=1.6, arrow_at=0.6)
-    if network is not None:
-        _pipe(ax, [(dh_hx.x + HX_R, Y_TANKS + 0.35), (network.x - 1.5, Y_TANKS + 0.35)], HOT, lw=1.4, arrow_at=0.6)
-        _pipe(ax, [(network.x - 1.5, Y_TANKS - 0.35), (dh_hx.x + HX_R, Y_TANKS - 0.35)], COLD, lw=1.4, arrow_at=0.6)
+    if user_hxs:
+        _pipe(
+            ax,
+            [(p_hot.x + 0.42, Y_TANKS), (user_hxs[0].x - HX_R, Y_TANKS)],
+            HOT,
+            lw=1.6,
+            arrow_at=0.6,
+        )
+        for first, second in zip(user_hxs, user_hxs[1:]):
+            _pipe(
+                ax,
+                [(first.x + HX_R, Y_TANKS), (second.x - HX_R, Y_TANKS)],
+                WARM,
+                lw=1.6,
+                arrow_at=0.6,
+            )
+        supply_x = user_hxs[-1].x + HX_R + 0.5
+        _pipe(
+            ax,
+            [(user_hxs[-1].x + HX_R, Y_TANKS), (supply_x, Y_TANKS)],
+            WARM,
+            lw=1.6,
+            arrow_at=0.6,
+        )
+        supply_color = WARM
+    else:
+        supply_x = p_hot.x + 0.9
+        supply_color = HOT
+        _pipe(ax, [(p_hot.x + 0.42, Y_TANKS), (supply_x, Y_TANKS)], HOT, lw=1.6, arrow_at=0.6)
+    if user_hxs and network is not None:
+        # The external-user stream runs counter-current to the plant trunk.
+        # These two headers are the supply from the hottest station and the
+        # return into the coldest; station-to-station continuity is explicit in
+        # the generated composite panels and live temperature annotations.
+        _pipe(ax, [(user_hxs[0].x, Y_TANKS + HX_R),
+                   (user_hxs[0].x, Y_TANKS + 1.05),
+                   (network.x - 1.5, Y_TANKS + 1.05)], HOT, lw=1.4, arrow_at=0.7)
+        _pipe(ax, [(network.x - 1.5, Y_TANKS - 1.05),
+                   (user_hxs[-1].x, Y_TANKS - 1.05),
+                   (user_hxs[-1].x, Y_TANKS - HX_R)], COLD, lw=1.4, arrow_at=0.7)
+        # Join the user side of adjacent bodies in series, from the coldest
+        # (rightmost) station back toward the hottest (leftmost) station.
+        for index, (hotter, colder) in enumerate(
+            zip(user_hxs, user_hxs[1:])
+        ):
+            bridge_y = Y_TANKS + 1.35 + 0.16 * index
+            _pipe(
+                ax,
+                [
+                    (colder.x, Y_TANKS + HX_R),
+                    (colder.x, bridge_y),
+                    (hotter.x, bridge_y),
+                    (hotter.x, Y_TANKS - HX_R),
+                ],
+                WARM,
+                lw=1.15,
+                arrow_at=0.55,
+            )
 
     # --- DISCHARGING WATER: turbine-supply (orange) and cold-return (blue) headers,
     # both ABOVE the interheaters (which face the tanks with their water on top).
     hl = [_hx_wat(h)[0] for h in heaters]
     hr = [_hx_wat(h)[1] for h in heaters]
-    wr0, wr1 = min([dh_hx.x, *[p[0] for p in hr]]), max([dh_hx.x, *[p[0] for p in hr]])
-    wl0, wl1 = min([x_ct, *[p[0] for p in hl]]), max([x_ct, *[p[0] for p in hl]])
-    _pipe(ax, [(dh_hx.x, Y_TANKS - HX_R), (dh_hx.x, Y_DHDR_W)], WARM, lw=1.6, arrow_at=None)
-    _pipe(ax, [(wr0, Y_DHDR_W), (wr1, Y_DHDR_W)], WARM, lw=1.6, arrow_at=None)
-    _pipe(ax, [(wl0, Y_DHDR_C), (wl1, Y_DHDR_C)], COLD, lw=1.6, arrow_at=None)
-    _pipe(ax, [(x_ct, Y_DHDR_C), (x_ct, cold.y - TANK_H / 2)], COLD, lw=1.6, arrow_at=0.6)
-    for (lx, ly), (rx, ry) in zip(hl, hr):
-        _bridge(ax, rx, Y_DHDR_W, ry, WARM, hops=[Y_DHDR_C])     # turbine supply down into wat_r
-        _bridge(ax, lx, ly, Y_DHDR_C, COLD)                      # cold return up out of wat_l
+    wl1 = max([trim_cooler.x, *[p[0] for p in hl]])
+    if user_hxs:
+        # One visible bleed manifold per user station. With a solved result,
+        # identical stage-supply temperatures identify the exact backend group;
+        # result=None uses an even contiguous partition for the preview.
+        stage_heaters = sorted(heaters, key=lambda item: int(item.tag.split("-")[1]))
+        stage_groups: list[int] = []
+        if result is not None:
+            stage_supplies = [
+                process.heat_exchanger.water_inlet_temperature_k
+                for process in result.discharging.processes
+                if process.kind == "interheating" and process.heat_exchanger
+            ]
+            distinct: list[float] = []
+            for temperature_k in stage_supplies:
+                match = next(
+                    (index for index, value in enumerate(distinct)
+                     if abs(value - temperature_k) < 1e-6),
+                    None,
+                )
+                if match is None:
+                    distinct.append(temperature_k)
+                    match = len(distinct) - 1
+                stage_groups.append(match)
+        if len(stage_groups) != len(stage_heaters):
+            count = len(user_hxs)
+            stage_groups = [
+                min(count - 1, index * count // len(stage_heaters))
+                for index in range(len(stage_heaters))
+            ]
+
+        for group, tap in enumerate(user_hxs):
+            members = [
+                heater for heater, assigned in zip(stage_heaters, stage_groups)
+                if assigned == group
+            ]
+            if not members:
+                continue
+            member_ports = [_hx_wat(heater)[1] for heater in members]
+            branch_x = tap.x + HX_R + 0.22
+            header_y = Y_DHDR_W + 0.18 * (len(user_hxs) - 1 - group)
+            _pipe(
+                ax,
+                [(branch_x, Y_TANKS), (branch_x, header_y)],
+                WARM,
+                lw=1.4,
+                arrow_at=0.75,
+            )
+            _pipe(
+                ax,
+                [(min(branch_x, *(point[0] for point in member_ports)), header_y),
+                 (max(branch_x, *(point[0] for point in member_ports)), header_y)],
+                WARM,
+                lw=1.4,
+                arrow_at=None,
+            )
+            for port_x, port_y in member_ports:
+                _bridge(ax, port_x, header_y, port_y, WARM, hops=[Y_DHDR_C])
+    else:
+        wr0, wr1 = min([supply_x, *[p[0] for p in hr]]), max([supply_x, *[p[0] for p in hr]])
+        _pipe(ax, [(supply_x, Y_TANKS), (supply_x, Y_DHDR_W)], supply_color, lw=1.6, arrow_at=None)
+        _pipe(ax, [(wr0, Y_DHDR_W), (wr1, Y_DHDR_W)], supply_color, lw=1.6, arrow_at=None)
+    # The solved topology has TWO return manifolds. Only the selected contiguous
+    # suffix mixes upstream of E-303; warmer stages bypass it and join its warmed
+    # outlet on the final manifold. This is the actual backend placement, not a
+    # decorative label on an all-return cooler.
+    final_y = Y_DHDR_C - 0.62
+    recovery_start = (
+        result.thermal_store.cold_return_recovery_start_stage
+        if result is not None and result.thermal_store is not None
+        else None
+    )
+    by_stage = sorted(
+        heaters, key=lambda item: int(item.tag.split("-")[1])
+    )
+    selected = (
+        by_stage[recovery_start:]
+        if recovery_start is not None
+        else []
+    )
+    bypassed = [heater for heater in by_stage if heater not in selected]
+
+    if selected:
+        selected_ports = [_hx_wat(heater)[0] for heater in selected]
+        _pipe(
+            ax,
+            [
+                (trim_cooler.x + HX_R, Y_DHDR_C),
+                (max(point[0] for point in selected_ports), Y_DHDR_C),
+            ],
+            COLD,
+            lw=1.6,
+            arrow_at=None,
+        )
+        for port_x, port_y in selected_ports:
+            _bridge(ax, port_x, port_y, Y_DHDR_C, COLD)
+        _pipe(
+            ax,
+            [
+                (trim_cooler.x - HX_R, Y_DHDR_C),
+                (trim_cooler.x - HX_R, final_y),
+            ],
+            COLD,
+            lw=1.6,
+            arrow_at=0.7,
+        )
+    else:
+        # Solved bypass: the body remains installed but has no active process
+        # connection because no legal return suffix is below ambient.
+        _tag(ax, trim_cooler.x, trim_cooler.y + 1.05, "BYPASS", fs * 0.82, MUTED)
+
+    bypass_ports = [_hx_wat(heater)[0] for heater in bypassed]
+    final_right = max([trim_cooler.x - HX_R, *[point[0] for point in bypass_ports]])
+    _pipe(
+        ax,
+        [(x_ct, final_y), (final_right, final_y)],
+        COLD,
+        lw=1.6,
+        arrow_at=None,
+    )
+    _pipe(
+        ax,
+        [(x_ct, final_y), (x_ct, cold.y - TANK_H / 2)],
+        COLD,
+        lw=1.6,
+        arrow_at=0.7,
+    )
+    for port_x, port_y in bypass_ports:
+        _bridge(ax, port_x, port_y, final_y, COLD)
+
+    for heater in heaters:
+        (_, _), (rx, ry) = _hx_wat(heater)
+        if not user_hxs:
+            _bridge(ax, rx, Y_DHDR_W, ry, supply_color, hops=[Y_DHDR_C, final_y])
 
 
 # Peripheral symbols carry ISA details (hatches, atmosphere arrows, elliptical
@@ -999,9 +1220,9 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
 _PERIPHERAL = {
     "air_cooler": lambda ax, e: _air_cooler(ax, e.x, e.y),
     "ambient_heater": lambda ax, e: _ambient_heater(ax, e.x, e.y),
-    "gas_burner": lambda ax, e: _gas_burner(ax, e.x, e.y),
-    "dh_exchanger": lambda ax, e: _dh_exchanger(ax, e.x, e.y),
-    "heat_network": lambda ax, e: _heat_network(ax, e.x, e.y),
+    "water_trim_cooler": lambda ax, e: _air_cooler(ax, e.x, e.y),
+    "offtake_tap": lambda ax, e: _dh_exchanger(ax, e.x, e.y),
+    "heat_user": lambda ax, e: _heat_network(ax, e.x, e.y),
     "hot_tank": lambda ax, e: _vessel(ax, e.x, e.y, TANK_W, TANK_H, "#ffebee"),
     "cold_tank": lambda ax, e: _vessel(ax, e.x, e.y, TANK_W, TANK_H, "#e3f2fd"),
     "pump": lambda ax, e: _pump(ax, e.x, e.y, e.flow),
@@ -1060,11 +1281,12 @@ def place_tag(ax, e: Equipment, fs: float) -> None:
         ax.text(e.x, e.y + 0.35, e.tag, ha="center", va="center", fontsize=fs * 1.1,
                 fontweight="bold", color=ROCK, zorder=8)
         ax.text(e.x, e.y - 0.5, e.label, ha="center", va="center", fontsize=fs * 0.95, color=ROCK, zorder=8)
-    elif e.kind == "heat_network":
+    elif e.kind == "heat_user":
         ax.text(e.x, e.y - 1.05, f"{e.tag}  {e.label.replace(chr(10), ' ')}", ha="center", va="top",
                 fontsize=fs * 0.9, fontweight="bold", color=HOT, zorder=8)
     elif e.kind == "grid":
-        ax.text(e.x + 1.75, e.y, e.tag, ha="left", va="center", fontsize=fs * 0.9,
+        # The driver now sits to the RIGHT of the grid box, so the tag goes left.
+        ax.text(e.x - 1.75, e.y, e.tag, ha="right", va="center", fontsize=fs * 0.9,
                 fontweight="bold", color=ELEC, zorder=8)
     elif e.kind == "pump":
         # Pumps sit ON a vertical run, so a tag underneath lands on the header.
@@ -1078,14 +1300,6 @@ def place_tag(ax, e: Equipment, fs: float) -> None:
     elif e.kind == "valve":
         ax.text(e.x, e.y - 0.85, e.tag, ha="center", va="top", fontsize=fs * 0.9,
                 fontweight="bold", color=INK, zorder=8)
-    elif e.kind == "gas_burner":
-        # Keep the longer CC tag inside its compact block; placing it below at
-        # the generic tag level collides with the adjacent ambient-HX tag.
-        ax.text(
-            e.x, e.y - _HX_AY - 0.41, e.tag,
-            ha="center", va="center", fontsize=fs * 0.72,
-            fontweight="bold", color=INK, zorder=8,
-        )
     else:
         ax.text(e.x, e.y - 1.25, e.tag, ha="center", va="top", fontsize=fs,
                 fontweight="bold", color=INK, zorder=8)
@@ -1093,7 +1307,7 @@ def place_tag(ax, e: Equipment, fs: float) -> None:
 
 def _annotate_values(
     ax, diagram, result, compressors, coolers, heaters,
-    ambient_heaters, burners, expanders, fs,
+    ambient_heaters, throttles, expanders, fs,
 ):
     """Overlay the live solver output: the numbers that change as you move a slider.
 
@@ -1134,79 +1348,99 @@ def _annotate_values(
             # work comes back out of the plant.
             _stream_label(ax, e.x - STAGE_PITCH / 2 + 0.4, Y_DISCHARGE, f"{heat.outlet.temperature_c:.0f}°C", fs * 0.9)
 
-    # D-CAES has no zero-duty ambient exchanger before stage 1, hence process
-    # index zero maps to equipment E-202. Burners, in contrast, map one-to-one
-    # from CC-201 because topping is mandatory before every expansion.
-    for i, heat in enumerate(ambient_heaters, start=1):
-        e = diagram.by_tag(f"E-{201 + i}")
+    for i, heat in enumerate(ambient_heaters):
+        e = diagram.by_tag(f"AH-{201 + i}")
         if e:
             _tag(
                 ax, e.x, e.y + HX_R + 0.30,
                 f"{heat.heat_to_air_j_per_kg / 1000:.0f} kJ/kg ambient",
                 fs * 0.86, VENT, va="bottom",
             )
-    for i, burner in enumerate(burners):
-        e = diagram.by_tag(f"CC-{201 + i}")
+    for i, valve in enumerate(throttles):
+        e = diagram.by_tag(f"TV-{201 + i}")
         if e:
             _tag(
-                ax, e.x, e.y + 1.75,
-                f"LHV {burner.fuel_lhv_input_j_per_kg / 1000:.0f} kJ/kg",
-                fs * 0.82, FUEL, va="bottom",
-            )
-            _stream_label(
-                ax, e.x - 0.75, Y_DISCHARGE + 1.30,
-                f"{burner.outlet.temperature_c:.0f}°C", fs * 0.86,
+                ax, e.x, e.y + 1.0,
+                f"{valve.inlet.pressure_bar:.1f}→{valve.outlet.pressure_bar:.1f} bar",
+                fs * 0.82, VENT, va="bottom",
             )
 
     # The exhaust is a real exergy loss and belongs to the exhaust stream.
     exhaust = result.discharging.outlet
     stack = diagram.by_tag("S-201")
     loss = result.exergy.loss_j_per_kg_air.get("exhaust_air", 0.0)
+    # Sit the exhaust callout ABOVE the stack, in the free upper-left corner: the
+    # generator's grid tie now shares the expander band, so the old spot on that band
+    # collided with the GRID box.
     _stream_label(
-        ax, stack.x - 2.9, Y_DISCHARGE,
+        ax, stack.x - 1.5, Y_EE + 2.6,
         f"{exhaust.temperature_c:.0f} °C   {exhaust.pressure_bar:.2f} bar\nexergy lost: {loss / 1000:.1f} kJ/kg",
         fs * 0.9, color=VENT,
     )
 
     store = result.thermal_store
-    surplus_hx = diagram.by_tag("E-302")
-    if store and surplus_hx and result.district_heating is None:
-        ax.text(
-            surplus_hx.x, Y_DH_BRANCH + HX_R + 1.1,
-            f"rejected {store.rejected_heat_j_per_kg_air / 1000:.0f} kJ/kg\n"
-            f"exergy {store.rejected_heat_exergy_j_per_kg_air / 1000:.1f} kJ/kg LOST",
-            ha="center", va="bottom", fontsize=fs * 0.9, color=VENT, zorder=8,
+    trim = diagram.by_tag("E-303")
+    if store and trim:
+        # Keep the live duty above the fin-fan. The ordinary ISA tag is below
+        # the symbol; putting both below made the two texts overlap.
+        _stream_label(
+            ax,
+            trim.x,
+            trim.y + 1.25,
+            (
+                f"{store.cold_return_heat_absorbed_from_ambient_j_per_kg_air / 1000:.0f}"
+                " kJ/kg ambient heat\n"
+            )
+            + f"selected mix {store.cold_return_recovery_inlet_temperature_k - 273.15:.0f}→"
+            f"{store.cold_return_recovery_outlet_temperature_k - 273.15:.0f} °C",
+            fs * 0.82,
+            VENT,
         )
-
     # The district-heating branch receives the surplus that the exact turbine
     # duties did not need.  Selecting it changes product vs loss, not turbine work.
-    dh = result.district_heating
-    dh_hx = diagram.by_tag("E-302")
+    dh = result.heat_offtake
+    user_hxs = sorted(diagram.of_kind("offtake_tap"), key=lambda item: item.x)
+    dh_hx = user_hxs[0] if user_hxs else None
     network = diagram.by_tag("H-301")
     store = result.thermal_store
     if dh and dh_hx and network and store:
         # T_x is the optimized minimum turbine supply, fixed before heat destination.
         lines = [
-            "all expander outlets target "
-            f"{dh.minimum_expander_outlet_temperature_k - 273.15:.0f} °C",
-            f"turbine supply: {dh.hot_tank_temperature_k - 273.15:.0f} °C  →  "
-            f"{dh.turbine_supply_temperature_k - 273.15:.0f} °C   "
-            f"(all {store.total_water_mass_ratio:.2f} kg/kg-air)",
-            f"heat sold:   {dh.heat_j_per_kg_air / 1000:.0f} kJ/kg-air",
+            "wet-expander target: "
+            f"{WATER_FREEZING_TEMPERATURE_K - 273.15 + EXPANDER_ICE_MARGIN_K:.0f} °C liquid"
+            f" / local frost + {EXPANDER_ICE_MARGIN_K:.0f} K",
+            f"trunk: {dh.hot_tank_temperature_k - 273.15:.0f} °C  →  "
+            f"{dh.turbine_supply_temperature_k - 273.15:.0f} °C hottest bleed   "
+            f"({store.total_water_mass_ratio:.2f} kg/kg-air in total)",
+            f"heat sold:   {dh.heat_j_per_kg_air / 1000:.0f} kJ/kg-air"
+            + (
+                f"  over {len(dh.taps)} cascade stations"
+                if len(dh.taps) > 1 else "  in one exchanger"
+            ),
             f"exergy sold: {dh.exergy_j_per_kg_air / 1000:.1f} kJ/kg-air",
-            f"network:     {dh.return_temperature_k - 273.15:.0f} → {dh.supply_temperature_k - 273.15:.0f} °C, "
-            f"{dh.network_water_per_kg_air:.2f} kg/kg-air",
+            f"heat user:   {dh.return_temperature_k - 273.15:.0f} → {dh.supply_temperature_k - 273.15:.0f} °C, "
+            f"{dh.network_water_per_kg_air:.2f} kg/kg-air, "
+            f"HX NTU {dh.heat_exchanger_ntu:g}, minimum effectiveness margin "
+            f"{dh.minimum_effectiveness_margin:.3f}",
         ]
 
-        ax.text(network.x, Y_DH_BRANCH - 1.5, "\n".join(lines), ha="center", va="top",
+        # The block describes the off-take branch; put it to the RIGHT of the user so it
+        # no longer eats the vertical space below the tank band.
+        ax.text(network.x + 1.9, Y_DH_BRANCH, "\n".join(lines), ha="left", va="center",
                 fontsize=fs * 0.85,
                 color=HOT,
                 zorder=8,
                 bbox=dict(boxstyle="round,pad=0.35", facecolor="#fff8f6", edgecolor=HOT, lw=0.7, alpha=0.95))
 
-        # Label the supply header with the temperature the turbine-duty solve requires.
-        _stream_label(ax, dh_hx.x, Y_HOT_BOT + 0.9,
-                      f"T_x = {dh.turbine_supply_temperature_k - 273.15:.0f} °C", fs * 0.9, color=HOT)
+        # Label the supply header with the hottest temperature any stage is bled
+        # at. On a single-level plant that is the classic common T_x; on a
+        # cascade it is the top of the ladder, and the rest of the ladder is
+        # below it.
+        _stream_label(
+            ax, dh_hx.x, Y_HOT_BOT + 0.9,
+            f"hottest bleed {dh.turbine_supply_temperature_k - 273.15:.0f} °C",
+            fs * 0.9, color=HOT,
+        )
 
 
 def _draw_instruments(ax, diagram, config, result, fs):
@@ -1228,7 +1462,8 @@ def _draw_instruments(ax, diagram, config, result, fs):
         # district-heating tap, and an instrument bubble sitting on that line would
         # read as a process connection.
         store = result.thermal_store
-        hot, cold = diagram.by_tag("TK-301"), diagram.by_tag("TK-302")
+        hot = diagram.by_tag("TK-301")
+        cold = diagram.by_tag("TK-302")
         for tank, value in (
             (hot, f"{store.hot_temperature_available_k - 273.15:.0f}"),
             (cold, f"{store.cold_temperature_k - 273.15:.0f}"),
@@ -1245,19 +1480,41 @@ def _draw_title_block(ax, diagram, config, result, fs):
     the visible data window around to fill the canvas, so anything anchored to
     x_max would drift inward and, at some stage counts, land on top of the cavern.
     """
-    lines = [f"MODE: {diagram.mode.upper()}",
+    lines = [
+             f"PLANT CONCEPT: {plant_concept_label(diagram.mode, exports_heat=diagram.exports_heat)}",
              f"{diagram.compressor_stages}x compression / {diagram.expander_stages}x expansion"]
     if diagram.has_water_loop:
-        lines.append(f"TES: two-tank water, counterflow NTU={config.heat_exchanger_ntu:g}")
-        lines.append("DH off-take: YES" if diagram.exports_heat else "DH off-take: none")
+        lines.append(
+            "TES: 1 mixed hot tank + 1 mixed cold tank, "
+            f"counterflow NTU={config.heat_exchanger_ntu:g}"
+        )
+        if diagram.exports_heat:
+            lines.append(
+                f"Heat-user cascade: {config.coolant_cascade_groups} serial HX / "
+                f"{config.coolant_cascade_groups} interheater groups, "
+                f"NTU={config.heat_user_exchanger_ntu:g}"
+            )
+        lines.append(
+            f"E-303 ambient exchanger NTU={config.cold_return_cooler_ntu:g}"
+            " (heat-only, optimized return suffix)"
+        )
+        lines.append(
+            "Heat off-take: external user"
+            if diagram.exports_heat else "Heat off-take: none"
+        )
+        lines.append("Reheat: coolant loop only; no ambient scavenging")
     else:
         lines.append("TES: none - heat rejected to atmosphere")
-        lines.append(f"Gas topping: REQUIRED, eta={config.combustor_efficiency:.3f}")
-        lines.append(
-            "Ambient reheat: ON" if config.use_ambient_reheat else "Ambient reheat: OFF"
-        )
+        lines.append("Fuel: none; frost control by turbine + throttle")
+        lines.append("Ambient reheat: mandatory (icing-safe AD-CAES operation)")
+    lines.append(
+        "Lower envelope: "
+        f"{WATER_FREEZING_TEMPERATURE_K - 273.15 + EXPANDER_ICE_MARGIN_K:.0f} °C liquid"
+        f" / local frost + {EXPANDER_ICE_MARGIN_K:.0f} K"
+    )
     if result is not None:
         lines.append(f"Electrical RTE:     {result.round_trip_efficiency:6.1%}")
+        lines.append(f"Useful-energy ratio:{result.useful_energy_delivery_ratio:6.1%}")
         lines.append(f"Total exergy eff.:  {result.exergy.total_useful_exergy_efficiency:6.1%}")
 
     ax.text(
@@ -1271,16 +1528,16 @@ def _draw_legend(ax, diagram, fs):
     """Colour key, pinned to the BOTTOM-LEFT corner (also in axes coordinates)."""
     key = [
         ("process air", AIR),
-        ("hot water", HOT),
-        ("optimized turbine-supply water", WARM),
-        ("cold water", COLD),
+        ("hot coolant", HOT),
+        ("optimized turbine-supply coolant", WARM),
+        ("cold coolant", COLD),
         ("mechanical shaft power", SHAFT),
         ("electrical power (grid)", ELEC),
         ("atmosphere", VENT),
     ]
     if not diagram.has_water_loop:
         key = [("process air", AIR), ("mechanical shaft power", SHAFT),
-               ("electrical power (grid)", ELEC), ("natural gas", FUEL),
+               ("electrical power (grid)", ELEC),
                ("atmosphere", VENT)]
 
     handles = [
@@ -1305,7 +1562,7 @@ def save(config: PlantConfig, result: PlantResult | None, path) -> "object":
 
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    diagram = layout(config)
+    diagram = layout(config, result)
     width = diagram.x_max - diagram.x_min
     height = diagram.y_max - diagram.y_min
     scale = 0.46

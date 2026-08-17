@@ -1,13 +1,25 @@
-"""Result models for normalized energy and exergy analysis."""
+"""Result data structures for the normalised energy and exergy analysis.
+
+Everything in this module is a plain, frozen value object: the solver in
+:mod:`caes.plant` builds these, and the CLI, GUI, P&ID and tests only ever read
+them. Keeping them dumb is deliberate - it means a result can be pickled,
+diffed, or dropped into a notebook without dragging CoolProp along.
+
+UNITS ARE IN THE FIELD NAMES. Anything ending ``_j_per_kg`` or
+``_j_per_kg_air`` is joules per kilogram of air moved through the cavern; ``_k``
+is kelvin, ``_c`` celsius, ``_pa`` pascal. There is no time domain, so there are
+no rates anywhere - do not add a field called ``power``.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
 
 
 @dataclass(frozen=True)
 class State:
+    """A thermodynamic state point of the air. Fully determined by any two of these."""
+
     pressure_pa: float
     temperature_k: float
     enthalpy_j_per_kg: float
@@ -24,28 +36,43 @@ class State:
 
 @dataclass(frozen=True)
 class HeatExchangerPerformance:
-    model: str
+    """The solved water side of one finite counter-current air/water HX."""
+
     effectiveness: float
-    ntu: float | None
-    water_air_mass_ratio: float
+    ntu: float
+    water_air_mass_ratio: float          # r = m_water / m_air for THIS exchanger
     water_inlet_temperature_k: float
     water_outlet_temperature_k: float
-    duty_j_per_kg_air: float
+    duty_j_per_kg_air: float             # always >= 0; the direction is in Process.heat_to_air_j_per_kg
 
 
 @dataclass(frozen=True)
 class Process:
-    kind: str
+    """One component: air enters at ``inlet``, leaves at ``outlet``.
+
+    ``work_j_per_kg`` and ``heat_to_air_j_per_kg`` follow the air-centric sign
+    convention documented at the top of :mod:`caes.thermodynamics`:
+    positive means "into the air".
+    """
+
+    kind: str                            # compression | intercooling | aftercooling | interheating | expansion | throttling | ambient_reheat | ambient_anti_icing_reheat | interheater_pressure_drop
     inlet: State
     outlet: State
     work_j_per_kg: float = 0.0
     heat_to_air_j_per_kg: float = 0.0
     exergy_destruction_j_per_kg: float = 0.0
     heat_exchanger: HeatExchangerPerformance | None = None
-    note: str = ""
 
     @property
     def first_law_residual_j_per_kg(self) -> float:
+        """Closure error of the steady-flow energy equation h_out - h_in = q + w.
+
+        This is a self-check, not a physical quantity: it must be zero to machine
+        precision for every component. If it drifts, a component model has an
+        inconsistency between the state it reports and the q/w it claims - which
+        is exactly the class of bug that silently inflates round-trip efficiency.
+        The tests assert on it; please keep them.
+        """
         return (self.outlet.enthalpy_j_per_kg - self.inlet.enthalpy_j_per_kg) - (
             self.heat_to_air_j_per_kg + self.work_j_per_kg
         )
@@ -53,6 +80,8 @@ class Process:
 
 @dataclass
 class Cycle:
+    """An ordered chain of processes - either the charging train or the discharging train."""
+
     name: str
     inlet: State
     processes: list[Process] = field(default_factory=list)
@@ -63,49 +92,221 @@ class Cycle:
 
     @property
     def states(self) -> list[State]:
+        """Every state point, in flow order. This is what the T-s / p-h plots trace."""
         return [self.inlet, *(process.outlet for process in self.processes)]
 
     @property
     def work_j_per_kg(self) -> float:
+        """Net work into the air. Positive for charging, negative for discharging."""
         return sum(process.work_j_per_kg for process in self.processes)
-
-    @property
-    def max_first_law_residual_j_per_kg(self) -> float:
-        return max((abs(p.first_law_residual_j_per_kg) for p in self.processes), default=0.0)
-
 
 @dataclass(frozen=True)
 class TwoTankSummary:
+    """State of the two-tank sensible-water thermal store over one charge/discharge.
+
+    Energy bookkeeping the plant guarantees (asserted in the tests):
+
+        recovered + cold_return_heat_absorbed_from_ambient
+              = delivered + offtake_heat
+              + storage_loss + cold_storage_loss                  (12)
+
+    There is deliberately no ambient rejection path:
+    with no heat user the complete hot-tank stream reaches the interheaters,
+    and with district heating E-302 exports exactly the upstream surplus, so
+    any residual rejection would require an extra cooler the topology does not
+    have. E-303 is instead a heat-only ambient recovery exchanger. The solver
+    places that single body on the contiguous suffix of cold interheater
+    returns that maximises ambient heat pickup, then mixes its outlet with the
+    warmer bypass returns before the cold tank.
+
+    The cold-tank standing loss is genuinely signed, and stays that way: it is
+    negative when the cold tank sits below ambient and leaks heat in.
+    """
+
     cold_temperature_k: float
-    hot_temperature_before_loss_k: float
-    hot_temperature_available_k: float
-    returned_temperature_k: float
-    total_water_mass_ratio: float
+    hot_temperature_before_loss_k: float   # mixed-mean of the intercooler branches
+    hot_temperature_available_k: float     # after standing losses; what the hot tank actually offers
+    returned_temperature_k: float          # untreated mixed-mean of ALL returns
+    total_water_mass_ratio: float          # sum of r over all charging exchangers
     recovered_heat_j_per_kg_air: float
-    delivered_heat_j_per_kg_air: float
+    delivered_heat_j_per_kg_air: float     # to the AIR, in the interheaters
+    offtake_heat_j_per_kg_air: float      # to the NETWORK, in the DH exchanger
     storage_loss_j_per_kg_air: float
-    surplus_heat_j_per_kg_air: float
-    surplus_exergy_j_per_kg_air: float
-    useful_surplus: bool
+    storage_duration_hours: float
+    thermal_storage_tank_ua_w_per_k: float # normalized UA on the 1 kg-air basis
+    # Compatibility field: the heat-only architecture can never reject here.
+    cold_return_heat_rejected_to_ambient_j_per_kg_air: float = 0.0
+    cold_return_heat_absorbed_from_ambient_j_per_kg_air: float = 0.0
+    # Destruction either way: water exergy is convex about the dead state, so
+    # both directions move the stream toward its minimum.
+    cold_return_exergy_destruction_j_per_kg_air: float = 0.0
+    cold_storage_loss_j_per_kg_air: float = 0.0  # signed standing loss of the cold tank
+    cold_return_exchanger_ntu: float = 0.0
+    # Final mixed cold-tank inlet, after the selected E-303 subgroup rejoins
+    # the warmer bypass branches.
+    cold_return_exchanger_outlet_temperature_k: float = 0.0
+    cold_return_recovery_start_stage: int | None = None  # zero-based stage index
+    cold_return_recovery_branch_count: int = 0
+    cold_return_recovery_mass_ratio: float = 0.0
+    cold_return_recovery_inlet_temperature_k: float = 0.0
+    cold_return_recovery_outlet_temperature_k: float = 0.0
+    cold_loop_closure_error_k: float = 0.0
+    coolant_maximum_temperature_k: float = 0.0
+    coolant_maximum_temperature_reached_k: float = 0.0
+    coolant_minimum_temperature_k: float = 273.15
+    coolant_minimum_temperature_reached_k: float = 273.15
+    # The physical hot store.  The current architecture always reports one
+    # entry: intercooler returns mix before storage.  The tuple shape is kept
+    # for result-file compatibility, not as a cascade-control surface.
+    hot_level_temperatures_k: tuple[float, ...] = ()
+    hot_level_water_mass_ratios: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class OfftakeTap:
+    """One user exchanger before one interheater-group bleed.
+
+    The mixed hot store feeds one trunk.  All of it crosses station zero; its
+    first interheater group then bleeds off.  The remaining trunk crosses the
+    next station and is bled again.  Thus exchanger flow is a strictly
+    decreasing staircase and there are exactly as many exchangers as groups.
+    There is no zero-flow exchanger after the final bleed.
+
+    The user side is a single stream running counter to the trunk: it enters the
+    COLDEST station at its return temperature and leaves the HOTTEST one at its
+    supply temperature, so the cold stations preheat and only the top station
+    does the final lift. ``user_water_per_kg_air`` is therefore the same number
+    on every tap - it is one stream, not one per station - and summing it over
+    the taps would count the same water many times over.
+
+    With one group there is exactly one station, the classic E-302.
+    """
+
+    station_index: int                      # 0 is the HOTTEST station
+    plant_inlet_temperature_k: float        # trunk temperature entering
+    plant_outlet_temperature_k: float       # trunk temperature leaving
+    plant_water_per_kg_air: float           # trunk flow THROUGH this station
+    user_inlet_temperature_k: float         # user water entering (from the colder station)
+    user_outlet_temperature_k: float        # user water leaving (on to the hotter station)
+    user_water_per_kg_air: float            # the ONE user stream, from (17)
+    heat_j_per_kg_air: float                # duty handed to the user, eq. (20)
+    required_effectiveness: float = 0.0
+    available_effectiveness: float = 0.0
+
+
+@dataclass(frozen=True)
+class HeatOfftakeSummary:
+    """Heat sold to an EXTERNAL USER, summed over the cascade stations.
+
+    The user is described by the temperatures it wants and hands back plus the
+    exchanger NTU class, so this is equally a
+    district-heating network, an industrial process loop, an absorption chiller
+    or a dryer. District heating is the likely application, not the subject.
+
+    Each group is served after its user exchanger: the exchanger cools the
+    entire remaining trunk, then the group bleeds the exact flow required by
+    its moisture-safe interheater duties.  What is not bled continues to the
+    next user exchanger.
+    """
+
+    mode: str
+    hot_tank_temperature_k: float           # trunk temperature entering the top station
+    turbine_supply_temperature_k: float     # hottest temperature reaching the turbines
+    supply_temperature_k: float             # requested supply; infeasible HX matches raise
+    return_temperature_k: float             # what the user gives back
+    heat_j_per_kg_air: float                # total duty handed to the user, eq. (20)
+    exergy_j_per_kg_air: float              # exergy the user RECEIVES - this is the product
+    network_water_per_kg_air: float         # the ONE user flow, from (17)
+    taps: tuple[OfftakeTap, ...] = ()       # cascade stations, hottest first
+    heat_exchanger_ntu: float = 0.0
+    maximum_required_effectiveness: float = 0.0
+    minimum_effectiveness_margin: float = 0.0
 
 
 @dataclass(frozen=True)
 class ExergySummary:
-    electrical_efficiency: float
-    total_useful_exergy_efficiency: float
-    hot_water_exergy_j_per_kg_air: float
-    useful_heat_exergy_j_per_kg_air: float
-    rejected_heat_exergy_j_per_kg_air: float
-    component_destruction_j_per_kg_air: dict[str, float]
+    """Grassmann balance for the cycle, per kg of air. See equation (6) in caes.exergy.
+
+    The invariant that makes this trustworthy:
+
+        compression work
+          = expansion work + useful heat exergy      <- products
+          + sum(component_destruction)               <- irreversibility
+          + sum(losses)                              <- exergy that left unused
+          + balance_residual                         <- must be ~0
+
+    ``balance_residual_j_per_kg_air`` is the honesty check. If it grows beyond a
+    few J/kg, a term has gone missing and the efficiencies above it are lies.
+
+    Heat rejected to the ambient dead state is DESTRUCTION, not loss: it still
+    carried exergy when it crossed the boundary, but the receiver (the
+    atmosphere) is the dead state itself, so nothing usable leaves the plant.
+    Losses are reserved for streams that leave intact (the exhaust air).
+    """
+
+    total_useful_exergy_efficiency: float      # (W_exp + district-heat exergy) / W_comp
+    hot_water_exergy_j_per_kg_air: float       # exergy the hot tank offers the discharge, after standing losses
+    useful_heat_exergy_j_per_kg_air: float     # PRODUCT: exergy the DH network receives (0 if no offtake)
+    component_destruction_j_per_kg_air: dict[str, float]   # DESTRUCTION, by component kind
+    loss_j_per_kg_air: dict[str, float]        # LOSS, e.g. exhaust air
     total_destruction_j_per_kg_air: float
+    total_loss_j_per_kg_air: float
+    balance_residual_j_per_kg_air: float
 
 
 @dataclass(frozen=True)
 class OptimizationSummary:
+    """Outcome of the coupled thermal-store design optimization."""
+
     objective: str
-    selected_water_air_mass_ratio: float
     objective_value: float
     evaluated_points: int
+    max_hx_temperature_spread_k: float       # worst endpoint variation of DeltaT over all water HXs
+
+
+@dataclass(frozen=True)
+class MoistureRemoval:
+    """Condensate formed at one charging-side cooling location.
+
+    These values are a separate humidity diagnostic. The main thermodynamic
+    cycle remains a dry-air energy balance and does not silently gain latent
+    heat terms.
+    """
+
+    process_index: int
+    location: str
+    pressure_pa: float
+    temperature_k: float
+    inlet_water_vapor_kg_per_kg_dry_air: float
+    outlet_water_vapor_kg_per_kg_dry_air: float
+    condensed_water_kg_per_kg_dry_air: float
+
+
+@dataclass(frozen=True)
+class MoistureSummary:
+    """Vapour and condensate balance through the calculated charge train.
+
+    Every charging intercooler and the final aftercooler are treated as a cooler
+    followed by an ideal liquid separator.
+
+    ``stored_air_water_vapor_kg_per_kg_dry_air`` is the ratio leaving the LAST
+    charge-side cooler/separator, so it is simultaneously the cavern inventory
+    and the protected basis the wet-expander envelope is evaluated against.
+    There used to be a second field for "after the charge coolers"; the two were
+    provably identical for every train, which invited call sites to pick one at
+    random as though they differed. One name, one meaning.
+
+    The balance the tests assert:
+
+        inlet = surface_separator + stored_air
+    """
+
+    ambient_relative_humidity: float
+    inlet_water_vapor_kg_per_kg_dry_air: float
+    stored_air_water_vapor_kg_per_kg_dry_air: float
+    surface_separator_water_kg_per_kg_dry_air: float
+    storage_pressure_pa: float
+    removals: tuple[MoistureRemoval, ...] = ()
 
 
 @dataclass
@@ -113,11 +314,12 @@ class PlantResult:
     mode: str
     charging: Cycle
     discharging: Cycle
-    thermal_store: TwoTankSummary | None
+    thermal_store: TwoTankSummary | None       # None in diabatic mode: there is no coolant loop
     exergy: ExergySummary
-    selected_water_air_mass_ratio: float | None = None
+    heat_offtake: HeatOfftakeSummary | None = None   # None unless an offtake is configured
     optimization: OptimizationSummary | None = None
-    external_heat_input_j_per_kg: float = 0.0
+    external_heat_input_j_per_kg: float = 0.0  # ambient energy; zero-exergy at the selected dead state
+    moisture: MoistureSummary | None = None        # diagnostic only; dry-air energy balance is unchanged
 
     @property
     def compression_work_input_j_per_kg(self) -> float:
@@ -125,12 +327,63 @@ class PlantResult:
 
     @property
     def expansion_work_output_j_per_kg(self) -> float:
+        # Discharging work is negative under the air-centric sign convention;
+        # flip it once, here, so that everything downstream sees a positive output.
         return -self.discharging.work_j_per_kg
 
     @property
-    def shaft_work_ratio(self) -> float:
+    def round_trip_efficiency(self) -> float:
+        """Shaft-to-shaft electrical round trip: work out over work in.
+
+        NOT a grid-to-grid figure - motor, gearbox, generator and auxiliary loads
+        (notably the water pumps) are outside the model, so expect the real plant
+        to land several points lower.
+        """
         return self.expansion_work_output_j_per_kg / self.compression_work_input_j_per_kg
 
     @property
-    def round_trip_efficiency(self) -> float:
-        return self.shaft_work_ratio
+    def useful_energy_delivery_ratio(self) -> float:
+        """THE energy metric: useful output over what the plant PAYS FOR.
+
+            R_delivery = (W_exp + Q_DH) / W_comp
+
+        The denominator is charging electricity and nothing else. Every ambient
+        energy stream the plant harvests is free, so none of it is a cost and
+        none of it belongs here:
+
+          * the AD-CAES ambient reheat duty or the adiabatic concept's
+            heat-only E-303 coolant recovery
+            (both reported as ``external_heat_input_j_per_kg``), and
+          * the energy the air stream itself hands over when the exhaust leaves
+            below intake enthalpy - intake and exhaust are both at p0 and the
+            intake is at T0, so that is ``h(T0, p0) - h_exhaust``, worth up to
+            ~49 kJ/kg-air over the supplied configurations.
+
+        Both are reported as flows; neither is charged to the plant. There used
+        to be a second "first-law" ratio that put the first of those two into
+        the denominator while still ignoring the second. It was an inconsistent
+        half-measure - it priced one free stream and not the other - so it is
+        gone. One energy metric, one meaning.
+
+        Consequently this ratio is NOT bounded by one, for the same reason a
+        heat-pump COP is not: the plant draws low-temperature, high-entropy heat
+        out of the atmosphere and converts part of it into useful output. That
+        is a result, not an error, and it is deliberately not called an
+        efficiency.
+
+        Where to look for the other two questions:
+
+          * the CLOSED first-law boundary balance, with every free stream drawn
+            explicitly, is :func:`caes.diagrams.draw_energy_sankey`;
+          * the bounded, thermodynamically complete figure is the exergy
+            efficiency, where the cold exhaust is booked as ``exhaust_air``
+            loss and ambient heat correctly carries ~zero exergy at T0.
+        """
+        offtake_heat = (
+            self.heat_offtake.heat_j_per_kg_air
+            if self.heat_offtake is not None
+            else 0.0
+        )
+        return (
+            self.expansion_work_output_j_per_kg + offtake_heat
+        ) / self.compression_work_input_j_per_kg
