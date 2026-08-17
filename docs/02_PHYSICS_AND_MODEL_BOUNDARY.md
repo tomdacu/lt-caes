@@ -121,7 +121,7 @@ The complete comparison can be repeated without writing project caches:
 ```powershell
 python -B scripts/compare_property_apis.py --config example_config.json
 python -B scripts/compare_property_apis.py `
-  --config heat_and_power_example_config.json --levels 4
+  --config heat_and_power_example_config.json
 ```
 
 The second command is intentionally a complete K=4 plant comparison rather
@@ -313,16 +313,22 @@ No time grid or transient tank state is introduced. The same normalized UA and
 standing time apply to BOTH tanks, at the two moments each actually holds the
 inventory: the hot tank stands between charge and discharge, the cold tank
 between discharge and the next charge. The hot-tank result lowers
-`T_hot,available`. Before the cold tank, one heat-only `E-303` warms the
-optimized ordered suffix of sub-ambient returns at
-`epsilon = 1 - exp(-NTU_return)`:
+`T_hot,available`. On the return path, one heat-only `E-303` warms the selected
+group of COLDEST sub-ambient returns at `epsilon = 1 - exp(-NTU_return)`, the
+warmed group remixes with the bypass returns, and that mixture then crosses
+`E-304`'s cold side before the tank:
 
 ```text
-T_suffix,out = T_ambient
-             + (T_suffix,in - T_ambient) exp(-NTU_return)
+T_group,out = T_ambient
+            + (T_group,in - T_ambient) exp(-NTU_return)
 
-T_cold,next = T_ambient + (T_final_mix - T_ambient) * tank_decay
+T_recuperated = T_final_mix + Q_recup / (r_total cp,water)
+
+T_cold,next   = T_ambient + (T_recuperated - T_ambient) * tank_decay
 ```
+
+Without a heat user there is no `E-304`, `Q_recup` is zero, and the mixed return
+reaches the tank unchanged.
 
 Returns at or above ambient bypass E-303. Its absorbed ambient heat and exergy
 destruction are reported separately from cold-tank standing loss. The standing
@@ -364,31 +370,33 @@ machine may cross a positive PDP, but every body is followed by a
 separator/demister. Later, lower-pressure stages can operate dry below zero
 while remaining above their frost boundary. For each pressure stage the solver
 finds the required pre-expansion enthalpy and `Q_i`.
-For every K, the one mixed hot store is cooled through exactly K user exchangers.
-Each exchanger has the same solved plant-side drop, and the temperature after
-station g feeds contiguous interheater group g:
+With a heat user, the one mixed hot store is cooled through exactly one user
+exchanger and then withdrawn stage by stage inside `E-304`. Each extraction sits
+a single common margin above the air temperature its own stage must produce:
 
 ```text
-T_supply,g = T_hot - (g + 1) delta_T
+T_supply,g = T_demand,g + m
 ```
 
-`delta_T` is refined until the inverse-HX group bleeds consume the complete
-stored coolant flow. The user's return temperature is the limiting cold end;
-finite-NTU feasibility is checked on the resulting stations. There is no
-additional exchanger after the final bleed.
+`m` is refined until the inverse-HX bleeds consume the complete stored coolant
+flow, which also fixes what `E-302` receives, since the first extraction IS the
+trunk inlet. The demand profile is raised to its non-increasing suffix maximum
+first, because a progressively withdrawn trunk cannot serve a later stage hotter
+than an earlier one. Finite-NTU feasibility is checked on `E-302` and on every
+`E-304` zone separately.
 
-At each group supply the finite-HX equation is inverted independently for every stage
-to obtain `r_h,i`. The physical closed-cycle constraints are:
+At each extraction the finite-HX equation is inverted independently for every
+stage to obtain `r_h,i`. The physical closed-cycle constraints are:
 
 ```text
 sum(r_h,i) = r_total
-tank_decay(final_mix(E303(optimal_suffix(returns)))) = T_cold
+tank_decay(E304(final_mix(E303(coldest_group(returns))))) = T_cold
 ```
 
 Every kilogram of transferred water crosses one active interheater core, so
 `sum(r_h,i)` is exactly the complete normalized throughput. With a heat user,
-all K close bleed mass inside the equal-drop solve and the outer root reproduces
-the cold-tank state. With no heat
+the margin root closes bleed mass inside the discharge solve and the outer root
+reproduces the cold-tank state. With no heat
 user, E-302 is absent for every objective, every stage is served from the one
 mixed hot store, and candidate allocations of
 all conserved water are compared by real multi-stage expansion work. That
@@ -422,10 +430,12 @@ turbine heat demand. The user receives the upstream trunk drops:
 Q_user = r_total cp,water (T_hot,available - T_return) - sum(Q_i)
 ```
 
-For one mixed store this identity fixes total heat once the closed return and
-inventory are known; K moves where that heat is exchanged. It is delivered through
-the series cascade of stations described in
-[document 08](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md). The separate
+For one mixed store this identity fixes the total once the closed return and
+inventory are known. What the architecture decides is how that total SPLITS
+between the user and internal recuperation, and the split follows from the
+extraction margin rather than being chosen: the user takes everything above the
+first extraction. See
+[document 12](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md). The separate
 Heat-only `E-303` remains explicit and can add only sub-ambient ambient heat;
 it cannot dispose of residual heat.
 

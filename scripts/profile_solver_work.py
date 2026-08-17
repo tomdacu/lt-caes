@@ -51,7 +51,8 @@ def profile(config: PlantConfig, property_api: PropertyAPI) -> dict[str, Any]:
         "_light_discharge_at_supply",
         "_materialize_ladder",
         "_discharge_with_ratios",
-        "_solve_ladder",
+        "_solve_extraction_margin",
+        "_build_extraction_exchanger",
         "_close_cold_loop",
     )
     with ExitStack() as stack:
@@ -79,7 +80,7 @@ def profile(config: PlantConfig, property_api: PropertyAPI) -> dict[str, Any]:
     return {
         "property_api": property_api.value,
         "mode": result.mode,
-        "coolant_cascade_groups": config.coolant_cascade_groups,
+        "expander_stages": config.expander_stages,
         "heat_offtake": config.heat_offtake.value,
         "diagnostic_seconds": elapsed,
         "fingerprint_sha256": _fingerprint(result),
@@ -115,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Count complete solver work independently of machine timing."
     )
     parser.add_argument("--config", type=Path, help="configuration JSON")
-    parser.add_argument("--levels", type=int, help="override coolant_cascade_groups")
+    parser.add_argument(
+        "--extraction-ntu", type=float, help="override extraction_exchanger_ntu"
+    )
     parser.add_argument(
         "--property-api",
         choices=[api.value for api in PropertyAPI],
@@ -124,8 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_config(args.config) if args.config else PlantConfig()
-    if args.levels is not None:
-        config = replace(config, coolant_cascade_groups=args.levels)
+    if args.extraction_ntu is not None:
+        config = replace(config, extraction_exchanger_ntu=args.extraction_ntu)
     print(json.dumps(profile(config, PropertyAPI(args.property_api)), indent=2))
     return 0
 

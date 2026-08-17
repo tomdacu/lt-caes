@@ -78,41 +78,71 @@ python -m caes.cli --config example_config.json `
   --sankey artifacts/sankeys.png
 ```
 
-## Single-store coolant cascade
+## One user exchanger and one extraction exchanger
 
 The adiabatic concepts always use one mixed hot coolant tank and one mixed cold
-coolant tank. `coolant_cascade_groups = K` controls discharge routing only; it
-never splits the stored coolant into temperature levels.
-
-`1 <= K <= expander_stages`. Expansion stages are assigned to K contiguous,
-duty-balanced groups; the compressor count does not bound this discharge-side
-parameter.
-
-### The discharge cascade
-
-For K groups there are exactly K serial user exchangers. All coolant crosses
-the first; group 0 then bleeds its required interheater flow, and only the
-remainder crosses the second. The pattern ends with exchanger K-1 and the final
-bleed. There is no K+1 exchanger after the trunk has been emptied.
+coolant tank. With a heat user, the discharge side is two bodies:
 
 ```text
-mixed hot TES -> HX 0 -> bleed 0 -> HX 1 -> bleed 1 -> ... -> final HX -> final bleed
+mixed hot TES
+  -> E-302   one user exchanger, crossed by the WHOLE inventory
+  -> E-304   one counter-current body, one bleed per expansion stage,
+             trunk fully consumed at the last one
 ```
 
-Every station receives the same solved plant-side temperature drop. Because
-trunk flow decreases after each bleed, the first exchanger transfers the most
-heat and successive duties decrease.
+### Why the trunk is staged
 
-The user side is **one counter-current stream in series** through all the
-stations: in at the coldest at its return temperature, out of the hottest at
-its supply temperature, so the cold stations preheat and only the top one makes
-the final lift. A parallel connection cannot work - it would demand
-an effectiveness unavailable at the configured NTU, and the cold ones cannot
-offer it. Both streams are represented as constant-`cp` liquids, so each station's
-profile is two straight lines and its narrowest gap is at one of its ends;
-checking both ends of every station therefore checks the whole cascade. See
+Every expansion stage must reach its own air temperature before its turbine,
+fixed by the anti-icing envelope. Those demands fall steeply along the train:
+
+```text
+  stage          1      2      3      4      5      6
+  demand [C]   65.95  61.24  50.89  41.20  32.13  23.63
+```
+
+Feeding all of them from one temperature means sizing it for stage one and
+handing stage six 44 K it cannot use. E-304 places each bleed a single common
+margin `m` above its own stage's demand, and recuperates the descent between
+bleeds into the plant's own coolant return, on its cold side:
+
+```text
+  T_extraction,g = T_demand,g + m
+  sum_g b_g( T_demand,g + m ) = R_total      <- m is rooted on this
+  T_trunk,in     = T_demand,0 + m            <- so E-302 gets everything above it
+```
+
+Because the first extraction IS the trunk inlet, one root closes the whole
+discharge network: there is no separate split to choose between what is sold and
+what is recuperated.
+
+A progressively withdrawn trunk only gets colder, so where the raw demand
+profile is not monotone - it is not, at 300 bar with eight stages - it is raised
+to its suffix maximum and two stages share one nozzle.
+
+### What it buys, and what it costs
+
+The user's return temperature is no longer chained to what the turbines need.
+Under the former serial cascade the trunk had to stay above the user's return
+all the way to the last bleed, so a hot return squeezed the turbines out; a
+95/75 C user cost 6 points of delivery ratio and 110/90 C was infeasible.
+Measured against that frozen baseline (commit `22b7bb7`):
+
+| user [C] | cascade `R` | E-304 `R` |
+|---|---:|---:|
+| 80/45 | 1.0693 | 1.0744 |
+| 95/75 | 1.0078 | 1.0624 |
+| 100/80 | 0.9820 | 1.0379 |
+| 110/90 | *infeasible* | 0.9847 |
+
+Recuperation does warm the cold tank and does cost compressor work. It is paid
+for by the returns: matched supplies let the interheater returns come back
+genuinely cold, and E-303 then harvests a third more free ambient energy. The
+worst T-Q endpoint spread also falls from 40.4 K to 11.2 K. See
 [the architecture specification](docs/12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
-and [the solver note](docs/08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md).
+and [the measured results](docs/08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md#5-measured-against-the-frozen-cascade).
+
+`coolant_cascade_groups` is dormant. It still loads, and is still range checked,
+so configuration files written against the cascade keep working.
 
 ## Coolant-loop optimization
 
@@ -121,16 +151,19 @@ The LTA/LTHP coolant cycle is closed inside the solve:
 1. choose a candidate cold-tank temperature;
 2. iterate each charging ratio toward capacity-rate matching;
 3. mix the charging returns into one hot-tank state;
-4. group the stages, solve the K post-user supply temperatures, and make the
-   group bleeds consume exactly the stored inventory;
+4. root the common extraction margin so the bleeds consume exactly the stored
+   inventory, which also fixes what E-302 sells;
 5. enforce wet-expander, direct coolant minimum/maximum, icing, and
-   finite-HX temperature constraints;
-6. optimize the heat-only E-303 return suffix, mix it with bypass returns, and
-   check that E-303 plus tank standing reproduce the trial cold-tank state.
+   finite-HX temperature constraints, including a pinch check at every node of
+   E-304 rather than only at its two ends;
+6. select the heat-only E-303 group over the coldest returns, mix it with the
+   bypass returns, recuperate that mixture through E-304, and check that the
+   result plus tank standing reproduces the trial cold-tank state.
 
-With a heat user, the cascade sells whatever the exact turbine duties left in
-the trunk. Without one, E-302 is absent, the complete inventory reaches the
-interheaters, and candidates are ranked by real multi-stage expansion work.
+With a heat user, E-302 sells the band above the first extraction. Without one,
+both E-302 and E-304 are absent, the complete inventory reaches the interheaters
+at the one stored temperature, and candidates are ranked by real multi-stage
+expansion work.
 
 The loop is closed on the **cold-tank temperature**. Branch-selective E-303
 cannot be reconstructed from one raw mixed mean, so every trial retains the
@@ -191,12 +224,14 @@ one kilogram of stored air, so
 LTA:
 hot store -> parallel interheaters -> E-303 -> cold tank
 
-LTHP, K discharge groups and one mixed hot store:
-hot TES -> E-302A -> group-0 bleed -> E-302B -> group-1 bleed -> ...
-              |                              |
-              +---- one user stream <--------+   (counter-current)
-      ... -> final E-302x -> final group bleed -> interheaters
-          -> mixed return -> E-303 -> cold TES
+LTHP, one mixed hot store:
+hot TES -> E-302 (whole trunk) -> E-304 -> bleed 1 -> bleed 2 -> ... -> bleed N
+              |                     ^                                     |
+        one user stream             |                              interheaters
+        (counter-current)           |                                     |
+                                    +----- E-303 <---- mixed return <-----+
+                                    |
+                                 cold TES
 
 air side:
 cavern -> E-20x coolant interheater -> turbine
@@ -210,21 +245,25 @@ Q_recovered + Q_E303,ambient
     + Q_hot_tank_standing + Q_cold_tank_standing
 ```
 
-`E-303` is one finite heat-only coolant/ambient exchanger. The solver evaluates
-every ordered return suffix, warms the maximum-duty sub-ambient mixture, and
-then mixes it with the warmer bypass returns. The P&ID is generated after the
-solve and draws that actual cutoff.
+`E-303` is one finite heat-only coolant/ambient exchanger. The solver sorts the
+returns by temperature, warms the maximum-duty coldest group, and then mixes it
+with the warmer bypass returns. The P&ID is generated after the solve and draws
+that actual selection.
 
-There is no upstream surplus-rejection cooler. With LTHP, the whole temperature
-drop the cascade takes out of the trunk is useful heat for the user. Residual
-low-temperature return energy may be recovered at E-303. Every user station
-must fit `heat_user_exchanger_ntu`; requested temperatures are never silently
-capped.
+Note that `Q_recup`, the duty E-304 moves from the trunk into the return, does
+not appear in the balance above. It is INTERNAL: the trunk's loss and the
+return's gain are the same joules, so they cancel. What it changes is grade, and
+the cold-tank temperature.
 
-Because the user exchangers are the only thing that cools the trunk, no bleed
-can be colder than `T_user,return`. A user whose return is hotter
-than the mean supply the turbines need is therefore infeasible for a reason
-that belongs to no individual exchanger, and it is reported as such rather than
+There is no surplus-rejection cooler anywhere. E-302 must fit
+`heat_user_exchanger_ntu` and every E-304 zone must fit
+`extraction_exchanger_ntu`; requested temperatures are never silently capped.
+
+Because E-304 continues cooling the trunk below what E-302 took, a bleed CAN now
+be colder than `T_user,return` - which is exactly the constraint the serial
+cascade could not escape. What remains is an ordinary finite-area limit on one
+body: a required effectiveness above one means E-302 would have to take the
+trunk below its own cold-side inlet, and that is reported as such rather than
 as N separate interheater duty failures.
 
 ## Objectives and metrics
@@ -282,15 +321,11 @@ The T-s, h-s and p-h traces carry dotted isotherms for the mixed cold tank, the
 one mixed hot store, every distinct post-user group supply, and every distinct
 interheater return. Supply rungs are discharge states, not stored TES levels.
 
-### One composite-curve panel per exchanger, cascade included
+### One composite-curve panel per exchanger
 
-The composite tab draws **every** coolant-coupled exchanger, and the user's
-cascade stations come first, in the order the trunk meets them: `E-302A` is the
-station that hands the user its supply temperature, and the last letter is the
-one that meets its return. One station keeps the plain `E-302` tag. Each panel
-plots the station's OWN end temperatures rather than the user's overall span -
-only the top station reaches the supply temperature, and drawing the others
-against it would invent an approach violation the hardware does not have.
+The composite tab draws **every** coolant-coupled exchanger, and the single
+`E-302` user station comes first, since it is the first thing the trunk meets
+after the store. Each panel plots that body's OWN end temperatures.
 
 ### The Sankeys run inlet to outlet, one arrow per station
 
@@ -328,9 +363,11 @@ is a product. Only exhaust air leaves as intact exergy loss.
 
 ### The P&ID follows the configuration
 
-Change `coolant_cascade_groups` and the P&ID retains one TK-301 while drawing
-exactly K serial E-302 user exchangers. Add a heat off-take and the cascade plus
-external user appear; remove it and they vanish. `AH-20x` exists only in AD-CAES, where ambient reheat is the
+Change the expander stage count and the P&ID keeps one TK-301 and one `E-302`
+while redrawing `E-304` with exactly one extraction nozzle per stage. The body
+is drawn TAPERED because that is its distinguishing feature: the trunk inside it
+thins at every nozzle until it is exhausted. Add a heat off-take and both
+exchangers plus the external user appear; remove it and all three vanish. `AH-20x` exists only in AD-CAES, where ambient reheat is the
 sole discharge heat source, and `E-20x` now means a coolant interheater and
 nothing else - the two used to share a tag band, which made "the reheater" mean
 two different devices depending on which concept was drawn.
@@ -344,7 +381,7 @@ performance registry, reproducible benchmarks, usage and research notes.
 The performance/theory entry points are:
 
 - [Theory and design objectives](docs/11_THEORY_AND_DESIGN_OBJECTIVES.md)
-- [Proposed single-store coolant cascade](docs/12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
+- [Single-store extraction architecture (E-302 + E-304)](docs/12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
 - [Optimization workflow](docs/04_OPTIMIZATION_WORKFLOW.md)
 - [Performance and optimization](docs/09_PERFORMANCE_AND_OPTIMIZATION.md)
 - [Benchmarks and regression protocol](docs/10_BENCHMARKS_AND_REGRESSION.md)

@@ -81,10 +81,11 @@ CONFIG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "Heat off-take",
         (
             "heat_offtake",
-            "coolant_cascade_groups",
             "heat_user_supply_temperature_c",
             "heat_user_return_temperature_c",
             "heat_user_exchanger_ntu",
+            "extraction_exchanger_ntu",
+            "coolant_cascade_groups",
         ),
     ),
 )
@@ -158,12 +159,21 @@ FIELD_RULES: dict[str, FieldRule] = {
         active_when=_adiabatic,
     ),
     "coolant_cascade_groups": FieldRule(
-        "Coolant cascade groups",
+        "Coolant cascade groups (dormant)",
         "1..expander stages",
-        help="Number of interheater branch groups and serial heat-user "
-             "exchangers. The hot TES always remains one mixed store. Each "
-             "station cools the complete remaining trunk; its group then "
-             "bleeds off and only the residual reaches the next station.",
+        help="DORMANT. It used to set the number of serial heat-user stations "
+             "and interheater groups. The active topology has one heat-user "
+             "exchanger and one extraction per expansion stage on E-304, so "
+             "nothing is left for it to control. Still accepted so older "
+             "configuration files keep loading unchanged.",
+        active_when=lambda config: False,
+    ),
+    "extraction_exchanger_ntu": FieldRule(
+        "E-304 extraction HX NTU", "UA/Cmin per zone",
+        help="Performance class of EACH zone of the multi-stream extraction "
+             "body. The trunk's capacity rate steps down at every bleed, so the "
+             "body is solved zone by zone rather than with one whole-body "
+             "effectiveness; a single figure would be invalid here.",
         active_when=_offtake,
     ),
     "thermal_storage_tank_ua_w_per_k": FieldRule(

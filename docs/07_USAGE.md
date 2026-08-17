@@ -106,15 +106,20 @@ The same compressor/storage/expander backbone is retained. Both concepts use
 the same wet-expander anti-icing envelope. AD-CAES is fuel-free and combines
 ambient reheat, maximum safe turbine work and isenthalpic throttling; LTA-CAES
 routes compression heat through the pressurized two-tank coolant loop. E-303
-can only warm an optimized sub-ambient return suffix; it never rejects heat.
+can only warm the coldest sub-ambient returns; it never rejects heat. Neither
+concept carries E-304: without a heat user there is nothing to sell off the top
+of the trunk, so there is no reason to stage it.
 
 ### Study LTHP-CAES
 
 Start from `heat_and_power_example_config.json`. Its process order is:
 
 ```text
-hot TES -> E-302 heat-user taps -> coolant interheaters
-        -> optimized return suffix -> E-303 -> final mixing -> cold TES
+hot TES -> E-302 heat-user HX (whole trunk, sells the top band)
+        -> E-304 extraction HX, one bleed per stage, trunk fully consumed
+        -> coolant interheaters
+        -> E-303 on the coldest returns -> final mixing
+        -> E-304 cold side (internal recuperation) -> cold TES
 
 cavern air -> coolant interheater -> turbine
 ```

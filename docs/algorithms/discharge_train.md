@@ -1,15 +1,16 @@
 # Discharge train
 
 > **Parent:** [Algorithm index](README.md)  
-> **Children:** [Equal-drop cascade root](ladder_theta.md) · [Inverse heat exchanger](heat_exchanger_inverse.md)  
-> **Related:** [Single-store TES and cascade](../08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md)  
+> **Children:** [Extraction-margin mass root](ladder_theta.md) · [Inverse heat exchanger](heat_exchanger_inverse.md)  
+> **Related:** [Single-store TES and the extraction network](../08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md)  
 > **Code:** `_solve_discharge_requirements`, `_light_discharge_at_supply`, `_materialize_ladder` in `caes/plant.py`  
-> **Tests:** `tests/test_cascade.py`, `tests/test_district_heating.py`, `tests/test_plant.py`
+> **Tests:** `tests/test_extraction_exchanger.py`, `tests/test_district_heating.py`, `tests/test_plant.py`
 
-For LTHP, the turbine pressure train and efficiency together with
-moisture-safe outlet envelope determine a minimum target duty for every stage.
-At each group supply temperature the finite-HX inverse computes the coolant ratio
-needed to deliver that duty.
+For LTHP, the turbine pressure train and efficiency together with the
+moisture-safe outlet envelope determine, for every stage, both a minimum target
+duty AND the air temperature its interheater must produce. That second quantity
+is what E-304's extraction ladder is matched to. At each extraction temperature
+the finite-HX inverse computes the coolant ratio needed to deliver the duty.
 
 Trial evaluations propagate the actual achieved duty returned by the inverse,
 construct the corresponding PH state, perform the real expansion and pass that

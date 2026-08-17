@@ -71,7 +71,7 @@ eta_exergy = 63.48 %       <- bounded thermodynamic metric
 ```
 
 This LTHP case has two distinct free ambient contributions: E-303 heats the
-selected cold-return suffix, and the exhaust leaves below the inlet enthalpy.
+selected coldest returns, and the exhaust leaves below the inlet enthalpy.
 Both belong in the closed first-law balance, but neither is purchased charging
 electricity.  Their presence is exactly why `R_delivery` is a delivery ratio
 and must not be relabelled as a thermodynamic efficiency.
@@ -103,8 +103,8 @@ The project policy is:
 |---|---|---|---|
 | AD-CAES | `mode=diabatic` | maximum electrical RTE | Direct finite-NTU turbine/throttle solution; no coolant-inventory optimization loop. |
 | LTA-CAES | `mode=adiabatic`, `heat_offtake=none` | maximum electrical RTE | Rank closed two-tank candidates by expansion work. |
-| LTHP-CAES, electric dispatch | `heat_offtake=heat_user`, `max_electric_efficiency` | maximum electrical RTE | Bypass the user cascade and route the complete hot-coolant inventory to the interheaters; this reproduces LTA unless non-bypassable hardware losses are later added. |
-| LTHP-CAES, combined dispatch | `heat_offtake=heat_user`, `max_combined_energy_delivery` | maximum useful-energy delivery ratio | Keep the moisture-safe turbine duty and export the feasible high-grade remainder while ranking candidates by `W_exp + Q_heat_user`. |
+| LTHP-CAES, electric dispatch | `heat_offtake=heat_user`, `max_electric_efficiency` | maximum electrical RTE | Bypass E-302 and E-304 and route the complete hot-coolant inventory to the interheaters at the one stored temperature; this reproduces LTA unless non-bypassable hardware losses are later added. |
+| LTHP-CAES, combined dispatch | `heat_offtake=heat_user`, `max_combined_energy_delivery` | maximum useful-energy delivery ratio | Sell everything above the first E-304 extraction, feed each stage a common margin above its own demand, and recuperate the descent into the coolant return; rank candidates by `W_exp + Q_heat_user`. |
 
 Both active objectives remain selectable for sensitivity studies, but the
 selected objective always ranks candidates. Endpoint T-Q spread remains an
@@ -137,9 +137,11 @@ Q_recovered + Q_E303,ambient
             + Q_hot_tank_standing + Q_cold_tank_standing
 ```
 
-There is no upstream rejection cooler. With a heat user, the complete
-feasible E-302 temperature drop is a useful product. E-303 can add heat only to
-the optimized sub-ambient return suffix before final mixing and cold-tank standing.
+There is no rejection cooler anywhere. With a heat user, the complete E-302
+temperature drop is a useful product, and the trunk's further descent inside
+E-304 is INTERNAL recuperation - it is neither a product nor a loss, and it
+cancels out of the coolant energy balance. E-303 can add heat only to the
+coldest sub-ambient returns, before final mixing, E-304 and cold-tank standing.
 
 In LTA-CAES, full-inventory absorption is preferred. If the conserved coolant
 contains heat that neither the turbines nor another modeled product can accept,
@@ -212,4 +214,5 @@ limits, finite-HX ordering, wet-expander boundary,
 and incompatible capacity-matched throughput.
 
 The E-303 optimizer is a different mechanism: it selects the maximum ambient
-heat pickup among legal ordered return suffixes and never disposes of heat.
+heat pickup among the temperature-ordered coldest return groups and never
+disposes of heat.

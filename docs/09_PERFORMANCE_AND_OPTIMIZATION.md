@@ -15,14 +15,18 @@ the primary evidence.
 inventory candidates
   -> cold-tank temperature closure
        -> charge allocation and one mixed hot store
-       -> K-group equal-drop mass root
+       -> extraction-margin mass root (also fixes the E-302 duty)
             -> inverse finite-NTU HX for every expansion stage
-       -> O(N) analytical E-303 suffix selection
+       -> O(N log N) analytical E-303 coldest-group selection
+       -> O(N) E-304 zone march into the cold-tank inlet
   -> objective ranking.
 ```
 
-The former multi-level `theta` root and repeated feasibility bisection are not
-part of the active architecture.
+Neither the former multi-level `theta` root nor the equal-drop cascade root that
+replaced it is part of the active architecture. Note that the outer search still
+has exactly ONE variable: because the first extraction is the trunk inlet, the
+margin root also fixes how much heat E-302 sells, so making the sold-versus-
+recuperated split explicit would have added a search dimension for nothing.
 
 ## Implemented reductions
 
@@ -31,34 +35,45 @@ part of the active architecture.
 | Selectable AbstractState/PropsSI API | One plant-wide `PropertyAPI`; cache key includes API | Controlled backend comparison |
 | PT, PH, cp and isentropic caches | Exact input floats, fluid and API in key | Reuse repeated CoolProp states |
 | Per-plant discharge requirements | Keyed by protected humidity | Do not resolve invariant moisture-safe targets |
-| Reduced cascade evaluation | Propagates achieved HX duties and real turbine states | Avoid trial `Cycle` objects |
+| Reduced discharge evaluation | Propagates achieved HX duties and real turbine states | Avoid trial `Cycle` objects |
 | Accepted-ratio reuse | Accepted inverse ratios feed final forward materialization | No duplicate final inverse |
 | Cold-loop continuation and Illinois refinement | Re-evaluate seed; safeguarded bracket and full-window fallback | Fewer tank-temperature residuals |
-| Equal-drop continuation | Re-evaluate previous normalized drop | Fewer K>1 mass-root trials |
-| Secant mass continuation | Smooth local predictor plus safeguarded global mass bracket | Removes part of the repeated cascade work |
-| E-303 cutoff enumeration | Closed-form suffix duty; N legal cutoffs | No nested topology root and no 2^N subset search |
+| Extraction-margin continuation | Re-evaluate the previous normalized margin | Fewer mass-root trials |
+| Duty-matched ladder | Each stage starts a known margin above its own demand | Inverse HX solves start near their answers; 66% fewer discharge trains |
+| Cheap recuperation residual | Suffix sums only, no per-zone checks on trial points | E-304 zone effectiveness and pinch are paid once, on the accepted design |
+| Secant mass continuation | Smooth local predictor plus safeguarded global mass bracket | Removes part of the repeated discharge work |
+| E-303 group enumeration | Closed-form duty; N temperature-ordered thresholds | No nested topology root and no 2^N subset search |
 
 ## Work-count evidence
 
-For `heat_and_power_example_config.json`, AbstractState, on the corrected
-single-store topology:
+For `heat_and_power_example_config.json`, AbstractState, measured on one machine
+against the frozen serial cascade at commit `22b7bb7`:
 
-| K | light discharge trains | charge trials | diagnostic time |
-|---:|---:|---:|---:|
-| 1 | 1586 | 386 | 5.6 s |
-| 4 | 1179 | 1250 | 11.2 s |
+| | cascade `K=1` | E-304 | |
+|---|---:|---:|---|
+| light discharge trains | 1586 | **534** | -66% |
+| `water_ratio_for_duty` calls | 8656 | **3184** | -63% |
+| mass-root calls | 121 | **83** | -31% |
+| charge trials | 386 | 520 | +35% |
+| diagnostic seconds | 12.87 | **4.82** | 2.7x |
 
-The earlier multi-level implementation required about 6792 light discharge
-trains at K=4; the current K=4 topology removes about 83% of that work. K=1 is
-now more expensive than the former 256-train special path because
-branch-selective E-303 invalidated its guessed-mean first-law shortcut: K=1 must
-close exact coolant mass inside each cold-tank residual. This is an intentional
-model cost, not presented as a speed-up. Counts remain the regression metric;
-times are diagnostic and vary by workstation state.
+The discharge side got much cheaper because the margin is a far better
+conditioned search coordinate than the common drop was: every stage sits a known
+distance above a known demand, so the inverse exchanger solves start close to
+their answers instead of being dragged along one shared temperature.
+
+Charge trials rose because the cold tank moved to a new fixed point - E-304
+recuperation warms it - and the charge allocation has to work harder to find it.
+That is a real cost and it is not netted against the discharge saving above.
+
+Counts remain the regression metric; times are diagnostic and vary by
+workstation state. Both columns above were taken in the same session.
 
 ## Current bottleneck and next safe work
 
-Charge-side allocation now dominates. Candidate accelerations are:
+Charge-side allocation now dominates even more clearly than before: it is 520 of
+the trials against 534 discharge trains, and each charge trial is itself a
+fixed-point iteration. Candidate accelerations are:
 
 - continue the ceiling-relief blend and capacity-matched split together across
   neighbouring return/inventory points;

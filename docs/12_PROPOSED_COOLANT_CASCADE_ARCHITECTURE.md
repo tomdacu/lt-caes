@@ -1,163 +1,219 @@
-# Single-store coolant cascade architecture
+# Single-store extraction architecture (E-302 + E-304)
 
-> **Status:** implemented hot-side cascade and optimized heat-only cold-return routing.  
+> **Status:** implemented. Replaced the serial K-station heat-user cascade.  
 > **Parent:** [Documentation map](00_DOCUMENTATION_MAP.md)  
-> **Implementation:** [Single-store cascade and solver](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md)  
-> **Algorithms:** [Algorithm index](algorithms/README.md)
+> **Implementation:** [Single-store store and discharge solver](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md)  
+> **Algorithms:** [Algorithm index](algorithms/README.md)  
+> **Frozen predecessor:** commit `22b7bb7`, the serial cascade this document used to describe
 
-## 1. Exact meaning of K
+The filename is retained so existing links keep working.
 
-`coolant_cascade_groups = K` is the number of non-empty, contiguous groups of
-expansion stages. It is also exactly the number of serial heat-user
-exchangers. It is **not** a number of tanks, stored temperature levels, extra
-exchangers, or bleed points in addition to a base exchanger.
+## 1. What replaced what
 
-The allowed range is
-
-```text
-1 <= K <= number of expansion stages.
-```
-
-The compressor count does not bound K. Charge-side intercooler returns mix
-before storage, so every K uses one mixed hot tank and one mixed cold tank.
-
-## 2. Implemented flow sequence
-
-For K groups, the plant-side flow is
+The discharge coolant network used to be `K` heat-user exchangers in series, each
+followed by one interheater-group bleed. It is now:
 
 ```text
 one mixed hot TES
-  -> user HX 0 -> bleed to interheater group 0
-  -> user HX 1 -> bleed to interheater group 1
-  -> ...
-  -> user HX K-1 -> final bleed to interheater group K-1.
+  -> E-302, ONE heat-user exchanger crossed by the whole inventory
+  -> E-304, ONE counter-current body with one extraction per expansion stage,
+            fully consumed at the last extraction
 ```
 
-All coolant crosses the first exchanger. Only the flow not taken by group 0
-crosses the second; only the flow not taken by groups 0 and 1 crosses the
-third. After the final bleed no plant coolant remains, so there is no terminal
-zero-flow exchanger. This is why the correct count is K, not K+1.
+`coolant_cascade_groups` is dormant. It is still accepted and still range
+checked so configuration files written against the cascade keep loading, but it
+controls nothing.
 
-Let `b_g` be the coolant flow bled to group g and `R_g` the trunk flow through
-user exchanger g. Mass conservation is
+## 2. Why the trunk is staged at all
+
+Every expansion stage must reach its own air temperature before its turbine,
+fixed by the anti-icing envelope and independent of both tanks. Those demands
+fall steeply along the train. On the six-stage 85.8 bar reference plant:
 
 ```text
-R_g = sum(b_h for h = g..K-1)
-R_0 = R_total
-R_(g+1) = R_g - b_g
-sum(b_g) = R_total.
+  stage          1      2      3      4      5      6
+  demand [C]   65.95  61.24  50.89  41.20  32.13  23.63
 ```
 
-The plant-side duty of station g is
+Under one common supply temperature - which is what the cascade delivered, since
+every stage was bled at the same post-user trunk temperature - the tail stages
+are fed water they cannot use:
 
 ```text
-Q_user,g = R_g cp,coolant (T_g,in - T_g,out).
+  cascade supply 67.6 C to every stage
+    stage 1:  1.65 K of margin   <- this stage alone sets the supply
+    stage 6: 43.97 K of margin   <- 44 K of grade destroyed on arrival
 ```
 
-The implemented screening rule gives every station the same plant-side
-temperature drop `delta_T`:
+E-304 gives each stage a supply a single common margin above its own demand and
+recuperates the difference into the coolant return.
+
+## 3. The one unknown: the extraction margin
+
+Each extraction sits at
 
 ```text
-T_g,out = T_hot - (g + 1) delta_T.
+  T_extraction,g = T_demand,g + m
 ```
 
-`delta_T` is not a user input. The solver chooses it so the inverse finite-NTU
-interheater calculations consume exactly the conserved coolant inventory. Since
-`R_g` decreases strictly, equal `delta_T` makes the first exchanger deliver the
-largest heat duty and every later duty smaller. This is the intended physical
-consequence of the corrected topology, not a manually imposed duty split.
-
-The external-user side is one counter-current stream through all K exchangers.
-Its configured return enters the coldest station; its configured supply leaves
-the hottest. The same user flow therefore appears in every result tap and must
-never be summed K times.
-
-## 3. Stage grouping
-
-Expansion stages stay in process order and are partitioned into K contiguous
-groups. Cuts balance the groups' minimum moisture-safe reheat duties. Contiguous
-grouping avoids crossed piping and preserves the thermodynamic order: the
-highest-duty front of the turbine train is served by the first, hottest bleed.
-
-Examples for N expansion stages:
-
-- K=1: one exchanger, then one bleed manifold feeding all N interheaters;
-- K=N/2: K exchangers; each group normally serves about two adjacent stages;
-- K=N: one exchanger and one bleed per stage.
-
-## 4. Storage placement and temporal coupling
-
-The implemented default stores heat only before the user cascade:
+and `m` is rooted so the extractions consume exactly the conserved inventory:
 
 ```text
-charge intercoolers -> hot TES -> user cascade -> interheaters
-                    -> selected-return E-303 -> final mixing -> cold TES.
+  sum_g  b_g( T_demand,g + m )  =  R_total
 ```
 
-This decouples charge from discharge, but useful-heat delivery remains coupled
-to electrical discharge. Fully decoupling the external user from turbine
-operation would require storage after the user cascade. Because those branch
-states have different temperatures, preserving their grade would require
-multiple tanks or a genuinely stratified store. That additional hardware is
-not silently represented by K.
+A hotter supply needs less flow for the same duty, so the total demanded flow is
+monotone decreasing in `m` and one safeguarded root closes exact coolant mass.
+This is the same cost class as the cascade's equal-drop root: the expensive
+object is the light discharge train, and this needs no more of them.
 
-## 5. Cold returns and ambient heat
-
-Interheater returns can be below ambient because the expansion train operates
-near its moisture/icing boundary. A coolant/ambient exchanger then moves a
-return toward ambient and can absorb heat into the loop. This is heat-pump-like
-energy recovery: compression work later upgrades that low-temperature energy;
-ambient heat carries no exergy at the selected dead state.
-
-The backend installs one heat-only E-303. It evaluates every ordered suffix of
-the interheater returns. For a candidate cutoff, that suffix mixes first, is
-warmed toward ambient, and then mixes with the warmer bypass returns. E-303 is
-never allowed to cool a hot return.
-
-For selected suffix flow `R_s` and mixed temperature `T_s < T0`,
+The first extraction is the trunk inlet, so `m` also fixes what E-302 gets:
 
 ```text
-T_out = T0 + (T_s - T0) exp(-NTU_303)
-Q_ambient = R_s cp (T0 - T_s) [1 - exp(-NTU_303)].
+  T_trunk,in = T_demand,0 + m
+  Q_user     = R_total cp ( T_hot - T_trunk,in )
 ```
 
-Maximizing this duty also maximizes the final mixed cold-tank inlet for the
-fixed discharge solution. Testing N suffixes is complete for this topology and
-costs O(N), not 2^N. The selected stages, pre/post E-303 temperatures, flow and
-ambient duty are stored in `TwoTankSummary`; the solved P&ID draws the two
-manifolds and actual cutoff. See [the algorithm](algorithms/cold_return_recovery.md).
+There is therefore **no separate split to choose** between what is sold and what
+is recuperated. The user takes everything above the first extraction; E-304
+takes everything below it. The user exchanger's finite-NTU check becomes an
+admissibility filter on `(R_total, m)` rather than a degree of freedom, and the
+outer search still has exactly one variable, the conserved inventory.
 
-## 6. Objectives and bypass
+## 4. The demand profile is not always monotone
 
-`max_combined_energy_delivery` activates the topology above: turbines receive
-their minimum moisture-safe reheat first, and the user receives the feasible
-upstream temperature drop. `max_electric_efficiency` bypasses the user
-cascade. With heat-only E-303 this dispatch is feasible only when the turbine
-train consumes enough stored heat to close the coolant loop without a rejection
-sink; the default six-stage point does not. The solver rejects it rather than
-inventing a cooler. A future Pareto control may minimize necessary heat export
-instead of using the two endpoint dispatches.
+A trunk that is progressively withdrawn only ever gets colder, so it cannot hand
+a later stage a hotter supply than an earlier one. The raw demand profile does
+not always cooperate. Measured on the 300 bar eight-stage train:
 
-## 7. Evidence and required invariants
+```text
+  stage          1      2      3      4      5      6      7      8
+  demand [C]   63.34  64.45  60.14  50.32  40.94  32.12  23.85  16.06
+               ^^^^^  ^^^^^ stage 2 demands MORE than stage 1
+```
+
+because the first expansion starts from stored air at ambient temperature while
+later ones start from a turbine outlet sitting on the icing floor.
+
+The profile is therefore raised to its **suffix maximum**: each extraction is
+placed at the hottest demand still ahead of it. Where that binds, the two stages
+share one nozzle and the zone between them carries no duty. That is the honest
+picture of what the hardware can do, not a rejection, and where the profile
+already falls the envelope is the identity and changes nothing.
+
+## 5. E-304 is solved zone by zone
+
+The trunk loses mass at every extraction, so its heat-capacity rate is a step
+function of position. A single whole-body LMTD or effectiveness is invalid, and
+its error is not conservative in any predictable direction. The body is cut at
+the extractions; inside one zone both capacity rates are constant, which is
+exactly what the counter-current effectiveness relation needs.
+
+For zone `g`, between extraction `g` and extraction `g+1`:
+
+```text
+  m_g   = sum( b_h  for h > g )                 trunk still to be withdrawn
+  Q_g   = m_g cp ( T_g - T_(g+1) )
+  Cr_g  = m_g / R_total                         cold side carries the whole inventory
+  eps_required  = Q_g / [ m_g cp ( T_g - Tc_(g+1) ) ]
+  eps_available = eps_counterflow( NTU_E304, Cr_g )
+```
+
+The cold side is the plant's own mixed coolant return, carrying the full
+inventory through every zone, so the trunk is always `C_min` and `Cr <= 1`.
+
+Total recuperation and the cold-tank inlet:
+
+```text
+  Q_recup  = sum_g Q_g
+  T_cold,in = T_mixed_return + Q_recup / ( R_total cp )
+```
+
+Two things are checked and never assumed:
+
+- **the pinch, at every node.** With a stepped trunk capacity rate the tightest
+  approach migrates inside the body, so terminal-only checking would miss a
+  crossed profile;
+- **the finite area,** as the same required-versus-available effectiveness
+  statement every other exchanger in this model is held to.
+
+A zone that fails either check makes the candidate infeasible. That is
+self-correcting rather than fatal: less inventory needs a wider margin, which
+lifts the whole ladder away from the return it exchanges against, so the outer
+inventory search walks out of a pinched region on its own.
+
+## 6. Where the recuperated heat goes, and what it costs
+
+E-304's cold side is the coolant return, so the duty is **internal**. It is not a
+product, it is not an ambient input, and the coolant energy balance is unchanged:
+
+```text
+  Q_charge + Q_ambient = Q_user + Q_interheat
+```
+
+What it buys is grade. What it costs is a warmer cold tank, which captures less
+compression heat and raises compressor work. Both effects are real and the net
+is a measurement, not an argument - see
+[the results](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md#5-measured-against-the-frozen-cascade).
+
+## 7. Order on the return path
+
+```text
+  interheater returns
+    -> E-303 on the COLDEST group (one ambient exchanger, its own NTU)
+    -> mixed with the bypass returns
+    -> E-304 cold side
+    -> cold TES
+```
+
+The coolant loop closes on the **recuperated** inlet, not on the mixed return.
+Closing it on the mixed return would accept a plant whose cold tank is tens of
+kelvin colder than the one actually built.
+
+E-303's group is selected by TEMPERATURE, coldest first. Under the cascade every
+interheater was fed from one trunk temperature, which happened to make the
+returns monotone in stage order and let an ordered-suffix search be optimal.
+E-304 gives each stage its own supply, the returns are no longer sorted by
+stage, and a stage-ordered suffix would quietly stop being the optimum. Any
+optimal group is downward closed in temperature, so the `N` coldest-first
+thresholds remain the complete search rather than a slice of the `2**N` subsets.
+
+## 8. Why not without a heat user
+
+Without a user there is no reason to stage the trunk. The only sink for the
+descent would be the plant's own cold return, so staging would warm the cold
+tank, capture less compression heat and raise compressor work, in exchange for
+nothing sellable. LTA-CAES and the `max_electric_efficiency` dispatch therefore
+keep the direct path: every interheater draws from the one mixed hot-store
+temperature and the conserved inventory is allocated for maximum turbine work.
+
+## 9. Required invariants
 
 Automated tests assert that:
 
-- K always leaves exactly one hot stored state;
-- there are exactly K user exchangers;
-- the first exchanger sees the complete inventory;
-- trunk flow and exchanger duty decrease after each bleed;
-- consecutive exchanger temperatures are continuous;
-- all group bleeds sum to the stored coolant flow;
-- the external-user stream is single and counter-current;
-- every user station's required effectiveness is within its finite-NTU class;
-- E-303 selects the maximum-duty legal suffix and never rejects heat;
-- first law and exergy balance close.
+- there is exactly one heat-user exchanger and it sees the complete inventory;
+- E-302's outlet is exactly the first extraction;
+- there is one extraction per expansion stage and the bleeds sum to the inventory;
+- trunk flow through the zones is strictly decreasing and equals the suffix sum;
+- the ladder is non-increasing and never starves a stage;
+- one common margin sets every extraction;
+- a non-monotone demand profile puts two stages on one nozzle with a zero-duty zone;
+- every zone is inside its finite-NTU class and both its terminals are positive;
+- recuperated duty equals the zone sum and equals the return's temperature rise;
+- E-304 sits between the final mixing and the cold tank;
+- first law and exergy balances close.
 
-The thermodynamic opportunity is consistent with staged low-temperature CAES
-and cold-recovery literature, while the exact branch topology remains this
-project's design hypothesis:
+See `tests/test_extraction_exchanger.py` for executable definitions.
 
-- Wolf and Budt, *LTA-CAES – A low-temperature approach to Adiabatic Compressed
+## 10. Provenance
+
+The device is a counter-current multi-stream heat exchanger with staged side
+draw-offs on the hot stream. Its thermodynamic ancestor is the regenerative
+feedwater heating train; its closest working relatives are cryogenic liquefier
+cold boxes, where a fraction of the stream is bled to an expander at each
+temperature level.
+
+- Wolf and Budt, *LTA-CAES - A low-temperature approach to Adiabatic Compressed
   Air Energy Storage*, Applied Energy 125 (2014),
   [DOI](https://doi.org/10.1016/j.apenergy.2014.03.013);
 - Liu et al., *Characteristics of air cooling for cold storage and power
@@ -166,3 +222,5 @@ project's design hypothesis:
 - *Subcooled compressed air energy storage system for coproduction of heat,
   cooling and electricity*, Applied Energy 205 (2017),
   [DOI](https://doi.org/10.1016/j.apenergy.2017.08.006).
+
+The exact branch topology remains this project's design hypothesis.

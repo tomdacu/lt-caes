@@ -181,8 +181,19 @@ def test_unreachable_hot_end_supply_raises_instead_of_silently_capping_it():
         ))._close_cold_loop(1.0)
 
 
-def test_dh_return_above_required_interheater_supply_raises_clear_error():
-    with pytest.raises(ValueError, match="reaches the heat-user return temperature"):
+def test_a_user_return_below_the_first_extraction_is_reported_as_finite_area():
+    """Where the plant now stops, and why the message is worth reading.
+
+    E-304 removed the old squeeze: the trunk no longer has to stay above the
+    user return all the way to the last bleed, so a hot return on its own is no
+    longer fatal. What remains is an ordinary finite-area statement about the
+    ONE user exchanger. Asking for 140/130 needs E-302 to take the trunk from
+    160.6 C down to the first extraction at 93.7 C against a 130 C return - that
+    is, below its own cold-side inlet - so the required effectiveness comes out
+    above one, which is the exchanger saying the duty is not merely expensive
+    but impossible.
+    """
+    with pytest.raises(ValueError, match="heat-user exchanger class is too small"):
         CAESPlant(PlantConfig(
             heat_offtake=HeatOfftake.HEAT_USER,
             optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
@@ -190,6 +201,30 @@ def test_dh_return_above_required_interheater_supply_raises_clear_error():
             heat_user_return_temperature_c=130.0,
             heat_user_exchanger_ntu=5.0,
         ))._close_cold_loop(1.0)
+
+
+def test_a_hot_user_return_that_the_serial_cascade_rejected_now_closes():
+    """The regression that justifies the architecture change.
+
+    A 95/75 user return sits above four of the six interheater demands. The
+    serial cascade could only serve it by shrinking the inventory until the
+    store reached 139 C, which cost intercooling and dropped the delivery ratio
+    below the 80/45 case. Here the trunk crosses E-302 once and keeps descending
+    inside E-304, well below the user return, so the store stays cool enough to
+    intercool properly.
+    """
+    result = CAESPlant(PlantConfig(
+        heat_offtake=HeatOfftake.HEAT_USER,
+        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
+        heat_user_supply_temperature_c=95.0,
+        heat_user_return_temperature_c=75.0,
+    )).run()
+
+    extraction = result.extraction_exchanger
+    assert extraction is not None
+    assert extraction.trunk_outlet_temperature_k < 75.0 + 273.15
+    assert result.useful_energy_delivery_ratio > 1.0
+    assert abs(result.exergy.balance_residual_j_per_kg_air) < 1.0
 
 
 def test_high_ntu_eight_stage_search_finds_a_closed_loop_window():

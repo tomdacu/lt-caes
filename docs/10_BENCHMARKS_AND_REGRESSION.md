@@ -10,7 +10,7 @@ residuals are the reproducible contract.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python scripts/profile_solver_work.py --config heat_and_power_example_config.json --levels 4
+python scripts/profile_solver_work.py --config heat_and_power_example_config.json
 python scripts/compare_property_apis.py --config heat_and_power_example_config.json
 ```
 
@@ -20,28 +20,35 @@ residual.
 
 ## Current structural evidence
 
-Configuration: supplied LTHP example, AbstractState. These are diagnostic runs
-of the implemented single-store topology; rerun after any solver change.
+Configuration: supplied LTHP example, AbstractState, one session. The baseline
+column is the frozen serial cascade at commit `22b7bb7`, run in a worktree on
+the same machine.
 
-| cascade groups K | light discharge evaluations | charge trials | final materializations | diagnostic time | fingerprint prefix |
-|---:|---:|---:|---:|---:|---|
-| 1 | 1586 | 386 | 10 | 5.6 s | `c4d62b6a...` |
-| 4 | 1179 | 1250 | 5 | 11.2 s | `50d90107...` |
+| topology | light discharge evaluations | charge trials | final materializations | diagnostic time | fingerprint prefix |
+|---|---:|---:|---:|---:|---|
+| serial cascade, `K=1` (`22b7bb7`) | 1586 | 386 | 10 | 12.9 s | `c4d62b6a...` |
+| E-302 + E-304 extraction | 534 | 520 | 10 | 4.8 s | `b9e2b02d...` |
 
-The retired multi-level path measured about 6792 light trains at K=4. The
-current heat-only, branch-selective topology cuts that to 1179. K=1 increased
-because it no longer has a mathematically valid guessed-mixed-return shortcut;
-this model correction is recorded rather than mislabeled as an optimization.
+The fingerprint changed because the plant changed, not because a numerical
+shortcut was taken: this is a different topology with a different accepted
+inventory, cold-tank temperature and heat product. The field-level deltas are
+tabulated in
+[the results section](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md#5-measured-against-the-frozen-cascade).
+
+The discharge saving comes from the search coordinate: the extraction margin
+starts every inverse HX solve a known distance above a known demand, where the
+equal drop dragged all of them along one shared temperature. The charge-side
+increase is a real cost of the warmer cold tank and is not netted against it.
 
 ## Property-interface comparison
 
-On CoolProp 7.2.0, HEOS Air/Water and the default K=1 configuration, the
+On CoolProp 7.2.0, HEOS Air/Water and the supplied LTHP configuration, the
 controlled comparison produced:
 
 | interface | light trains | materializations | diagnostic time | complete result |
 |---|---:|---:|---:|---|
-| AbstractState | 1586 | 10 | 5.6 s | identical |
-| PropsSI | 1586 | 10 | 35.3 s | identical |
+| AbstractState | 534 | 10 | 5.2 s | identical |
+| PropsSI | 534 | 10 | 27.7 s | identical |
 
 The primitive PT/PH/cp/saturation grid was also exactly identical. Thus the
 front-end switch changes call overhead, not the equations or solver work, in

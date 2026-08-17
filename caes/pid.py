@@ -153,6 +153,34 @@ X_COLD_TANK = X_ORIGIN + 0.5
 X_HOT_TANK = X_ORIGIN + 5.0
 HOP_R = 0.20          # radius of the crossing-bridge arcs
 
+# E-304, the extraction body.  It is drawn WIDE and TAPERED rather than as
+# another circle, because its two distinguishing features are exactly those: it
+# is one body with several nozzles along its length, and the trunk inside it
+# thins at every nozzle.  A circle would make it read as just one more
+# exchanger in a series, which is the thing it replaced.
+EXTRACTION_HALF_W = 1.8
+EXTRACTION_HOT_HALF_H = 0.62     # trunk inlet end, carrying the whole inventory
+EXTRACTION_COLD_HALF_H = 0.26    # last extraction, where the trunk is exhausted
+
+# Horizontal bands used only when E-304 is present. The space between the tank
+# band and the top of the interheater blocks (about -1.2 to -3.78) has to carry
+# the user loop, the recuperated return, one bleed manifold per expansion stage,
+# the E-303 collection header and the final mixing header - so the bands are
+# named and allocated once here rather than nudged by hand at each call site.
+Y_USER_RUN = Y_TANKS - 1.20          # user supply above, user return below
+Y_RECUP_RETURN = Y_TANKS - 1.75      # E-304 cold outlet, on its way to TK-302
+Y_BLEED_TOP = -2.08                  # manifold reaching FURTHEST left
+Y_BLEED_BOTTOM = -3.30               # manifold reaching least far left
+Y_E303_BAND = -2.95                  # E-303 body and its collection header
+Y_FINAL_HEADER = -3.62               # everything mixed, on its way to E-304
+
+# The user return and the recuperated return are BOTH blue and both leave the
+# tank band leftward, so they are deliberately kept far enough apart to read as
+# two runs. They are also almost disjoint in x - the user return lives right of
+# E-302, the recuperated one left of E-304 - and letting them sit at one height
+# made the drawing say the user return flows on into the cold tank, which is
+# exactly wrong.
+
 
 @dataclass(frozen=True)
 class Equipment:
@@ -168,6 +196,9 @@ class Equipment:
     # trapezoid narrows in the direction of flow and an expander widens - so the
     # renderer needs this to point the symbol the right way.
     flow: int = 1
+    # Number of side connections a multi-port body carries. Only E-304 uses it,
+    # to place one extraction nozzle per expansion stage along its length.
+    ports: int = 0
 
 
 @dataclass(frozen=True)
@@ -299,43 +330,50 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
         ))
         items.append(Equipment("P-302", "pump", "Cold coolant pump", X_COLD_TANK, (Y_TANKS + Y_CHDR_C) / 2, flow=+1))
         items.append(Equipment("P-301", "pump", "Hot coolant pump", X_HOT_TANK + 2.1, Y_TANKS, flow=+1))
+        extraction_x = None
+        if selling:
+            # ONE user exchanger takes the whole trunk off the top of the store,
+            # then ONE extraction body stages what is left down to the
+            # interheaters.  Left to right on the tank band, this is the
+            # physical order the coolant actually travels.
+            tap_x = X_HOT_TANK + 4.4
+            items.append(Equipment(
+                "E-302", "offtake_tap", "Heat-user HX", tap_x, Y_TANKS,
+            ))
+            extraction_x = tap_x + 1.45 + EXTRACTION_HALF_W
+            items.append(Equipment(
+                "E-304",
+                "extraction_hx",
+                f"Extraction HX\n{n_e} bleeds",
+                extraction_x,
+                Y_TANKS,
+                ports=n_e,
+            ))
+            items.append(Equipment(
+                "H-301", "heat_user", "External\nheat user",
+                extraction_x + EXTRACTION_HALF_W + 3.2, Y_TANKS,
+            ))
         items.append(Equipment(
             "E-303",
             "water_trim_cooler",
             (
+                # The group is the COLDEST returns, so it is named by how many
+                # join the manifold, not by a stage range: with E-304 the
+                # returns are no longer ordered by stage.
                 "Ambient recovery\n"
                 + (
-                    f"returns {result.thermal_store.cold_return_recovery_start_stage + 1}–"
-                    f"{config.expander_stages}"
+                    f"{result.thermal_store.cold_return_recovery_branch_count}"
+                    f"/{config.expander_stages} coldest returns"
                     if result is not None
                     and result.thermal_store is not None
-                    and result.thermal_store.cold_return_recovery_start_stage is not None
+                    and result.thermal_store.cold_return_recovery_branch_count
                     else "bypassed"
                 )
             ),
             X_COLD_TANK + 2.2,
-            Y_DHDR_C,
+            Y_E303_BAND if selling else Y_DHDR_C,
             flow=-1,
         ))
-        if selling:
-            # Exactly one physical exchanger precedes each group bleed.  The
-            # first sees the complete trunk; later bodies see its remainder.
-            groups = config.coolant_cascade_groups
-            first_x = X_HOT_TANK + 4.4
-            pitch = 1.9
-            for index in range(groups):
-                tag = "E-302" if groups == 1 else f"E-302{chr(ord('A') + index)}"
-                items.append(Equipment(
-                    tag,
-                    "offtake_tap",
-                    f"User HX {index + 1}/{groups}",
-                    first_x + index * pitch,
-                    Y_TANKS,
-                ))
-            items.append(Equipment(
-                "H-301", "heat_user", "External\nheat user",
-                first_x + (groups - 1) * pitch + 4.2, Y_TANKS,
-            ))
 
     xs = [e.x for e in items]
     # The water corridors are dedicated verticals kept LEFT of every symbol, so
@@ -506,6 +544,73 @@ def _dh_exchanger(ax, x, y):
     an exergy product from an exergy loss.
     """
     _hx_circle(ax, x, y, "#fff3e0")
+
+
+def _extraction_ports(x: float, bleeds: int) -> list[float]:
+    """x of each extraction nozzle along E-304, hottest first.
+
+    The first extraction IS the trunk inlet - E-302 has already taken everything
+    above it - so nozzle zero sits on the hot face rather than inboard of it.
+    The last one sits on the cold face, where the trunk is exhausted.
+    """
+    left = x - EXTRACTION_HALF_W
+    if bleeds <= 1:
+        return [left]
+    span = 2.0 * EXTRACTION_HALF_W
+    return [left + span * index / (bleeds - 1) for index in range(bleeds)]
+
+
+def _extraction_hx(ax, x, y, bleeds: int):
+    """E-304: one counter-current body, tapered, with a nozzle per extraction.
+
+    The taper is the whole point and is drawn to scale in spirit: the body is
+    tall where the trunk still carries the full inventory and thin at the last
+    extraction, where the trunk has been completely withdrawn. Anyone reading
+    the drawing should be able to see that this is NOT a series of exchangers
+    passing the same flow along - the flow itself is disappearing into the
+    nozzles.
+
+    The counter-current arrow underneath is the coolant return, which runs the
+    other way and is what absorbs the trunk's descent.
+    """
+    from matplotlib.patches import Polygon
+
+    left, right = x - EXTRACTION_HALF_W, x + EXTRACTION_HALF_W
+    hot_h, cold_h = EXTRACTION_HOT_HALF_H, EXTRACTION_COLD_HALF_H
+    ax.add_patch(Polygon(
+        [
+            (left, y + hot_h), (right, y + cold_h),
+            (right, y - cold_h), (left, y - hot_h),
+        ],
+        closed=True, facecolor="#fff3e0", edgecolor=INK, lw=1.5, zorder=4,
+    ))
+    # The house symbol for a heat exchanger is a zigzag tube pass, so E-304 gets
+    # one too - otherwise a tapered block reads as a diffuser or a nozzle rather
+    # than as the counter-current body it is. The zigzag shrinks with the shell,
+    # which keeps the taper legible instead of fighting it.
+    n = max(4, 2 * bleeds - 2)
+    xs, ys = [], []
+    for index in range(n + 1):
+        fraction = index / n
+        half_h = hot_h + (cold_h - hot_h) * fraction
+        xs.append(left + 2.0 * EXTRACTION_HALF_W * fraction)
+        ys.append(y + (0.45 if index % 2 else -0.45) * half_h)
+    ax.plot(xs, ys, color=INK, lw=1.0, zorder=5, solid_joinstyle="miter")
+    # Counter-current return, drawn along the body against the trunk direction.
+    ax.annotate(
+        "", xy=(left + 0.34, y + hot_h * 0.62),
+        xytext=(right - 0.34, y + cold_h * 0.62),
+        arrowprops=dict(arrowstyle="-|>", color=COLD, lw=1.1, mutation_scale=8),
+        zorder=6,
+    )
+    for index, port_x in enumerate(_extraction_ports(x, bleeds)):
+        fraction = index / max(1, bleeds - 1)
+        half_h = hot_h + (cold_h - hot_h) * fraction
+        # Nozzle stub on the underside, pointing at the bleed manifold.
+        ax.plot(
+            [port_x, port_x], [y - half_h, y - half_h - 0.14],
+            color=WARM, lw=1.3, zorder=6, solid_capstyle="butt",
+        )
 
 
 def _heat_network(ax, x, y):
@@ -977,17 +1082,20 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
 
         charging:  cold tank -> cold header -> intercooler (blue) ;
                    intercooler (red) -> hot header -> hot tank
-        discharge without DH: hot tank -> P-301 -> turbine header (red);
-        discharge with heat user: hot tank -> pump -> HX 1 -> bleed 1 ->
-                   HX 2 -> bleed 2 -> ... -> final HX -> final bleed;
-                   then interheater ; interheater (blue) -> cold-return header ->
-                   E-303 ambient exchanger -> cold tank
+        discharge without a user: hot tank -> P-301 -> turbine header (red);
+        discharge with a heat user: hot tank -> P-301 -> E-302 (the whole trunk,
+                   selling the top of the store) -> E-304, where one bleed per
+                   expansion stage leaves along the body until the trunk is
+                   exhausted; then interheater ; interheater (blue) ->
+                   cold-return header -> E-303 -> final mixing -> E-304 cold
+                   side -> cold tank
     """
     cold = diagram.by_tag("TK-302")
     trim_cooler = diagram.by_tag("E-303")
     hot = diagram.by_tag("TK-301")
     p_hot = diagram.by_tag("P-301")
     user_hxs = sorted(diagram.of_kind("offtake_tap"), key=lambda item: item.x)
+    extraction = diagram.by_tag("E-304")
     network = diagram.by_tag("H-301")
     coolers = sorted([e for e in diagram.of_kind("water_hx") if e.y == Y_EC], key=lambda e: e.x)
     heaters = sorted([e for e in diagram.of_kind("water_hx") if e.y == Y_EE], key=lambda e: e.x)
@@ -1011,7 +1119,7 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
     if not heaters:
         return
 
-    # --- Hot tank discharge.  Every user HX is in SERIES on the plant trunk.
+    # --- Hot tank discharge.  The whole trunk crosses E-302, then enters E-304.
     _pipe(ax, [(x_ht + TANK_W / 2, Y_TANKS), (p_hot.x - 0.42, Y_TANKS)], HOT, lw=1.6, arrow_at=0.6)
     if user_hxs:
         _pipe(
@@ -1021,161 +1129,131 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
             lw=1.6,
             arrow_at=0.6,
         )
-        for first, second in zip(user_hxs, user_hxs[1:]):
+        if extraction is not None:
             _pipe(
                 ax,
-                [(first.x + HX_R, Y_TANKS), (second.x - HX_R, Y_TANKS)],
+                [(user_hxs[-1].x + HX_R, Y_TANKS),
+                 (extraction.x - EXTRACTION_HALF_W, Y_TANKS)],
                 WARM,
                 lw=1.6,
                 arrow_at=0.6,
             )
         supply_x = user_hxs[-1].x + HX_R + 0.5
-        _pipe(
-            ax,
-            [(user_hxs[-1].x + HX_R, Y_TANKS), (supply_x, Y_TANKS)],
-            WARM,
-            lw=1.6,
-            arrow_at=0.6,
-        )
         supply_color = WARM
     else:
         supply_x = p_hot.x + 0.9
         supply_color = HOT
         _pipe(ax, [(p_hot.x + 0.42, Y_TANKS), (supply_x, Y_TANKS)], HOT, lw=1.6, arrow_at=0.6)
     if user_hxs and network is not None:
-        # The external-user stream runs counter-current to the plant trunk.
-        # These two headers are the supply from the hottest station and the
-        # return into the coldest; station-to-station continuity is explicit in
-        # the generated composite panels and live temperature annotations.
+        # The external-user stream is one counter-current pass through the one
+        # exchanger: supply off the top, return in at the bottom. Both runs are
+        # kept clear of E-304, which they pass over and under on their way to
+        # the network block.
+        user_run_up = Y_TANKS + (Y_TANKS - Y_USER_RUN)
         _pipe(ax, [(user_hxs[0].x, Y_TANKS + HX_R),
-                   (user_hxs[0].x, Y_TANKS + 1.05),
-                   (network.x - 1.5, Y_TANKS + 1.05)], HOT, lw=1.4, arrow_at=0.7)
-        _pipe(ax, [(network.x - 1.5, Y_TANKS - 1.05),
-                   (user_hxs[-1].x, Y_TANKS - 1.05),
-                   (user_hxs[-1].x, Y_TANKS - HX_R)], COLD, lw=1.4, arrow_at=0.7)
-        # Join the user side of adjacent bodies in series, from the coldest
-        # (rightmost) station back toward the hottest (leftmost) station.
-        for index, (hotter, colder) in enumerate(
-            zip(user_hxs, user_hxs[1:])
-        ):
-            bridge_y = Y_TANKS + 1.35 + 0.16 * index
-            _pipe(
-                ax,
-                [
-                    (colder.x, Y_TANKS + HX_R),
-                    (colder.x, bridge_y),
-                    (hotter.x, bridge_y),
-                    (hotter.x, Y_TANKS - HX_R),
-                ],
-                WARM,
-                lw=1.15,
-                arrow_at=0.55,
-            )
+                   (user_hxs[0].x, user_run_up),
+                   (network.x - 1.5, user_run_up)], HOT, lw=1.4, arrow_at=0.7)
+        _pipe(ax, [(network.x - 1.5, Y_USER_RUN),
+                   (user_hxs[0].x, Y_USER_RUN),
+                   (user_hxs[0].x, Y_TANKS - HX_R)], COLD, lw=1.4, arrow_at=0.7)
 
     # --- DISCHARGING WATER: turbine-supply (orange) and cold-return (blue) headers,
     # both ABOVE the interheaters (which face the tanks with their water on top).
-    hl = [_hx_wat(h)[0] for h in heaters]
     hr = [_hx_wat(h)[1] for h in heaters]
-    wl1 = max([trim_cooler.x, *[p[0] for p in hl]])
-    if user_hxs:
-        # One visible bleed manifold per user station. With a solved result,
-        # identical stage-supply temperatures identify the exact backend group;
-        # result=None uses an even contiguous partition for the preview.
+    if extraction is not None:
+        # One bleed per extraction nozzle, in stage order along the body. Every
+        # stage owns a nozzle, so the drawing needs no grouping rule at all -
+        # where two stages share a temperature the backend simply places their
+        # nozzles at the same point and the two runs leave together.
         stage_heaters = sorted(heaters, key=lambda item: int(item.tag.split("-")[1]))
-        stage_groups: list[int] = []
-        if result is not None:
-            stage_supplies = [
-                process.heat_exchanger.water_inlet_temperature_k
-                for process in result.discharging.processes
-                if process.kind == "interheating" and process.heat_exchanger
-            ]
-            distinct: list[float] = []
-            for temperature_k in stage_supplies:
-                match = next(
-                    (index for index, value in enumerate(distinct)
-                     if abs(value - temperature_k) < 1e-6),
-                    None,
-                )
-                if match is None:
-                    distinct.append(temperature_k)
-                    match = len(distinct) - 1
-                stage_groups.append(match)
-        if len(stage_groups) != len(stage_heaters):
-            count = len(user_hxs)
-            stage_groups = [
-                min(count - 1, index * count // len(stage_heaters))
-                for index in range(len(stage_heaters))
-            ]
-
-        for group, tap in enumerate(user_hxs):
-            members = [
-                heater for heater, assigned in zip(stage_heaters, stage_groups)
-                if assigned == group
-            ]
-            if not members:
-                continue
-            member_ports = [_hx_wat(heater)[1] for heater in members]
-            branch_x = tap.x + HX_R + 0.22
-            header_y = Y_DHDR_W + 0.18 * (len(user_hxs) - 1 - group)
-            _pipe(
-                ax,
-                [(branch_x, Y_TANKS), (branch_x, header_y)],
-                WARM,
-                lw=1.4,
-                arrow_at=0.75,
+        ports = _extraction_ports(extraction.x, extraction.ports)
+        count = len(stage_heaters)
+        # One manifold per bleed, each on its own band. They cross each other
+        # because the plant does: the hottest extraction is at the LEFT of the
+        # body and belongs to the first expansion stage, which sits at the far
+        # RIGHT of a train that flows right to left.
+        #
+        # The bands are ordered by how far LEFT each manifold has to reach, not
+        # by stage. The one that travels furthest gets the top band, so it clears
+        # E-303 and the cold tank instead of running straight through them.
+        reach = sorted(
+            range(count), key=lambda index: _hx_wat(stage_heaters[index])[1][0]
+        )
+        band_of = {stage: order for order, stage in enumerate(reach)}
+        step = (
+            (Y_BLEED_TOP - Y_BLEED_BOTTOM) / (count - 1) if count > 1 else 0.0
+        )
+        for index, heater in enumerate(stage_heaters):
+            if index >= len(ports):
+                break
+            port_x = ports[index]
+            target_x, target_y = _hx_wat(heater)[1]
+            header_y = Y_BLEED_TOP - step * band_of[index]
+            fraction = index / max(1, extraction.ports - 1)
+            nozzle_y = Y_TANKS - (
+                EXTRACTION_HOT_HALF_H
+                + (EXTRACTION_COLD_HALF_H - EXTRACTION_HOT_HALF_H) * fraction
+            )
+            _bridge(
+                ax, port_x, nozzle_y, header_y, WARM, lw=1.2, arrow=False,
+                hops=[Y_USER_RUN],
             )
             _pipe(
                 ax,
-                [(min(branch_x, *(point[0] for point in member_ports)), header_y),
-                 (max(branch_x, *(point[0] for point in member_ports)), header_y)],
-                WARM,
-                lw=1.4,
-                arrow_at=None,
+                [(min(port_x, target_x), header_y), (max(port_x, target_x), header_y)],
+                WARM, lw=1.2, arrow_at=None,
             )
-            for port_x, port_y in member_ports:
-                _bridge(ax, port_x, header_y, port_y, WARM, hops=[Y_DHDR_C])
+            _bridge(
+                ax, target_x, header_y, target_y, WARM,
+                hops=[Y_E303_BAND, Y_FINAL_HEADER],
+            )
     else:
         wr0, wr1 = min([supply_x, *[p[0] for p in hr]]), max([supply_x, *[p[0] for p in hr]])
         _pipe(ax, [(supply_x, Y_TANKS), (supply_x, Y_DHDR_W)], supply_color, lw=1.6, arrow_at=None)
         _pipe(ax, [(wr0, Y_DHDR_W), (wr1, Y_DHDR_W)], supply_color, lw=1.6, arrow_at=None)
-    # The solved topology has TWO return manifolds. Only the selected contiguous
-    # suffix mixes upstream of E-303; warmer stages bypass it and join its warmed
+    # The solved topology has TWO return manifolds. Only the selected group
+    # mixes upstream of E-303; warmer stages bypass it and join its warmed
     # outlet on the final manifold. This is the actual backend placement, not a
     # decorative label on an all-return cooler.
-    final_y = Y_DHDR_C - 0.62
-    recovery_start = (
-        result.thermal_store.cold_return_recovery_start_stage
-        if result is not None and result.thermal_store is not None
-        else None
-    )
-    by_stage = sorted(
-        heaters, key=lambda item: int(item.tag.split("-")[1])
-    )
-    selected = (
-        by_stage[recovery_start:]
-        if recovery_start is not None
-        else []
-    )
+    #
+    # The group is the COLDEST returns, which is not the same as a run of
+    # consecutive stages: E-304 gives each stage its own supply, so the returns
+    # are no longer ordered by stage. The selection is therefore reconstructed
+    # from the solved return temperatures rather than from a stage index.
+    header_y = Y_E303_BAND if extraction is not None else Y_DHDR_C
+    final_y = Y_FINAL_HEADER if extraction is not None else Y_DHDR_C - 0.62
+    by_stage = sorted(heaters, key=lambda item: int(item.tag.split("-")[1]))
+    selected: list[Equipment] = []
+    if result is not None and result.thermal_store is not None:
+        count = result.thermal_store.cold_return_recovery_branch_count
+        returns_k = [
+            process.heat_exchanger.water_outlet_temperature_k
+            for process in result.discharging.processes
+            if process.kind == "interheating" and process.heat_exchanger
+        ]
+        if count and len(returns_k) == len(by_stage):
+            coldest = sorted(
+                range(len(by_stage)), key=lambda index: returns_k[index]
+            )[:count]
+            selected = [by_stage[index] for index in sorted(coldest)]
     bypassed = [heater for heater in by_stage if heater not in selected]
 
     if selected:
         selected_ports = [_hx_wat(heater)[0] for heater in selected]
+        # The collection header reaches from the coldest return that joins the
+        # group across to E-303, on whichever side of the drawing it sits.
+        span = [trim_cooler.x, *[point[0] for point in selected_ports]]
         _pipe(
             ax,
-            [
-                (trim_cooler.x + HX_R, Y_DHDR_C),
-                (max(point[0] for point in selected_ports), Y_DHDR_C),
-            ],
-            COLD,
-            lw=1.6,
-            arrow_at=None,
+            [(min(span), header_y), (max(span), header_y)],
+            COLD, lw=1.6, arrow_at=None,
         )
         for port_x, port_y in selected_ports:
-            _bridge(ax, port_x, port_y, Y_DHDR_C, COLD)
+            _bridge(ax, port_x, port_y, header_y, COLD)
         _pipe(
             ax,
             [
-                (trim_cooler.x - HX_R, Y_DHDR_C),
+                (trim_cooler.x - HX_R, header_y),
                 (trim_cooler.x - HX_R, final_y),
             ],
             COLD,
@@ -1188,27 +1266,74 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
         _tag(ax, trim_cooler.x, trim_cooler.y + 1.05, "BYPASS", fs * 0.82, MUTED)
 
     bypass_ports = [_hx_wat(heater)[0] for heater in bypassed]
-    final_right = max([trim_cooler.x - HX_R, *[point[0] for point in bypass_ports]])
-    _pipe(
-        ax,
-        [(x_ct, final_y), (final_right, final_y)],
-        COLD,
-        lw=1.6,
-        arrow_at=None,
-    )
-    _pipe(
-        ax,
-        [(x_ct, final_y), (x_ct, cold.y - TANK_H / 2)],
-        COLD,
-        lw=1.6,
-        arrow_at=0.7,
-    )
     for port_x, port_y in bypass_ports:
         _bridge(ax, port_x, port_y, final_y, COLD)
 
+    if extraction is None:
+        # No user, no extraction body: the mixed return goes straight to the tank.
+        final_right = max(
+            [trim_cooler.x - HX_R, *[point[0] for point in bypass_ports]]
+        )
+        _pipe(ax, [(x_ct, final_y), (final_right, final_y)], COLD, lw=1.6, arrow_at=None)
+        _pipe(
+            ax,
+            [(x_ct, final_y), (x_ct, cold.y - TANK_H / 2)],
+            COLD, lw=1.6, arrow_at=0.7,
+        )
+    else:
+        # E-304 is the LAST thing the return meets. Collect everything on the
+        # final manifold, take it to the body's COLD face, run it counter to the
+        # trunk, and only then drop it into the tank. Drawing it any other way
+        # would put the recuperation on the wrong side of the tank and imply the
+        # loop closes on the mixed return, which it does not.
+        cold_face_x = extraction.x + EXTRACTION_HALF_W
+        hot_face_x = extraction.x - EXTRACTION_HALF_W
+        riser_x = cold_face_x + 0.62
+        final_left = min(
+            [trim_cooler.x - HX_R, *[point[0] for point in bypass_ports]]
+        )
+        _pipe(
+            ax,
+            [(final_left, final_y), (riser_x, final_y)],
+            COLD, lw=1.6, arrow_at=0.55,
+        )
+        # Up past the bleed manifolds and into the body's COLD face, so the
+        # return enters where the trunk is coldest and leaves where it is
+        # hottest: a genuine counter-current pass, not a parallel one. The
+        # manifolds it crosses are bridged, so no crossing reads as a tee.
+        entry_y = Y_TANKS - EXTRACTION_COLD_HALF_H * 0.45
+        crossed = [
+            Y_BLEED_TOP - (Y_BLEED_TOP - Y_BLEED_BOTTOM) * index / max(1, len(heaters) - 1)
+            for index in range(len(heaters))
+        ]
+        _bridge(
+            ax, riser_x, final_y, entry_y, COLD,
+            arrow=False,
+            hops=[value for value in crossed if final_y < value < entry_y],
+        )
+        _pipe(
+            ax,
+            [(riser_x, entry_y), (cold_face_x, entry_y)],
+            COLD, lw=1.6, arrow_at=0.7,
+        )
+        # Out of the hot face, under the trunk inlet, then home along its own
+        # band. The return leaves E-304 warmer than it arrived, and THAT is the
+        # temperature the cold tank actually receives.
+        _pipe(
+            ax,
+            [
+                (hot_face_x, Y_TANKS - EXTRACTION_HOT_HALF_H * 0.55),
+                (hot_face_x - 0.35, Y_TANKS - EXTRACTION_HOT_HALF_H * 0.55),
+                (hot_face_x - 0.35, Y_RECUP_RETURN),
+                (x_ct, Y_RECUP_RETURN),
+                (x_ct, cold.y - TANK_H / 2),
+            ],
+            COLD, lw=1.6, arrow_at=0.86,
+        )
+
     for heater in heaters:
         (_, _), (rx, ry) = _hx_wat(heater)
-        if not user_hxs:
+        if extraction is None:
             _bridge(ax, rx, Y_DHDR_W, ry, supply_color, hops=[Y_DHDR_C, final_y])
 
 
@@ -1222,6 +1347,7 @@ _PERIPHERAL = {
     "ambient_heater": lambda ax, e: _ambient_heater(ax, e.x, e.y),
     "water_trim_cooler": lambda ax, e: _air_cooler(ax, e.x, e.y),
     "offtake_tap": lambda ax, e: _dh_exchanger(ax, e.x, e.y),
+    "extraction_hx": lambda ax, e: _extraction_hx(ax, e.x, e.y, e.ports),
     "heat_user": lambda ax, e: _heat_network(ax, e.x, e.y),
     "hot_tank": lambda ax, e: _vessel(ax, e.x, e.y, TANK_W, TANK_H, "#ffebee"),
     "cold_tank": lambda ax, e: _vessel(ax, e.x, e.y, TANK_W, TANK_H, "#e3f2fd"),
@@ -1396,8 +1522,29 @@ def _annotate_values(
             fs * 0.82,
             VENT,
         )
-    # The district-heating branch receives the surplus that the exact turbine
-    # duties did not need.  Selecting it changes product vs loss, not turbine work.
+    # E-304's solved state. The margin and the recuperated duty are the two
+    # numbers that are not readable off the geometry, and the recuperation is
+    # the one flow on this drawing that is neither a product nor an input - so
+    # it is labelled as internal rather than left to be guessed.
+    extraction = diagram.by_tag("E-304")
+    solved_extraction = result.extraction_exchanger
+    if extraction is not None and solved_extraction is not None:
+        _stream_label(
+            ax,
+            extraction.x,
+            Y_TANKS + EXTRACTION_HOT_HALF_H + 0.34,
+            f"+{solved_extraction.margin_k:.1f} K over each stage demand   ·   "
+            f"{solved_extraction.recuperated_heat_j_per_kg_air / 1000:.0f} kJ/kg "
+            "recuperated (internal)\n"
+            f"return {solved_extraction.return_inlet_temperature_k - 273.15:.0f}→"
+            f"{solved_extraction.return_outlet_temperature_k - 273.15:.0f} °C   ·   "
+            f"tightest zone approach {solved_extraction.minimum_terminal_difference_k:.1f} K",
+            fs * 0.8,
+            color=WARM,
+        )
+
+    # The heat user receives the band above the first extraction.  Selecting it
+    # changes product vs internal recuperation, not turbine work.
     dh = result.heat_offtake
     user_hxs = sorted(diagram.of_kind("offtake_tap"), key=lambda item: item.x)
     dh_hx = user_hxs[0] if user_hxs else None
@@ -1410,13 +1557,9 @@ def _annotate_values(
             f"{WATER_FREEZING_TEMPERATURE_K - 273.15 + EXPANDER_ICE_MARGIN_K:.0f} °C liquid"
             f" / local frost + {EXPANDER_ICE_MARGIN_K:.0f} K",
             f"trunk: {dh.hot_tank_temperature_k - 273.15:.0f} °C  →  "
-            f"{dh.turbine_supply_temperature_k - 273.15:.0f} °C hottest bleed   "
+            f"{dh.turbine_supply_temperature_k - 273.15:.0f} °C first extraction   "
             f"({store.total_water_mass_ratio:.2f} kg/kg-air in total)",
-            f"heat sold:   {dh.heat_j_per_kg_air / 1000:.0f} kJ/kg-air"
-            + (
-                f"  over {len(dh.taps)} cascade stations"
-                if len(dh.taps) > 1 else "  in one exchanger"
-            ),
+            f"heat sold:   {dh.heat_j_per_kg_air / 1000:.0f} kJ/kg-air in one exchanger",
             f"exergy sold: {dh.exergy_j_per_kg_air / 1000:.1f} kJ/kg-air",
             f"heat user:   {dh.return_temperature_k - 273.15:.0f} → {dh.supply_temperature_k - 273.15:.0f} °C, "
             f"{dh.network_water_per_kg_air:.2f} kg/kg-air, "
@@ -1490,13 +1633,16 @@ def _draw_title_block(ax, diagram, config, result, fs):
         )
         if diagram.exports_heat:
             lines.append(
-                f"Heat-user cascade: {config.coolant_cascade_groups} serial HX / "
-                f"{config.coolant_cascade_groups} interheater groups, "
-                f"NTU={config.heat_user_exchanger_ntu:g}"
+                f"E-302 heat-user HX (whole trunk) NTU="
+                f"{config.heat_user_exchanger_ntu:g}"
+            )
+            lines.append(
+                f"E-304 extraction HX: {diagram.expander_stages} bleeds, "
+                f"per-zone NTU={config.extraction_exchanger_ntu:g}"
             )
         lines.append(
             f"E-303 ambient exchanger NTU={config.cold_return_cooler_ntu:g}"
-            " (heat-only, optimized return suffix)"
+            " (heat-only, coldest returns)"
         )
         lines.append(
             "Heat off-take: external user"

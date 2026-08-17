@@ -131,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Compare AbstractState and PropsSI without changing the plant model."
     )
     parser.add_argument("--config", type=Path, help="configuration JSON; defaults to PlantConfig()")
-    parser.add_argument("--levels", type=int, help="override coolant_cascade_groups")
+    parser.add_argument(
+        "--extraction-ntu", type=float, help="override extraction_exchanger_ntu"
+    )
     parser.add_argument(
         "--primitives-only",
         action="store_true",
@@ -151,8 +153,8 @@ def main(argv: list[str] | None = None) -> int:
         return int(bool(primitive_differences))
 
     config = load_config(args.config) if args.config else PlantConfig()
-    if args.levels is not None:
-        config = replace(config, coolant_cascade_groups=args.levels)
+    if args.extraction_ntu is not None:
+        config = replace(config, extraction_exchanger_ntu=args.extraction_ntu)
 
     solved = {
         api: _solve(config, api)

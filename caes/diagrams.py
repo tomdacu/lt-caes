@@ -266,8 +266,11 @@ def thermal_reference_temperatures(result: PlantResult) -> list[tuple[str, float
         label = "hot TES" if count == 1 else f"TES level {index + 1}/{count}"
         references.append((label, temperature_k, _level_color(index, count)))
 
-    # What the turbines are actually served at. On a ladder this is one bleed
-    # temperature per stage; only the distinct ones are worth a line.
+    # What the turbines are actually served at: with E-304 this is one
+    # extraction temperature per expansion stage. Only the distinct ones are
+    # worth a line - where the demand profile forces two stages onto one nozzle
+    # they coincide, and drawing that twice would suggest a level that is not
+    # there.
     supplies: list[float] = []
     for process in result.discharging.processes:
         if process.kind != "interheating" or not process.heat_exchanger:
@@ -279,7 +282,7 @@ def thermal_reference_temperatures(result: PlantResult) -> list[tuple[str, float
         if any(abs(supply_k - value) < 1e-6 for _, value, _ in references):
             continue
         label = (
-            f"coolant supply group {index + 1}/{len(supplies)}"
+            f"E-304 extraction {index + 1}/{len(supplies)}"
             if len(supplies) > 1
             else "coolant supply to interheaters"
         )
@@ -661,12 +664,12 @@ def draw_composite(ax, tag: str, process: Process, fluid: str) -> None:
 
 
 def offtake_stations(result: PlantResult) -> list[tuple[str, object]]:
-    """Every user exchanger in the cascade, tagged like the P&ID.
+    """The user exchanger, tagged like the P&ID.
 
-    One station is the classic single series exchanger and keeps the plain
-    ``E-302`` tag; a real cascade numbers them from the hot end down, so
-    ``E-302A`` is the one that hands the user its supply temperature and the
-    last letter is the one that meets the user's return.
+    The active architecture has exactly one, ``E-302``, crossed by the whole
+    trunk. The lettered form is retained only so a result written against the
+    former serial cascade still renders: there, ``E-302A`` was the station that
+    handed the user its supply temperature and the last letter met its return.
     """
     dh = result.heat_offtake
     if dh is None or not dh.taps:

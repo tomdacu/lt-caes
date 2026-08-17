@@ -150,6 +150,13 @@ class TwoTankSummary:
     cold_return_recovery_mass_ratio: float = 0.0
     cold_return_recovery_inlet_temperature_k: float = 0.0
     cold_return_recovery_outlet_temperature_k: float = 0.0
+    # Mixed coolant return AFTER E-303 and the final remix, but BEFORE the
+    # E-304 recuperation. This is what the extraction body sees on its cold
+    # side; ``cold_return_exchanger_outlet_temperature_k`` above stays the
+    # final cold-tank inlet, so the two differ by exactly the recuperated duty.
+    # Without a heat user there is no E-304 and the two are equal.
+    recuperator_inlet_temperature_k: float = 0.0
+    extraction_recuperated_heat_j_per_kg_air: float = 0.0
     cold_loop_closure_error_k: float = 0.0
     coolant_maximum_temperature_k: float = 0.0
     coolant_maximum_temperature_reached_k: float = 0.0
@@ -164,22 +171,19 @@ class TwoTankSummary:
 
 @dataclass(frozen=True)
 class OfftakeTap:
-    """One user exchanger before one interheater-group bleed.
+    """The heat-user exchanger E-302. There is exactly one.
 
-    The mixed hot store feeds one trunk.  All of it crosses station zero; its
-    first interheater group then bleeds off.  The remaining trunk crosses the
-    next station and is bled again.  Thus exchanger flow is a strictly
-    decreasing staircase and there are exactly as many exchangers as groups.
-    There is no zero-flow exchanger after the final bleed.
+    The whole conserved inventory leaves the hot store, crosses this single
+    counter-current body, and only then reaches E-304 to be extracted stage by
+    stage. So ``plant_water_per_kg_air`` is always the plant inventory and
+    ``plant_inlet_temperature_k`` is always the available hot-store temperature.
 
-    The user side is a single stream running counter to the trunk: it enters the
-    COLDEST station at its return temperature and leaves the HOTTEST one at its
-    supply temperature, so the cold stations preheat and only the top station
-    does the final lift. ``user_water_per_kg_air`` is therefore the same number
-    on every tap - it is one stream, not one per station - and summing it over
-    the taps would count the same water many times over.
-
-    With one group there is exactly one station, the classic E-302.
+    The station tuple on :class:`HeatOfftakeSummary` is retained - and the
+    ``station_index`` field with it - so result files written against the former
+    K-station serial cascade still load. The active architecture puts exactly
+    one entry in it: the descending duty that used to be spread over K user
+    exchangers is now recuperated inside E-304 instead of being sold to the
+    user, which is what lets the user keep the hot end of the store to itself.
     """
 
     station_index: int                      # 0 is the HOTTEST station
@@ -192,6 +196,95 @@ class OfftakeTap:
     heat_j_per_kg_air: float                # duty handed to the user, eq. (20)
     required_effectiveness: float = 0.0
     available_effectiveness: float = 0.0
+
+
+@dataclass(frozen=True)
+class ExtractionSegment:
+    """One zone of E-304, between two consecutive trunk extractions.
+
+    The trunk loses mass at every extraction, so its heat-capacity rate is a
+    STEP FUNCTION of position and a single whole-body LMTD or epsilon-NTU is
+    invalid. The body is therefore solved zone by zone: inside one zone both
+    capacity rates are constant, which is exactly the condition the ordinary
+    counter-current effectiveness relation needs.
+
+    ``trunk_flow_per_kg_air`` is the flow crossing THIS zone - the suffix sum of
+    the extractions still downstream - never the plant inventory. The cold side
+    carries the whole inventory through every zone, so the trunk is always the
+    C_min stream and ``capacity_ratio`` is at most one.
+
+    Both terminal differences are reported because with a variable trunk
+    capacity rate the pinch migrates to an internal node; checking only the two
+    ends of the body would miss it.
+    """
+
+    index: int                              # 0 is the HOTTEST zone
+    trunk_flow_per_kg_air: float            # kg-coolant/kg-air crossing this zone
+    trunk_inlet_temperature_k: float        # trunk entering, at the hot end
+    trunk_outlet_temperature_k: float       # trunk leaving, at the cold end
+    return_inlet_temperature_k: float       # cold side entering, at the cold end
+    return_outlet_temperature_k: float      # cold side leaving, at the hot end
+    duty_j_per_kg_air: float
+    capacity_ratio: float                   # C_min/C_max = trunk flow / inventory
+    required_effectiveness: float = 0.0
+    available_effectiveness: float = 0.0
+
+    @property
+    def hot_end_terminal_difference_k(self) -> float:
+        return self.trunk_inlet_temperature_k - self.return_outlet_temperature_k
+
+    @property
+    def cold_end_terminal_difference_k(self) -> float:
+        return self.trunk_outlet_temperature_k - self.return_inlet_temperature_k
+
+    @property
+    def terminal_difference_k(self) -> float:
+        """Tighter of the two ends: the zone's own approach."""
+        return min(
+            self.hot_end_terminal_difference_k,
+            self.cold_end_terminal_difference_k,
+        )
+
+
+@dataclass(frozen=True)
+class ExtractionExchangerSummary:
+    """E-304: one counter-current body with staged extractions on the trunk.
+
+    The trunk enters at the first extraction temperature, is progressively
+    withdrawn to feed each interheater, and is fully consumed at the last
+    extraction. Its cold side is the plant's own coolant return, so every joule
+    the trunk gives up here is INTERNAL recuperation: it is not a product, it is
+    not an ambient input, and it must never be booked as either. What it buys is
+    grade - the heat user upstream keeps the whole hot end of the store to
+    itself, and each interheater is fed at the temperature it actually needs
+    instead of at one common tank temperature.
+
+    ``margin_k`` is the single solved unknown of the discharge network: every
+    extraction sits that many kelvin above the air temperature its own stage
+    must reach, and the margin is rooted so the extractions consume exactly the
+    conserved coolant inventory.
+
+    Energy identity the plant guarantees (asserted in the tests):
+
+        recuperated_heat = sum(segment duties)
+                         = inventory * cp * (return_outlet - return_inlet)
+    """
+
+    margin_k: float                          # common approach above each stage demand
+    exchanger_ntu: float
+    trunk_inlet_temperature_k: float         # = hottest extraction
+    trunk_outlet_temperature_k: float        # = coldest extraction
+    return_inlet_temperature_k: float        # mixed coolant return entering
+    return_outlet_temperature_k: float       # what reaches the cold tank
+    total_water_mass_ratio: float            # inventory, the cold-side flow
+    recuperated_heat_j_per_kg_air: float
+    extraction_temperatures_k: tuple[float, ...] = ()   # one per expansion stage
+    extraction_mass_ratios: tuple[float, ...] = ()      # one per expansion stage
+    segments: tuple[ExtractionSegment, ...] = ()
+    minimum_terminal_difference_k: float = 0.0
+    maximum_required_effectiveness: float = 0.0
+    minimum_effectiveness_margin: float = 0.0
+    exergy_destruction_j_per_kg_air: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -317,6 +410,10 @@ class PlantResult:
     thermal_store: TwoTankSummary | None       # None in diabatic mode: there is no coolant loop
     exergy: ExergySummary
     heat_offtake: HeatOfftakeSummary | None = None   # None unless an offtake is configured
+    # E-304. Present exactly when a heat user is dispatched: without one there
+    # is no trunk to stage, because the only sink for the descent would be the
+    # plant's own cold return and warming it buys nothing.
+    extraction_exchanger: ExtractionExchangerSummary | None = None
     optimization: OptimizationSummary | None = None
     external_heat_input_j_per_kg: float = 0.0  # ambient energy; zero-exergy at the selected dead state
     moisture: MoistureSummary | None = None        # diagnostic only; dry-air energy balance is unchanged

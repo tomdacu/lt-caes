@@ -6,8 +6,8 @@
 
 The root coordinate is the cold-tank temperature. This is required by the
 branch-selective E-303 topology: an untreated all-return mean loses the branch
-distribution and therefore cannot determine which suffix is warmed or how much
-ambient heat enters.
+distribution and therefore cannot determine which returns are warmed or how
+much ambient heat enters.
 
 For one conserved coolant inventory, every residual evaluation performs:
 
@@ -15,8 +15,9 @@ For one conserved coolant inventory, every residual evaluation performs:
 trial cold-tank temperature
  -> charge train and one mixed hot store
  -> discharge branch flows and temperatures
- -> analytic optimization of the one E-303 cutoff
- -> final mixing of warmed suffix and bypass returns
+ -> analytic selection of the one E-303 group, coldest returns first
+ -> final mixing of the warmed group and the bypass returns
+ -> E-304 recuperation into that mixture (heat user only)
  -> cold-tank standing map
  -> produced cold-tank temperature.
 ```

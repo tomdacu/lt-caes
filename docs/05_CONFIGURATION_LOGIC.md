@@ -25,7 +25,7 @@ are derived from their combination.
 Reset Defaults opens the LTHP reference point requested for configuration
 screening: six compressor and six expander stages, 85.8 bar storage pressure
 (`2.1^6` rounded to one decimal), all active exchanger NTUs equal to 5, direct
-coolant limits -80/200 degC, one cascade group, 80/45 degC heat user, zero
+coolant limits -80/200 degC, 80/45 degC heat user, zero
 normalized tank UA and the combined heat-plus-power objective. The broad
 coolant limits are intentionally non-binding defaults, not a material claim;
 real candidate fluids must replace them with characterized limits/properties.
@@ -47,12 +47,19 @@ experiment, so old records must stay readable; the names were changed because
 the heat user is not necessarily a network, and code that says otherwise keeps
 misleading its reader.
 
-`coolant_cascade_groups` selects the number of contiguous expansion-stage
-groups and, when heat is dispatched, exactly the number of serial heat-user
-exchangers. It never changes the one mixed hot store. Its range is
-`1..expander_stages`; the compressor count does not bound a discharge-routing
-choice. See [document 08](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md) and
-the [architecture specification](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md).
+`coolant_cascade_groups` is **dormant**. It used to select the number of
+contiguous expansion-stage groups and the matching number of serial heat-user
+exchangers. The active topology has exactly one user exchanger (E-302) and one
+extraction per expansion stage on E-304, so nothing is left for it to control.
+It is still accepted and still range checked so configuration files written
+against the cascade keep loading unchanged.
+
+`extraction_exchanger_ntu` sizes EACH ZONE of E-304. The zone, rather than the
+body, is the unit here because the trunk loses mass at every extraction, so its
+heat-capacity rate is a step function of position and one whole-body
+effectiveness would be invalid. See
+[document 08](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md) and the
+[architecture specification](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md).
 
 `ambient_heat_exchanger_ntu` is the only AD-CAES recovery input. Ambient
 reheat is mandatory: a no-reheat expansion would drive the air below the
@@ -92,8 +99,8 @@ T_out,min(p) = T_hard(p) + 10 K
 ```
 
 AD-CAES takes the maximum safe turbine pressure drop and throttles the
-remainder. LTA/LTHP supplies stage-specific coolant duty; LTHP optionally applies
-its heat-user cascade before the coolant interheaters. The 0.1 wt% possible-condensate
+remainder. LTA/LTHP supplies stage-specific coolant duty; LTHP sells the top of
+the trunk through E-302 and then stages the rest to the interheaters in E-304. The 0.1 wt% possible-condensate
 screen protects only the discharge-side dry-air approximation. See
 [Moisture, dew point, and wet expansion](06_MOISTURE_DEW_POINT_AND_WET_EXPANSION.md).
 
@@ -103,7 +110,7 @@ saturation ceiling and `coolant_freezing_temperature_c`; the latter remains a
 load-only alias for the new minimum field. The present solver retains a
 water-like constant liquid heat capacity internally (4180 J/kg/K), but does
 not infer a coolant limit from pressure or saturation. `cold_return_cooler_ntu`
-sizes the one heat-only E-303 placed on the optimized cold return suffix.
+sizes the one heat-only E-303, placed on the coldest group of returns.
 
 Public configuration, GUI labels and reports call this loop **coolant**. Some
 Python result attributes and low-level helper names still contain `water` for
@@ -121,8 +128,8 @@ one-kilogram-air basis and is applied to both tanks.
 The following are deliberately absent from `PlantConfig`:
 
 - cold- and hot-tank temperatures;
-- the group bleed temperatures of the discharge cascade, and the flow
-  through each user station;
+- the E-304 extraction margin, the extraction temperatures and the bleed flows;
+  the recuperated duty and the cold-tank inlet that follows from it;
 - total and per-stage coolant/air ratios;
 - the user's own mass flow, which is a slave of the duty and the span its
   operator fixed;
@@ -140,10 +147,11 @@ The active objectives are:
   `(W_exp + Q_DH)/W_comp`.
 
 For LTHP the objective is also a dispatch instruction. With
-`max_electric_efficiency` the user exchangers are bypassed (`Q_user = 0`) and
-the full hot-coolant inventory is available to the interheaters. With
-`max_combined_energy_delivery` the user cascade is active and receives the
-high-grade remainder after the moisture-safe turbine duty is reserved.
+`max_electric_efficiency` both E-302 and E-304 are bypassed (`Q_user = 0`) and
+the full hot-coolant inventory is available to the interheaters at the one
+stored temperature. With `max_combined_energy_delivery` both bodies are active:
+the user receives everything above the first extraction, and E-304 recuperates
+the descent below it into the coolant return.
 Because E-303 is heat-only, bypass operation is feasible only if the turbine
 train itself leaves a periodic coolant loop; the default LTHP point needs the
 user as a real heat sink and correctly rejects electricity-only dispatch.

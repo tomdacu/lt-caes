@@ -61,11 +61,12 @@ ENUM_DISPLAY = {
     },
 }
 # These values are used as counts by the plant solver (``range(count)``).
-# Keep the GUI parser aligned with the dataclass schema: ``coolant_cascade_groups``
-# is an integer too, even when its input is disabled outside LTHP-CAES.
-# Before it was listed here, the startup parse converted the displayed ``1`` to
-# ``1.0`` and the first LTHP solve failed while assigning cascade groups with
-# ``TypeError: 'float' object cannot be interpreted as an integer``.
+# Keep the GUI parser aligned with the dataclass schema. ``coolant_cascade_groups``
+# is dormant but still range checked by ``PlantConfig``, and it stays an integer
+# here so a loaded configuration file survives a round trip through the GUI: the
+# startup parse used to convert the displayed ``1`` to ``1.0``, which then failed
+# validation with ``TypeError: 'float' object cannot be interpreted as an
+# integer``.
 INTEGER_FIELDS = {
     "compressor_stages",
     "expander_stages",
@@ -770,12 +771,15 @@ class CAESGUI(tk.Tk):
                 ("Hot-tank standing loss", f"{s.storage_loss_j_per_kg_air / 1000:.2f} kJ/kg-air"),
                 ("Cold-tank standing loss", f"{s.cold_storage_loss_j_per_kg_air / 1000:.2f} kJ/kg-air"),
                 (
+                    # The group is picked by TEMPERATURE, not by stage order, so
+                    # naming a stage range here would misdescribe it.
                     "E-303 optimized placement",
                     (
-                        f"return stages {s.cold_return_recovery_start_stage + 1}–"
+                        f"{s.cold_return_recovery_branch_count} coldest of "
                         f"{len([p for p in result.discharging.processes if p.kind == 'interheating'])}"
-                        if s.cold_return_recovery_start_stage is not None
-                        else "bypassed (no legal sub-ambient suffix)"
+                        " returns"
+                        if s.cold_return_recovery_branch_count
+                        else "bypassed (no sub-ambient return)"
                     ),
                 ),
                 (
@@ -784,7 +788,15 @@ class CAESGUI(tk.Tk):
                     f"{s.cold_return_recovery_outlet_temperature_k - 273.15:.2f} °C",
                 ),
                 (
-                    "Final mixed cold-tank inlet",
+                    "Mixed return, before E-304",
+                    f"{s.recuperator_inlet_temperature_k - 273.15:.2f} °C",
+                ),
+                (
+                    "E-304 recuperation (internal)",
+                    f"{s.extraction_recuperated_heat_j_per_kg_air / 1000:.2f} kJ/kg-air",
+                ),
+                (
+                    "Cold-tank inlet, after E-304",
                     f"{s.cold_return_exchanger_outlet_temperature_k - 273.15:.2f} °C",
                 ),
                 (

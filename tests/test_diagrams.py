@@ -167,17 +167,20 @@ def test_cycle_diagrams_include_hot_supply_and_cold_return_references():
         diagrams.draw_ts(axes[0], result)
         diagrams.draw_hs(axes[1], result)
         diagrams.draw_ph(axes[2], result)
+        # Supply isotherms are labelled per extraction when there is more than
+        # one, and as a single common supply only if every stage shares it.
+        supply_prefixes = ("coolant supply", "E-304 extraction")
         for axis in axes:
             labels = {line.get_label() for line in axis.lines}
             assert any(label.startswith("cold TES") for label in labels)
             assert any(label.startswith("hot TES") for label in labels)
-            assert any(label.startswith("coolant supply") for label in labels)
+            assert any(label.startswith(supply_prefixes) for label in labels)
             assert any(label.startswith("coolant return") for label in labels)
             reference_lines = [
                 line for line in axis.lines
                 if (
                     "TES" in line.get_label()
-                    or "coolant supply" in line.get_label()
+                    or line.get_label().startswith(supply_prefixes)
                     or "coolant return" in line.get_label()
                 )
             ]
@@ -202,20 +205,17 @@ def test_cold_coolant_reference_levels_are_real_interheater_returns():
     assert actual == expected
 
 
-def test_single_store_and_every_cascade_supply_get_an_isotherm():
+def test_single_store_and_every_extraction_get_an_isotherm():
     """The plot distinguishes stored state from discharge routing.
 
-    ``K`` changes the number of post-user bleed temperatures, never the number
-    of stored hot states.
+    E-304 gives every expansion stage its own extraction temperature; the store
+    behind it stays one mixed hot state. Only the DISTINCT extractions are
+    drawn, because where the demand profile puts two stages on one nozzle there
+    is only one temperature to show.
     """
-    from dataclasses import replace
-
-    config = replace(
-        PlantConfig(
-            heat_offtake=HeatOfftake.HEAT_USER,
-            optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-        ),
-        coolant_cascade_groups=4,
+    config = PlantConfig(
+        heat_offtake=HeatOfftake.HEAT_USER,
+        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
     )
     result = CAESPlant(config).run()
     store = result.thermal_store
@@ -227,8 +227,13 @@ def test_single_store_and_every_cascade_supply_get_an_isotherm():
         value for label, value, color in references
         if color == diagrams.SUPPLY_REFERENCE_COLOR
     ]
+    distinct = {
+        round(temperature_k, 6)
+        for temperature_k in result.extraction_exchanger.extraction_temperatures_k
+    }
     assert hot == pytest.approx([store.hot_temperature_available_k])
-    assert len(supplies) == 4
+    assert len(supplies) == len(distinct)
+    assert len(supplies) > 1
 
     figure, axis = plt.subplots()
     try:
@@ -294,19 +299,18 @@ def test_cycle_diagrams_show_surface_drying_and_stored_air_dew_frost_limits(mode
         plt.close(figure)
 
 
-def test_every_cascade_station_gets_its_own_composite_panel():
-    from dataclasses import replace
-
-    config = replace(
-        PlantConfig(
-            heat_offtake=HeatOfftake.HEAT_USER,
-            optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-        ),
-        coolant_cascade_groups=3,
+def test_the_single_user_station_gets_its_own_composite_panel():
+    """One user exchanger, one panel. The descending duty that used to be spread
+    over K stations now lives inside E-304 and is not sold, so there is nothing
+    else with a user side to plot.
+    """
+    config = PlantConfig(
+        heat_offtake=HeatOfftake.HEAT_USER,
+        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
     )
     result = CAESPlant(config).run()
     stations = diagrams.offtake_stations(result)
-    assert len(stations) == len(result.heat_offtake.taps) > 1
+    assert len(stations) == len(result.heat_offtake.taps) == 1
     figure = plt.figure(figsize=(12, 7))
     try:
         diagrams.draw_composites(figure, result, "Air")

@@ -76,17 +76,20 @@ Several first-principle relations remove numerical degrees of freedom:
 - stage pressures follow a chosen equal pressure-ratio train;
 - energy conservation fixes coolant return temperature once duty and water ratio
   are known;
-- ordered stage duties permit a contiguous group assignment instead
-  of a combinatorial `K^N` search;
+- each stage's demand temperature is invariant, so the extraction ladder is a
+  known profile plus ONE common margin rather than N free temperatures;
+- raising that profile to its suffix maximum makes the ladder monotone by
+  construction, so no ordering search is needed;
 - constant-`cp` liquid-coolant mixing is exactly enthalpy-weighted in this model;
-- the N legal E-303 suffix duties are closed-form, so placement is O(N).
+- an optimal E-303 group is downward closed in temperature, so sorting the
+  returns once reduces `2**N` subsets to N thresholds.
 
 Other unknowns cannot yet be removed honestly. Finite-NTU effectiveness depends
 on capacity ratio, air `cp` varies with state, E-303 and dwell couple the return
 to the next charge, and active coolant-limit/finite-NTU constraints create
 piecewise branches. Inventory, cold-loop closure, inverse-HX sizing and the
-equal-drop mass root therefore remain numerical until stronger monotonicity
-or convexity is proved over the complete admissible domain.
+extraction-margin mass root therefore remain numerical until stronger
+monotonicity or convexity is proved over the complete admissible domain.
 
 ## Recommended theory-led sensitivity program
 

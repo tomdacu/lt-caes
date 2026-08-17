@@ -122,7 +122,8 @@ as a positive product.
 | XV-401 / XV-402 | charge and discharge wellhead block valves |
 | AH-20x | ambient reheaters (AD-CAES only; its sole discharge heat source) |
 | TK-301 | one mixed hot coolant store |
-| E-302 / E-302A.. | heat-user exchangers; exactly one before each group bleed |
+| E-302 | the single heat-user exchanger, crossed by the whole trunk |
+| E-304 | the extraction exchanger: one counter-current body, one bleed per expansion stage |
 | H-301 | the external heat user, whatever it is |
 | E-20x | coolant interheaters (adiabatic concepts only) |
 | T-20x | expander bodies |
@@ -132,8 +133,8 @@ as a positive product.
 | S-201 | exhaust stack to atmosphere |
 | TK-301 / TK-302 | hot and cold TES tanks |
 | P-301 / P-302 | hot- and cold-side coolant-loop pumps |
-| E-302 / H-301 | the user cascade / the external heat user |
-| E-303 | one heat-only ambient recovery exchanger on the optimized return suffix |
+| H-301 | the external heat user |
+| E-303 | one heat-only ambient recovery exchanger on the coldest return group |
 
 Two tags are reporting-only and are deliberately absent from the generated
 P&ID, which shows thermodynamic process equipment exclusively:
@@ -221,9 +222,11 @@ The interheater allocation maximizes real multi-stage turbine work while:
 - keeping every expander on its wet/frost operating envelope;
 - respecting direct coolant minimum and maximum temperature limits.
 
-After the interheaters, the solver selects one ordered suffix of return branches,
+After the interheaters, the solver selects the coldest group of return branches,
 mixes that subgroup, warms it toward ambient through `E-303`, and finally mixes
-it with warmer bypass returns before the cold tank. E-303 never cools a return.
+it with the warmer bypass returns before the cold tank. E-303 never cools a
+return. LTA-CAES has no E-304: without a heat user there is nothing to sell off
+the top of the trunk, so there is no reason to stage it.
 If a plant needs an unmodelled heat-rejection sink to close periodically, the
 configuration is infeasible; no coolant-limit, wet-expander, or icing
 constraint is relaxed.
@@ -239,7 +242,7 @@ flowchart LR
     HOT --> WHX
     WHX --> TURB[Wet-rated turbines]
     TURB --> POWER[Generator electricity]
-    WHX --> MIX[Optimized cold-return suffix]
+    WHX --> MIX[Coldest cold-return group]
     MIX --> E303[E-303 heat-only ambient recovery]
     WHX --> BYPASS[Warmer bypass returns]
     E303 --> FINAL[Final return mixing]
@@ -332,23 +335,48 @@ Vendor property tables must replace the reference constants before detailed desi
 
 ### Why the component order matters
 
-The mixed hot store feeds one trunk. All coolant crosses user exchanger 0;
-interheater group 0 then bleeds its required flow, and only the remainder
-crosses exchanger 1. Exactly K exchangers and K non-empty group bleeds repeat
-this pattern. The final exchanger is followed by the final bleed, so no K+1
-body exists after the trunk is empty.
+The mixed hot store feeds one trunk. The complete inventory crosses **one** user
+exchanger, E-302, which takes the band off the top of the store. What is left
+enters **one** extraction body, E-304, and is withdrawn stage by stage until it
+is exhausted at the last extraction.
 
-The flow through the user exchangers is therefore a decreasing staircase.
-With a common plant-side temperature drop, exchanger 0 transfers the most heat
-and every later duty is smaller. K=1 is the classic single series exchanger
-ahead of all interheaters.
+The flow inside E-304 is therefore a decreasing staircase, exactly as the flow
+through the old serial user cascade was. What changed is who absorbs the descent
+between one bleed and the next: it used to be the heat user, and it is now the
+plant's own coolant return, on E-304's cold side.
 
-The user side runs **counter to the trunk in series**: its return enters the
-coldest station and its supply leaves the hottest, so the cold stations preheat
-and only the top one makes the final lift. Connecting the stations in parallel
-instead would demand the final supply temperature at every branch and an
-effectiveness unavailable at the configured NTU, which the cold end of the
-cascade cannot offer.
+That swap is what the architecture is for. Each expansion stage must reach its
+own air temperature before its turbine, and those demands fall steeply along the
+train:
+
+```text
+  stage          1      2      3      4      5      6
+  demand [C]   65.95  61.24  50.89  41.20  32.13  23.63
+```
+
+Feeding all of them from one post-user trunk temperature - which is what the
+cascade did - means sizing that temperature for stage one and then handing stage
+six 44 K it cannot use. E-304 places each bleed a single common margin `m` above
+its own stage's demand and recuperates the difference:
+
+```text
+  T_extraction,g = T_demand,g + m
+  sum_g  b_g( T_demand,g + m )  =  R_total     <- m is rooted on this
+  T_trunk,in     = T_demand,0 + m              <- so E-302 gets everything above it
+```
+
+There is consequently **no split to choose** between what is sold and what is
+recuperated: the user takes everything above the first extraction, E-304 takes
+everything below it, and the outer search still has one variable.
+
+A trunk that is progressively withdrawn only gets colder, so it cannot serve a
+later stage hotter than an earlier one. Where the raw demand profile is not
+monotone - measured at 300 bar with eight stages, where stage two demands
+64.45 C against stage one's 63.34 C - the profile is raised to its suffix
+maximum and the two stages share one nozzle.
+
+The user side is one counter-current pass through E-302: its return enters the
+cold end and its supply leaves the hot end.
 
 On the air side, each expansion stage uses:
 
@@ -356,11 +384,8 @@ On the air side, each expansion stage uses:
 previous turbine outlet -> coolant interheater E-20x -> turbine T-20x
 ```
 
-There is no ambient exchanger in this train. The low-grade duty that AH-20x
-used to supply is a genuine demand - the tail stages need much less reheat than
-the first, so a single hot-tank temperature is a poor match for them - but it
-is a demand the WATER side should answer, not the atmosphere. The measured
-mismatch is in the baseline table below.
+There is no ambient exchanger in this train. The low-grade duty that AH-20x used
+to supply was a genuine demand, and E-304 is the WATER side answering it.
 
 ```mermaid
 flowchart LR
@@ -369,25 +394,28 @@ flowchart LR
     COMP --> IC
     IC --> HOT[One mixed hot TES, after temporal storage]
     IC --> CAV[Compressed-air cavern]
-    HOT --> TRUNK[Full-flow trunk]
-    TRUNK --> E302[K user stations, each followed by a group bleed]
+    HOT --> E302[E-302: one user exchanger on the whole trunk]
     DHRET[user return] --> E302
     E302 --> DHSUP[user supply: the heat product]
-    TRUNK --> WHX[Stage bleeds: minimum-duty coolant interheaters]
+    E302 --> E304[E-304: one bleed per stage, trunk fully consumed]
+    E304 --> WHX[Minimum-duty coolant interheaters]
     CAV --> WHX
     WHX --> TURB[Wet-rated turbines]
     TURB --> POWER[Electricity product]
-    WHX --> E303[E-303 and cold TES closure]
-    E303 --> COLD
+    WHX --> E303[E-303 on the coldest returns, then final mixing]
+    E303 --> E304
+    E304 --> COLD
 ```
 
 This plant shifts two products through time:
 
 - compressed-air exergy later becomes electricity;
-- compression heat later becomes district heat and turbine reheat.
+- compression heat later becomes user heat and turbine reheat.
 
-Ambient assistance reduces the low-temperature part of the TES duty and frees
-more stored heat for `E-302`.
+Note that E-304 appears twice in that diagram on purpose: it is one body with
+the trunk on one side and the coolant return on the other, and the recuperation
+it performs is INTERNAL. It is not a product and not an ambient input, and the
+coolant energy balance is unchanged by it.
 
 ### Left-to-right exergy flow
 
@@ -398,23 +426,31 @@ flowchart LR
     COMP -->|"I_comp"| DEST["Exergy destruction"]
     IC -->|"thermal exergy"| TES["Hot TES"]
     IC -->|"I_intercoolers"| DEST
-    TES -->|"plant-water exergy"| DHX["E-302 district HX"]
+    TES -->|"plant-water exergy"| DHX["E-302 heat-user HX"]
     TES -->|"I_storage"| DEST
     DHX -->|"B_heat_user useful heat exergy"| DH["Heat product"]
     DHX -->|"I_E302"| DEST
-    DHX -->|"remaining TES exergy"| WHX["Coolant interheaters"]
-    AIR["Cavern-air exergy"] --> AMBHX["Ambient preheaters"]
-    AMB["Ambient energy Q_amb"] -. "B_Q approximately 0 at T0" .-> AMBHX
-    AMBHX -->|"conditioned-air exergy"| WHX
-    AMBHX -->|"I_ambient-HX"| DEST
+    DHX -->|"remaining trunk exergy"| EXT["E-304 extraction body"]
+    EXT -->|"I_E304: trunk drop minus return gain"| DEST
+    EXT -->|"extraction exergy, one per stage"| WHX["Coolant interheaters"]
+    AIR["Cavern-air exergy"] --> WHX
     WHX -->|"reheated-air exergy"| EXP["Expansion"]
-    WHX -->|"I_water-HX + mixing"| DEST
+    WHX -->|"I_water-HX"| DEST
     EXP -->|"W_exp"| WOUT["Electricity product"]
     EXP -->|"I_turbines"| DEST
     EXP -->|"B_exhaust"| LOSS["Unused exhaust exergy"]
-    WHX -->|"return-fluid exergy"| COLD["E-303 and cold TES"]
-    COLD -->|"I_rejection + I_cold-store"| DEST
+    WHX -->|"return-fluid exergy"| E303["E-303 on the coldest returns"]
+    AMB["Ambient energy Q_amb"] -. "B_Q approximately 0 at T0" .-> E303
+    E303 -->|"I_ambient-exchange + mixing"| DEST
+    E303 -->|"mixed return"| EXT
+    EXT -->|"recuperated return exergy"| COLDT["Cold TES"]
+    COLDT -->|"I_cold-store"| DEST
 ```
+
+E-304 is the only body on this diagram that appears on both a hot path and a
+cold one, because both of its streams are inside the plant. Its destruction is
+the gap between what the trunk gives up and what the return picks up; neither
+side is a product and neither is a loss.
 
 The combined useful exergy product is:
 
@@ -427,17 +463,30 @@ balance, but it is not an additional positive exergy source at `T0`.
 
 ### Heat-user exchanger constraints
 
-The user can receive the complete `E-302` duty only if every counter-current
-station fits its configured NTU class:
+The user can receive the `E-302` duty only if the single counter-current body
+fits its configured NTU class:
 
 ```text
 epsilon_required = Q / [Cmin (T_hot,in - T_user,in)]
 epsilon_required <= epsilon_counterflow(NTU_user, Cmin/Cmax)
 ```
 
-The user flow follows from total duty and its configured supply/return span.
-The solver rejects an undersized NTU class instead of silently lowering the
+The user flow follows from the duty and its configured supply/return span. The
+solver rejects an undersized NTU class instead of silently lowering the
 requested user temperature.
+
+This check is now the plant's binding limit on how hot a user can be served,
+and it replaces a topological one. Under the serial cascade the trunk had to
+stay above the user's return all the way down to the last bleed, so a hot return
+squeezed the turbines out entirely. With E-304 the trunk continues below the
+user return, and what remains is an ordinary finite-area statement about one
+body. A required effectiveness above one - reached by asking for 120/100 C at
+`NTU = 5` - is that body saying E-302 would have to take the trunk below its own
+cold-side inlet, which is impossible rather than merely expensive.
+
+`E-304` is held to the same discipline, but zone by zone: its trunk loses mass
+at every extraction, so a single whole-body effectiveness would be invalid. See
+[the architecture](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md#5-e-304-is-solved-zone-by-zone).
 
 ### Combined-energy objective
 
@@ -459,18 +508,25 @@ Profile spread remains reported for equipment sizing.
 An LTHP plant at 200 bar with eight stages, `heat_exchanger_ntu = 100`,
 an 80/45 degC heat user and a -30 degC antifreeze demonstrates:
 
-- `R_delivery = 103.3%`, above unity;
-- total useful exergy efficiency `64.0%`, below unity;
-- **zero** ambient heat imported.
+- `R_delivery = 121.9%`, well above unity;
+- total useful exergy efficiency `65.8%`, below unity.
 
-That is how apparent greater-than-unity performance should be read, and note
-that it needs no ambient exchanger at all. The plant draws the energy out of
-the atmosphere through its own working fluid: the exhaust leaves at -27.6 degC,
-`42.8 kJ/kg-air` below intake enthalpy, and nobody charges the plant for it.
-The delivery ratio counts free harvested energy in its numerator and never in
-its denominator, so passing 100% is expected rather than suspect. Only the
-second line is a bound - `eta_exergy` is always below one. See
+That is how apparent greater-than-unity performance should be read. The plant
+draws energy out of the atmosphere by two free routes and nobody charges it for
+either: the exhaust leaves at -27.6 degC, `42.8 kJ/kg-air` below intake
+enthalpy, and E-303 harvests a further `122.4 kJ/kg-air` into the coolant
+return. The delivery ratio counts free harvested energy in its numerator and
+never in its denominator, so passing 100% is expected rather than suspect. Only
+the second line is a bound - `eta_exergy` is always below one. See
 [the expenditure-ratio note](03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md#the-one-energy-metric-and-what-it-deliberately-excludes).
+
+Under the former serial cascade the same configuration returned
+`R_delivery = 103.3%`, `eta_exergy = 64.0%` and imported **zero** ambient heat.
+The whole of that 18-point gain is the ambient harvest, and the harvest exists
+because E-304 stops overheating the tail-stage coolant: matched supplies let the
+interheater returns come back genuinely cold, and cold returns are what E-303
+has to work with. It is worth being explicit that this is a first-law effect on
+a free stream, which is why `eta_exergy` moves by less than two points.
 
 ## Heat exchanger equations
 
@@ -546,18 +602,34 @@ T_after = T0 + (T_before - T0)
           exp[-UA_tank t / (r_total cp_coolant)]
 ```
 
-For candidate ordered suffix `s`, its mixed interheater return reaches E-303:
+There is exactly one ambient exchanger. The only decision it carries is which
+interheater returns join the manifold ahead of it; for a candidate group `s`,
 
 ```text
-T_E303,out = T0 + (T_suffix - T0) exp(-NTU_E303), T_suffix < T0
+T_E303,out = T0 + (T_s - T0) exp(-NTU_E303), T_s < T0
 ```
 
-Only sub-ambient suffix mixtures are legal. The solver evaluates all N suffixes
-and selects the largest `R_s cp (T0-T_s)[1-exp(-NTU)]`; this is also the largest
-final cold-tank inlet temperature for the fixed return set. The selected outlet
-then mixes with the bypass returns. Ambient heat is booked as
+Only sub-ambient mixtures are legal - E-303 is heat-only and is never reversed
+into a cooler. The solver selects the group with the largest
+`R_s cp (T0-T_s)[1-exp(-NTU)]`, which is also the largest final cold-tank inlet
+for the fixed return set, and the warmed outlet then mixes with the bypass
+returns.
+
+Candidates are the returns **sorted by temperature**, coldest first. Any optimal
+group is downward closed in temperature - swapping a warmer member for a colder
+non-member always lowers the mixed inlet and so raises the duty - which makes
+those `N` thresholds the complete search rather than a slice of the `2**N`
+subsets. Ordering by temperature rather than by stage index matters here: the
+former cascade fed every interheater from one trunk temperature, which happened
+to make the returns monotone in stage order, and with E-304's matched supplies
+they no longer are.
+
+Ambient heat is booked as
 `cold_return_heat_absorbed_from_ambient_j_per_kg_air`; rejection is structurally
 zero. E-303 fan power and fixed-area/cost limits are not yet included.
+
+The mixed return then crosses E-304's cold side, so the cold tank receives the
+RECUPERATED temperature, not this one.
 
 ## Optimization hierarchy
 
@@ -567,9 +639,11 @@ For each normalized total coolant inventory, the solver:
 2. enforces direct coolant minimum and maximum temperatures;
 3. applies hot-tank standing loss;
 4. determines moisture-safe turbine requirements;
-5. allocates or inversely sizes every water-interheater branch;
-6. optimizes the ordered E-303 return suffix, then performs final mixing;
-7. derives the next cold-TES temperature from that routed return;
+5. roots the common E-304 extraction margin, inversely sizing every
+   interheater branch, so the bleeds consume the exact inventory;
+6. selects the maximum-duty E-303 group over the COLDEST returns, then mixes;
+7. runs that mixed return through E-304's cold side and derives the next
+   cold-TES temperature from the RECUPERATED inlet;
 8. evaluates energy, exergy and HX-profile metrics;
 9. refines the inventory search around the selected objective, continuing the
    coolant-loop root from the previous inventory rather than rescanning.
@@ -606,25 +680,26 @@ grid-to-grid result:
 - district-network pumps.
 
 For the above-unity LTHP example, the normalized result is
-`w_comp = 639.63 kJ/kg-air`. A 70 MW compressor shaft input therefore
-corresponds to approximately `109.4 kg/s` dry air and, on the present
+`w_comp = 627.83 kJ/kg-air`. A 70 MW compressor shaft input therefore
+corresponds to approximately `111.5 kg/s` dry air and, on the present
 shaft-only boundary:
 
 ```text
-expander shaft output       ~= 38.93 MW
-heat-user output            ~= 39.14 MW
-E-303 ambient heat imported ~=  7.59 MW
-electricity + heat delivery ~= 78.07 MW
+expander shaft output       ~= 39.66 MW
+heat-user output            ~= 45.66 MW
+E-303 ambient heat imported ~= 13.65 MW
+electricity + heat delivery ~= 85.32 MW
 ```
 
 The last line is larger than the 70 MW electrical input only because it mixes
 two energy products while charging none of the harvested ambient energy to the
-denominator. In addition to E-303, the exhaust carries another `4.69 MW` of
+denominator. In addition to E-303, the exhaust carries another `4.77 MW` of
 ambient contribution because it leaves `42.81 kJ/kg-air` below intake
-enthalpy. The energy Sankey draws both and closes
-the boundary balance; `R_delivery` deliberately prices neither, because the
-plant pays for neither. Generator, motor, pump and fan losses will reduce the
-physical outputs.
+enthalpy. The energy Sankey draws both and closes the boundary balance;
+`R_delivery` deliberately prices neither, because the plant pays for neither.
+Generator, motor, pump and fan losses will reduce the physical outputs, and at
+`13.65 MW` of harvested ambient duty the E-303 fan power this model still omits
+is no longer a rounding error.
 
 ## Model-development priorities
 

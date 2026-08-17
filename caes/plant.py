@@ -18,15 +18,26 @@ constraints together:
    pressure or saturation correlation;
 6. the configured direct coolant minimum limits the cold tank and every
    physical return;
-7. with a heat user, one mixed hot-store trunk crosses exactly K serial user
-   exchangers. After exchanger g, the coolant for contiguous interheater group
-   g bleeds off and only the remainder reaches exchanger g+1. The final
-   exchanger is followed by the final bleed; no zero-flow K+1 station exists.
-   Without a heat user E-302 does not exist and the complete hot-store stream
-   is optimized for turbine work.
+7. with a heat user, the whole mixed hot-store trunk crosses ONE user exchanger
+   (E-302) and then enters ONE counter-current extraction body (E-304), where it
+   is withdrawn stage by stage to feed the interheaters and is fully consumed at
+   the last extraction. E-304's cold side is the plant's own coolant return, so
+   the trunk's descent below the user is recuperated internally instead of being
+   sold. Without a heat user neither body exists and the complete hot-store
+   stream is optimized for turbine work.
 
 Those seven statements are the logic map of the solver. The detailed workflow
 and Mermaid concept maps live in ``docs/04_OPTIMIZATION_WORKFLOW.md``.
+
+WHY THE TRUNK IS STAGED AT ALL
+------------------------------
+Each expansion stage must reach its own air temperature before its turbine, and
+those demands fall steeply along the train.  Feeding every interheater from one
+tank temperature therefore wastes grade on the tail stages - measured at 44 K of
+excess on the last stage of the six-stage reference plant, against 1.7 K on the
+first.  E-304 gives each stage a supply a common margin above its own demand and
+recuperates the difference into the return.  That margin is the single unknown
+of the discharge network; see :meth:`CAESPlant._solve_extraction_margin`.
 
 WHAT THE SEARCH VARIABLE IS, AND WHY
 ------------------------------------
@@ -73,6 +84,8 @@ from .models import (
     OfftakeTap,
     HeatOfftakeSummary,
     ExergySummary,
+    ExtractionExchangerSummary,
+    ExtractionSegment,
     MoistureSummary,
     OptimizationSummary,
     PlantResult,
@@ -151,11 +164,6 @@ CHARGE_RELIEF_ITERATIONS = 10
 # by bisection inside the bracketing interval.  Paid only when the ceiling binds.
 CASCADE_ROOT_REFINEMENTS = 18
 CASCADE_FEASIBILITY_BISECTIONS = 12
-# Kept only until old cached pickles can no longer reference the private legacy
-# methods below; the active equal-drop cascade does not read these values.
-LADDER_MEAN_TOLERANCE_K = 1e-4
-LADDER_REFINEMENTS = 20
-LADDER_FEASIBILITY_BISECTIONS = 10
 CHARGE_BLEND_COARSE_STEPS = 4
 CHARGE_BLEND_BISECTIONS = 12
 # Acceptance on the closed loop: the mixed return the assembled cycle produces
@@ -189,44 +197,6 @@ MAX_WATER_MASS_CLOSURE_ERROR = 2.0 * WATER_MASS_CLOSURE_SEARCH_ERROR
 
 class HeatOfftakeTemperatureError(ValueError):
     """The requested DH temperatures cannot match the plant-coolant profile."""
-
-
-def _balanced_partition(weights: list[float], groups: int) -> list[int]:
-    """Split an ordered sequence into ``groups`` CONTIGUOUS blocks of equal weight.
-
-    Used to assign ordered expansion stages to cascade groups by their minimum
-    moisture-safe heat duties. It does not partition either thermal store.
-
-    Each cut is placed on whichever side of its target actually lies closer,
-    rather than on the first index that reaches it - stopping at the first
-    overshoot systematically front-loads the early groups.  Every group is
-    guaranteed at least one item.
-    """
-    count = len(weights)
-    if groups <= 1 or count == 0:
-        return [0] * count
-    groups = min(groups, count)
-    total = sum(weights)
-    if total <= 0.0:
-        return [min(groups - 1, index * groups // count) for index in range(count)]
-
-    prefix = [0.0]
-    for weight in weights:
-        prefix.append(prefix[-1] + weight)
-
-    # Cut b is the number of items in the first b groups.  Its feasible range
-    # keeps at least one item in every group on both sides of it.
-    cuts: list[int] = []
-    for boundary in range(1, groups):
-        target = total * boundary / groups
-        low = max(boundary, cuts[-1] + 1 if cuts else 1)
-        high = count - (groups - boundary)
-        cuts.append(min(range(low, high + 1), key=lambda i: abs(prefix[i] - target)))
-
-    membership: list[int] = []
-    for index in range(count):
-        membership.append(sum(1 for cut in cuts if index >= cut))
-    return membership
 
 
 def _hx_profile_spread(result: PlantResult) -> float:
@@ -322,10 +292,18 @@ class _DischargeDesign:
 
 @dataclass(frozen=True)
 class _DischargeRequirement:
-    """Invariant minimum-duty air trajectory for one LTHP expansion stage."""
+    """Invariant minimum-duty air trajectory for one LTHP expansion stage.
+
+    ``heater_outlet_temperature_k`` is the air temperature this stage's
+    interheater must produce for the following expander to land exactly on its
+    anti-icing envelope.  It is the DEMAND that E-304's extraction ladder is
+    matched to, and like the duty and the outlet pressure it depends only on the
+    pressure train and the protected humidity, never on either tank temperature.
+    """
 
     turbine_pressure_pa: float
     duty_j_per_kg_air: float
+    heater_outlet_temperature_k: float = 0.0
 
     def __iter__(self):
         """Preserve the historical private ``(duty, pressure)`` unpacking."""
@@ -372,10 +350,10 @@ class CAESPlant:
         # Continuation seed for the coolant-loop closure: the inventory of the
         # last accepted root and the mixed return it closed on.
         self._cold_loop_seed: tuple[float, float] | None = None
-        # Continuation seed for the equal-drop cascade.  Stored as a fraction
-        # of the current maximum drop so it remains useful while inventory and
-        # hot-store temperature move in the outer searches.
-        self._cascade_drop_fraction_seed: float | None = None
+        # Continuation seed for the E-304 extraction margin.  Stored as a
+        # fraction of the currently admissible margin span so it remains useful
+        # while inventory and hot-store temperature move in the outer searches.
+        self._extraction_margin_fraction_seed: float | None = None
         # Per-stage duty targets keyed by protected humidity ratio.  Held on the
         # instance so the plant can be collected when it goes out of scope.
         self._requirements_cache: dict[
@@ -393,11 +371,19 @@ class CAESPlant:
     def _absorbs_surplus(self) -> bool:
         """Electricity-first dispatch: use all high-grade heat in the turbines.
 
-        E-302 is absent in LTA-CAES and bypassed in electricity-first LTHP-CAES.
-        In both cases every kilogram from the hot tank goes directly to an
-        interheater branch.  Combined-delivery LTHP instead keeps the minimum
-        moisture-safe turbine duty so the user cascade can export the greatest
-        feasible amount of high-grade heat.
+        Both E-302 and E-304 are absent in LTA-CAES and bypassed in
+        electricity-first LTHP-CAES. In both cases every kilogram from the hot
+        tank goes directly to an interheater branch, at the one stored
+        temperature.
+
+        There is no point staging the trunk without a buyer for the top of it:
+        the only sink for the descent would be the plant's own coolant return,
+        so E-304 would warm the cold tank, capture less compression heat and
+        raise compressor work in exchange for nothing sellable.
+
+        Combined-delivery LTHP instead keeps the minimum moisture-safe turbine
+        duty, so E-302 can export the band above the first extraction while
+        E-304 feeds each stage a supply matched to its own demand.
         """
         c = self.config
         return (
@@ -406,7 +392,10 @@ class CAESPlant:
         )
 
     def _dispatches_heat_to_user(self) -> bool:
-        """Whether this solve actively routes coolant through the user HXs.
+        """Whether this solve routes coolant through E-302 and E-304.
+
+        The two stand or fall together: E-304 exists to let the user keep the
+        hot end of the store, and without a user there is nothing for it to do.
 
         ``heat_offtake`` describes installed/selected LTHP hardware; the
         objective selects its dispatch.  Electricity-first operation bypasses
@@ -684,9 +673,23 @@ class CAESPlant:
                         return None
                 assert design is not None
                 recovery = self._optimize_cold_return_recovery(design.returns)
+                # E-304 sits between the final return mixing and the cold tank,
+                # so the loop closes on the RECUPERATED inlet, not on the mixed
+                # return. Omitting it here would close a plant whose cold tank
+                # is tens of kelvin colder than the one actually built.
+                supplies = (
+                    design.supplies
+                    if isinstance(design, _LadderEvaluation)
+                    else design.stage_supplies
+                )
+                tank_inlet_k = self._recuperated_tank_inlet_k(
+                    store.total_ratio,
+                    supplies,
+                    design.returns,
+                    recovery.mixed_tank_inlet_k,
+                )
                 produced_cold_k = self.config.ambient_temperature_k + (
-                    recovery.mixed_tank_inlet_k
-                    - self.config.ambient_temperature_k
+                    tank_inlet_k - self.config.ambient_temperature_k
                 ) * self._tank_decay(total_inventory)
                 residual = produced_cold_k - cold_k
             except HeatOfftakeTemperatureError as exc:
@@ -1000,19 +1003,28 @@ class CAESPlant:
         self,
         branches: tuple[tuple[float, float, float], ...],
     ) -> _ColdReturnRecovery:
-        """Place one E-303 on the best contiguous suffix of stage returns.
+        """Place one E-303 on the coldest group of interheater returns.
 
-        A candidate cutoff ``s`` first mixes returns ``s..N-1``, heats that
-        mixture toward ambient through the finite-NTU exchanger, and only then
-        mixes it with returns ``0..s-1``. For constant coolant ``cp`` and one
-        implicitly resized NTU class, maximising the final cold-tank inlet is
-        exactly equivalent to maximising
+        There is exactly one ambient exchanger, so the only decision is which
+        returns join the manifold ahead of it. A candidate mixes that group,
+        warms the mixture toward ambient through the finite-NTU body, and only
+        then mixes it with the bypass returns. For constant coolant ``cp`` and
+        one implicitly resized NTU class, maximising the final cold-tank inlet
+        is exactly equivalent to maximising
 
             R_s cp (T0 - T_s) (1 - exp(-NTU)),  T_s < T0.
 
-        Testing the N legal cutoffs is therefore the complete topology
-        optimisation under the user's ordered-manifold constraint; no nested
-        thermodynamic solve or 2**N subset search is needed.
+        The candidates are the returns SORTED BY TEMPERATURE, coldest first.
+        Any optimal group is downward closed in temperature - swapping a warmer
+        member for a colder non-member always lowers the mixed inlet and so
+        raises the duty - which makes those N thresholds the complete search,
+        not a heuristic slice of the 2**N subsets.
+
+        Ordering by temperature rather than by stage index matters here. The
+        former serial cascade fed every interheater from one trunk temperature,
+        which happened to make the returns monotone in stage order; E-304 feeds
+        each stage its own supply, and the returns are no longer sorted by stage.
+        A stage-ordered suffix would then quietly stop being the optimum.
         """
         positive = [
             (index, ratio, temperature)
@@ -1025,12 +1037,14 @@ class CAESPlant:
         raw_energy = sum(ratio * temperature for _, ratio, temperature in positive)
         raw_mean = raw_energy / total_ratio
         ambient_k = self.config.ambient_temperature_k
+        coldest_first = sorted(positive, key=lambda item: (item[2], item[0]))
 
         best: _ColdReturnRecovery | None = None
-        for position, (start_stage, _, _) in enumerate(positive):
-            suffix = positive[position:]
-            ratio = sum(item[1] for item in suffix)
-            inlet_k = sum(item[1] * item[2] for item in suffix) / ratio
+        for count in range(1, len(coldest_first) + 1):
+            group = coldest_first[:count]
+            start_stage = min(item[0] for item in group)
+            ratio = sum(item[1] for item in group)
+            inlet_k = sum(item[1] * item[2] for item in group) / ratio
             if inlet_k >= ambient_k - 1e-12:
                 continue
             outlet_k = self._cold_return_exchanger_outlet_temperature(inlet_k)
@@ -1039,7 +1053,7 @@ class CAESPlant:
             tank_inlet_k = (bypass_energy + ratio * outlet_k) / total_ratio
             candidate = _ColdReturnRecovery(
                 start_stage=start_stage,
-                branch_count=len(suffix),
+                branch_count=count,
                 mass_ratio=ratio,
                 inlet_k=inlet_k,
                 outlet_k=outlet_k,
@@ -1514,6 +1528,7 @@ class CAESPlant:
                     0.0,
                     target.enthalpy_j_per_kg - current.enthalpy_j_per_kg,
                 ),
+                heater_outlet_temperature_k=target.temperature_k,
             ))
             current = turbine.outlet
         return tuple(requirements)
@@ -1522,21 +1537,6 @@ class CAESPlant:
         """Compatibility map: every stage draws from the one mixed hot store."""
         del store
         return [0] * self.config.expander_stages
-
-    def _stage_cascade_groups(self, store: _ThermalStore) -> list[int]:
-        """Assign contiguous expansion stages to discharge cascade groups.
-
-        Group zero is the first bleed and contains the highest-duty front of
-        the expansion train. Balancing cumulative minimum duty gives each
-        group a comparable turbine task while preserving physical stage order.
-        """
-        duties = [
-            requirement.duty_j_per_kg_air
-            for requirement in self._discharge_requirements(
-                store.protected_humidity_ratio
-            )
-        ]
-        return _balanced_partition(duties, self.config.coolant_cascade_groups)
 
     def _level_supplies(self, store: _ThermalStore) -> list[float]:
         """Direct hot-store supply used when the heat-user cascade is bypassed."""
@@ -1963,7 +1963,9 @@ class CAESPlant:
         averaged supply and then assembling the design on the ladder closes a
         plant that was never solved.
         """
-        required, evaluation, _ = self._solve_ladder(store, returned_mean_k)
+        required, evaluation, _ = self._solve_extraction_margin(
+            store, returned_mean_k
+        )
         return required, evaluation
 
     def _materialize_ladder(
@@ -2040,202 +2042,114 @@ class CAESPlant:
             stage_supplies=evaluation.supplies,
         )
 
-    def _solve_multilevel_ladder_legacy(
-        self, store: _ThermalStore, returned_mean_k: float
-    ) -> tuple[float, _LadderEvaluation | None, list[float]]:
-        """Pick the bleed temperature of every expansion stage, then build the train.
+    def _extraction_demands(self, store: _ThermalStore) -> list[float]:
+        """Non-increasing supply demand for each extraction on E-304 [K].
 
-        TURBINES FIRST.  Each stage's bleed carries exactly the flow its own
-        moisture-safe duty needs at the temperature the trunk offers it, and
-        what the turbines do not need stays in the trunk for the user.  So the
-        only thing to choose here is the SHAPE of the ladder, and the first law
-        of the interheater bank fixes its level.  Every kilogram of the
-        inventory passes exactly one interheater, entering at its own bleed
-        temperature and leaving at that exchanger's return, so
+        The raw quantity is the air temperature each stage's interheater has to
+        produce. It normally falls along the expansion train, because every
+        stage expands from a lower pressure onto the same anti-icing envelope -
+        which is exactly why one common tank temperature is a poor supply for
+        the tail stages, and why staging the trunk is worth a body.
 
-            sum(r_i t_i) - sum(r_i t_out,i) = Q_total
-            sum(r_i t_out,i)                = R T_return
-        =>  flow-weighted mean bleed temperature = T_return + Q_total / (R cp)
+        It does NOT always fall. Measured on the 300 bar eight-stage train, the
+        second stage demands 64.45 °C against the first stage's 63.34 °C,
+        because the first expansion starts from stored air at ambient
+        temperature while later ones start from a turbine outlet sitting on the
+        icing floor.
 
-        which is exactly the single-tank supply temperature the mixed-store
-        model has always used.  With one level every stage draws the same
-        temperature, that mean IS the answer, and this method costs one train -
-        the same as before.  With more levels the mean is held while the spread
-        follows the levels: stage ``i`` is bled between the temperature its
-        level holds and the coldest the heat user can accept,
-
-            t_i(theta) = floor_i + theta (ceiling_i - floor_i),
-
-        and ``theta`` is refined until the flow-weighted mean lands on target.
-        The floor is the user's cold-end terminal limit, because no exchanger in
-        the cascade can push the trunk below it; a level already colder than
-        that has nothing to sell and simply hands its own temperature over.
+        A trunk that is progressively withdrawn can only ever get COLDER along
+        its length, so it physically cannot hand a later stage a hotter supply
+        than an earlier one. The demand profile is therefore raised to its
+        SUFFIX MAXIMUM: each extraction is placed at the hottest demand still
+        ahead of it. Where that binds, the two stages share one nozzle and the
+        zone between them carries no duty - which is the honest picture, not a
+        rejection. Where the profile already falls, the envelope is the identity
+        and nothing changes.
         """
-        c = self.config
-        stages = c.expander_stages
-        target_k = self._closed_loop_supply_temperature(store, returned_mean_k)
-        ceilings = self._level_supplies(store)
-        floor_k = c.heat_user_return_temperature_k
-        # The user exchangers are the ONLY thing that cools the trunk, so no
-        # bleed can be colder than the user's cold-end terminal limit, and
-        # therefore neither can their mean.  Checking it here reports the real
-        # cause once, instead of letting every interheater in the train fail
-        # separately with a message about its own duty.
-        if target_k < floor_k - 1e-9:
-            raise HeatOfftakeTemperatureError(
-                "the heat user cannot cool the plant coolant to the temperature "
-                f"the turbines need ({target_k - 273.15:.2f} °C): its return is "
-                f"{c.heat_user_return_temperature_c:.2f} °C and the required "
-                "finite heat-user exchanger cannot reach that limiting state, so the "
-                "lowest physically reachable plant outlet is "
-                f"{floor_k - 273.15:.2f} °C. Increasing the user's mass flow "
-                "cannot overcome this; use a colder return or a lower supply "
-                "temperature."
+        demands = [
+            requirement.heater_outlet_temperature_k
+            for requirement in self._discharge_requirements(
+                store.protected_humidity_ratio
             )
-        if len(store.levels) <= 1:
-            supplies = [target_k] * stages
-            evaluation = self._light_discharge_at_supply(store, supplies)
-            required = (
-                evaluation.required_ratio if evaluation is not None else float("inf")
-            )
-            return required, evaluation, supplies
+        ]
+        envelope: list[float] = []
+        running = -float("inf")
+        for demand in reversed(demands):
+            running = max(running, demand)
+            envelope.append(running)
+        envelope.reverse()
+        return envelope
 
-        floors = [min(ceiling, floor_k) for ceiling in ceilings]
-        if all(abs(top - low) < 1e-12 for top, low in zip(ceilings, floors)):
-            evaluation = self._light_discharge_at_supply(store, list(ceilings))
-            required = (
-                evaluation.required_ratio if evaluation is not None else float("inf")
-            )
-            return required, evaluation, list(ceilings)
-
-        def evaluate(
-            theta: float,
-        ) -> tuple[float, _LadderEvaluation | None, list[float], float]:
-            supplies = [
-                low + theta * (top - low) for low, top in zip(floors, ceilings)
-            ]
-            evaluation = self._light_discharge_at_supply(store, supplies)
-            if evaluation is None or evaluation.required_ratio <= 0.0:
-                return float("inf"), None, supplies, float("nan")
-            mean_k = sum(
-                ratio * supply_k
-                for (ratio, _, _), supply_k in zip(evaluation.returns, supplies)
-            ) / evaluation.required_ratio
-            return evaluation.required_ratio, evaluation, supplies, mean_k
-
-        # theta = 1 is the plain ladder: every stage takes its level's full
-        # temperature.  It is the hottest and therefore the thriftiest in flow,
-        # so if the interheaters cannot work here they cannot work at all.
-        hottest = evaluate(1.0)
-        if hottest[1] is None:
-            return float("inf"), None, list(ceilings)
-        if hottest[3] <= target_k:
-            return hottest[:3]
-
-        coldest = evaluate(0.0)
-        low_theta = 0.0
-        if coldest[1] is None:
-            # Find the coldest ladder the finite exchangers still close on.
-            infeasible, feasible = 0.0, 1.0
-            for _ in range(LADDER_FEASIBILITY_BISECTIONS):
-                middle = 0.5 * (infeasible + feasible)
-                probe = evaluate(middle)
-                if probe[1] is None:
-                    infeasible = middle
-                else:
-                    feasible, coldest = middle, probe
-            low_theta = feasible
-        if coldest[1] is None or coldest[3] >= target_k:
-            return coldest[:3] if coldest[1] is not None else hottest[:3]
-
-        # Bracketed and continuous: refine by Illinois on the weighted mean.
-        left, right = low_theta, 1.0
-        f_left = coldest[3] - target_k
-        f_right = hottest[3] - target_k
-        best = coldest
-        for _ in range(LADDER_REFINEMENTS):
-            denominator = f_right - f_left
-            theta = (
-                0.5 * (left + right)
-                if abs(denominator) < 1e-30
-                else (left * f_right - right * f_left) / denominator
-            )
-            if not left < theta < right:
-                theta = 0.5 * (left + right)
-            probe = evaluate(theta)
-            if probe[1] is None:
-                left = theta
-                f_right *= 0.5
-                continue
-            best = probe
-            residual = probe[3] - target_k
-            if abs(residual) <= LADDER_MEAN_TOLERANCE_K:
-                break
-            if residual < 0.0:
-                left, f_left = theta, residual
-                f_right *= 0.5
-            else:
-                right, f_right = theta, residual
-                f_left *= 0.5
-        return best[:3]
-
-    def _solve_ladder(
+    def _solve_extraction_margin(
         self, store: _ThermalStore, returned_mean_k: float
     ) -> tuple[float, _LadderEvaluation | None, list[float]]:
-        """Solve the equal-drop single-store cascade for exact coolant mass.
+        """Root the common extraction margin so the bleeds consume the inventory.
 
-        At group ``g`` the complete remaining trunk crosses one user exchanger,
-        cools by the common increment ``delta_t``, and only then is that group's
-        coolant bled to its interheaters. For ``B`` groups::
+        Every stage is fed from its own extraction on E-304, placed a single
+        common margin above the air temperature that stage has to produce::
 
-            T_supply,g = T_hot - (g + 1) delta_t
+            T_extraction,g = T_demand,g + m
 
-        The stage inverse-HX solves make required coolant flow increase as the
-        common drop grows. Bisection finds the ``delta_t`` for which the group
-        bleeds consume the conserved inventory. The first user exchanger sees
-        the complete inventory; later ones see only the residual after earlier
-        bleeds.
+        The inverse finite-NTU solve makes the flow a stage needs FALL as its
+        supply gets hotter, so the total demanded flow is monotone decreasing in
+        ``m``. One safeguarded root therefore closes exact coolant mass, exactly
+        as the former equal-drop cascade did, and at the same cost: the
+        expensive object is the light discharge train, and this needs no more of
+        them.
 
-        One and many groups use the same conserved-mass root. The second
-        argument remains only for private API compatibility; branch-selective
-        recovery means a guessed mixed return is no longer a state variable.
+        Choosing the margin rather than a uniform temperature step is the whole
+        point of the device. Uniform steps ignore what each stage actually
+        demands; a common margin lays the trunk's cooling curve directly on top
+        of the demand profile, which is the curve-matching argument for staged
+        extraction and the reason the tail stages stop being fed 40-odd kelvin
+        hotter than they can use.
+
+        The margin is bounded above by the hot store itself: the first
+        extraction is the trunk inlet, so ``T_demand,0 + m`` can never exceed
+        the available store temperature. The second argument is retained for
+        private API compatibility; branch-selective recovery means a guessed
+        mixed return is not a state variable.
         """
         del returned_mean_k
-        c = self.config
-        groups = self._stage_cascade_groups(store)
-        count = c.coolant_cascade_groups
+        demands = self._extraction_demands(store)
         hot_k = store.hot_available_k
-        floor_k = c.heat_user_return_temperature_k
-        if hot_k <= floor_k:
+
+        # The trunk enters E-304 at the FIRST extraction, so the hottest demand
+        # plus the margin is the trunk inlet and the store has to reach it.
+        span = hot_k - max(demands)
+        if span <= 0.0:
             raise HeatOfftakeTemperatureError(
-                "the mixed hot store is not warmer than the heat-user return"
+                "the mixed hot store is not warmer than the hottest interheater "
+                f"demand ({max(demands) - 273.15:.2f} °C): no extraction margin "
+                "exists, so E-304 cannot feed the first expansion stage"
             )
 
         def evaluate(
-            delta_t: float,
+            margin: float,
         ) -> tuple[float, _LadderEvaluation | None, list[float]]:
-            group_supplies = [
-                hot_k - (index + 1) * delta_t for index in range(count)
-            ]
-            supplies = [group_supplies[index] for index in groups]
+            supplies = [demand + margin for demand in demands]
             evaluation = self._light_discharge_at_supply(store, supplies)
             required = (
                 evaluation.required_ratio if evaluation is not None else float("inf")
             )
             return required, evaluation, supplies
 
-        maximum_drop = (hot_k - floor_k) / count
-        hottest = evaluate(0.0)
-        if hottest[1] is None or hottest[0] > store.total_ratio + 2e-6:
-            return hottest
+        # A vanishing margin needs unbounded flow, so the cold endpoint is the
+        # over-inventory side by construction; the hot endpoint is the store.
+        widest = evaluate(span)
+        if widest[1] is not None and widest[0] > store.total_ratio + 2e-6:
+            # Even feeding every stage from the very top of the store leaves the
+            # interheaters short: this inventory cannot be consumed at all.
+            return widest
 
-        # Warm-start at the last accepted normalized drop.  Neighbouring cold-
-        # loop and inventory candidates move this root only slightly.
-        seed = self._cascade_drop_fraction_seed
-        if seed is not None and 0.0 < seed < 1.0:
-            seeded = evaluate(seed * maximum_drop)
-        else:
-            seeded = None
+        # Warm-start at the last accepted normalized margin.  Neighbouring
+        # cold-loop and inventory candidates move this root only slightly.
+        seed = self._extraction_margin_fraction_seed
+        seeded = (
+            evaluate(seed * span)
+            if seed is not None and 0.0 < seed < 1.0
+            else None
+        )
         if (
             seeded is not None
             and seeded[1] is not None
@@ -2244,33 +2158,32 @@ class CAESPlant:
         ):
             return seeded
 
-        # Smooth continuation fast path. The mass residual is monotone in the
-        # common temperature drop, so a secant predictor from the previous
-        # normalized root normally converges in 2-4 new trains. The global
-        # safeguarded bracket below remains the proof path near feasibility
-        # boundaries or topology changes.
+        # Smooth continuation fast path.  Required flow is close to inversely
+        # proportional to the driving force, so a secant on the RECIPROCAL mass
+        # residual normally converges in 2-4 new trains.  The safeguarded
+        # bracket below remains the proof path near feasibility boundaries.
         if seeded is not None and seeded[1] is not None:
-            x0 = seed * maximum_drop
+            x0 = seed * span
             p0 = seeded
-            mass_residual0 = p0[0] - store.total_ratio
             f0 = 1.0 / p0[0] - 1.0 / store.total_ratio
-            direction = 1.0 if mass_residual0 < 0.0 else -1.0
-            x1 = min(
-                maximum_drop,
-                max(0.0, x0 + direction * 0.002 * maximum_drop),
-            )
+            # Over-supplied means the margin must shrink, and vice versa.
+            direction = -1.0 if p0[0] < store.total_ratio else 1.0
+            x1 = min(span, max(0.0, x0 + direction * 0.002 * span))
             p1 = evaluate(x1) if abs(x1 - x0) > 1e-15 else None
             if p1 is not None and p1[1] is not None:
                 f1 = 1.0 / p1[0] - 1.0 / store.total_ratio
                 for _ in range(7):
-                    if abs(p1[0] - store.total_ratio) <= WATER_MASS_CLOSURE_SEARCH_ERROR:
-                        self._cascade_drop_fraction_seed = x1 / maximum_drop
+                    if (
+                        abs(p1[0] - store.total_ratio)
+                        <= WATER_MASS_CLOSURE_SEARCH_ERROR
+                    ):
+                        self._extraction_margin_fraction_seed = x1 / span
                         return p1
                     denominator = f1 - f0
                     if abs(denominator) < 1e-30:
                         break
                     x2 = x1 - f1 * (x1 - x0) / denominator
-                    if not 0.0 < x2 < maximum_drop:
+                    if not 0.0 < x2 < span:
                         break
                     p2 = evaluate(x2)
                     if p2[1] is None:
@@ -2279,48 +2192,51 @@ class CAESPlant:
                     x1, p1 = x2, p2
                     f1 = 1.0 / p1[0] - 1.0 / store.total_ratio
 
-        left_x, left_probe = 0.0, hottest
-        right_x, right_probe = maximum_drop, evaluate(maximum_drop)
+        # Bracket: required flow DECREASES with the margin, so the small-margin
+        # end over-supplies and the wide end under-supplies.  ``left`` always
+        # holds the over-inventory side.
+        left_x = 0.0
+        left_probe = evaluate(0.0)
+        right_x, right_probe = span, widest
         if seeded is not None and seeded[1] is not None:
-            seed_x = seed * maximum_drop
-            if seeded[0] < store.total_ratio:
+            seed_x = seed * span
+            if seeded[0] > store.total_ratio:
                 left_x, left_probe = seed_x, seeded
             else:
                 right_x, right_probe = seed_x, seeded
 
-        if (
-            right_probe[1] is not None
-            and right_probe[0]
-            < store.total_ratio - MAX_WATER_MASS_CLOSURE_ERROR
-        ):
+        if left_probe[1] is not None and left_probe[0] < store.total_ratio:
+            # Flow demand never rises to the inventory even at zero margin:
+            # there is more coolant than the interheaters can ever take.
             raise HeatOfftakeTemperatureError(
                 "the conserved coolant inventory is larger than the minimum-duty "
-                "interheater bleeds can consume before the final user exchanger "
-                "reaches the heat-user return temperature"
+                "interheater extractions can consume at any margin above their "
+                "own temperature demands"
             )
 
-        # An infeasible cold endpoint has no finite residual.  Move toward the
-        # feasible side only until a finite over-inventory point brackets the
-        # mass root; this work is needed only near an HX feasibility boundary.
-        if right_probe[1] is None:
+        # An infeasible narrow endpoint has no finite residual.  Widen only
+        # until a finite over-inventory point brackets the root; this work is
+        # needed only near a heat-exchanger feasibility boundary.
+        if left_probe[1] is None:
             for _ in range(CASCADE_FEASIBILITY_BISECTIONS):
                 middle_x = 0.5 * (left_x + right_x)
                 middle_probe = evaluate(middle_x)
                 if middle_probe[1] is None:
-                    right_x = middle_x
+                    left_x = middle_x
                 elif middle_probe[0] >= store.total_ratio:
-                    right_x, right_probe = middle_x, middle_probe
+                    left_x, left_probe = middle_x, middle_probe
                     break
                 else:
-                    left_x, left_probe = middle_x, middle_probe
+                    right_x, right_probe = middle_x, middle_probe
             else:
-                return left_probe
+                return right_probe
 
-        # Inverse mass is almost affine in temperature driving force; refining
-        # that transformed residual avoids the long false-position tail of
-        # ``required_mass - inventory`` near cold endpoint pinches.
         f_left = 1.0 / left_probe[0] - 1.0 / store.total_ratio
-        f_right = 1.0 / right_probe[0] - 1.0 / store.total_ratio
+        f_right = (
+            1.0 / right_probe[0] - 1.0 / store.total_ratio
+            if right_probe[1] is not None
+            else 1.0 / store.total_ratio
+        )
         best = left_probe
         for _ in range(CASCADE_ROOT_REFINEMENTS):
             denominator = f_right - f_left
@@ -2333,13 +2249,14 @@ class CAESPlant:
                 trial_x = 0.5 * (left_x + right_x)
             probe = evaluate(trial_x)
             if probe[1] is None:
-                right_x = trial_x
+                # Infeasible interiors sit on the narrow side of this root.
+                left_x = trial_x
                 continue
             residual = probe[0] - store.total_ratio
             if abs(residual) <= WATER_MASS_CLOSURE_SEARCH_ERROR:
-                self._cascade_drop_fraction_seed = trial_x / maximum_drop
+                self._extraction_margin_fraction_seed = trial_x / span
                 return probe
-            if residual < 0.0:
+            if residual > 0.0:
                 left_x, left_probe, f_left = (
                     trial_x,
                     probe,
@@ -2355,92 +2272,8 @@ class CAESPlant:
                 )
                 f_left *= 0.5
 
-        self._cascade_drop_fraction_seed = left_x / maximum_drop
+        self._extraction_margin_fraction_seed = left_x / span
         return best
-
-    def _build_multilevel_cascade_legacy(
-        self,
-        store: _ThermalStore,
-        supplies: list[float],
-        design: _DischargeDesign,
-    ) -> tuple[_CascadeStation, ...]:
-        """Walk the trunk down in temperature and cut a user exchanger in every gap.
-
-        Two kinds of event happen on the way down, and sorting them by
-        temperature is the whole algorithm:
-
-        * a storage LEVEL joins the trunk when the trunk reaches its
-          temperature.  Joining at matching temperature is free - this is the
-          reason the cascade exists rather than one mixed tank, and it is why
-          the levels never need their masses matched to their stages;
-        * an expansion stage BLEEDS its flow off at the temperature it was sized
-          for, and the trunk continues thinner.
-
-        Between two consecutive events the trunk is a single stream at a single
-        flow, and cooling it is a user exchanger.  Nothing else in the plant can
-        cool it, so the trunk can never go below the user's cold-end terminal
-        limit; a level colder than that must therefore find the trunk already
-        empty, or it would have to mix into warmer water and lose the grade the
-        levels exist to preserve.  That is checked, not assumed.
-        """
-        levels = store.levels or (
-            _ThermalLevel(
-                store.total_ratio,
-                store.hot_before_loss_k,
-                store.hot_available_k,
-                store.charge_returns,
-            ),
-        )
-        c = self.config
-        floor_k = (
-            c.heat_user_return_temperature_k
-            if c.heat_offtake is HeatOfftake.HEAT_USER
-            else -float("inf")
-        )
-        # Injections before bleeds at the same temperature, so a stage drawing
-        # exactly at a level's temperature can be served by that level.
-        events: list[tuple[float, int, float]] = [
-            (level.temperature_available_k, 0, level.mass_ratio) for level in levels
-        ]
-        events += [
-            (supply_k, 1, -ratio)
-            for supply_k, (ratio, _, _) in zip(supplies, design.returns)
-            if ratio > 0.0
-        ]
-        events.sort(key=lambda event: (-event[0], event[1]))
-
-        tolerance = MAX_WATER_MASS_CLOSURE_ERROR
-        stations: list[_CascadeStation] = []
-        mass = 0.0
-        trunk_k = events[0][0]
-        for temperature_k, kind, amount in events:
-            if mass <= tolerance:
-                # Nothing in the trunk: it simply adopts whatever arrives next.
-                trunk_k = temperature_k
-            elif temperature_k < trunk_k - 1e-12:
-                if temperature_k < floor_k - 1e-9:
-                    raise ValueError(
-                        f"thermal level {temperature_k - 273.15:.1f} °C is colder "
-                        "than the heat user's cold-end terminal limit "
-                        f"({floor_k - 273.15:.1f} °C) while water is still in the "
-                        "cascade: no exchanger can take the trunk down to meet it, "
-                        "so it could only join by mixing into warmer water. Use a "
-                        "colder user return, fewer thermal levels, or accept the "
-                        "single mixed store"
-                    )
-                stations.append(_CascadeStation(mass, trunk_k, temperature_k))
-                trunk_k = temperature_k
-            if kind == 0:
-                mass += amount
-                continue
-            if -amount > mass + tolerance:
-                raise ValueError(
-                    "the cascade trunk runs dry: the stages above "
-                    f"{temperature_k - 273.15:.1f} °C draw more water than the "
-                    "levels feeding them hold"
-                )
-            mass += amount
-        return tuple(stations)
 
     def _build_cascade(
         self,
@@ -2448,46 +2281,249 @@ class CAESPlant:
         supplies: list[float],
         design: _DischargeDesign,
     ) -> tuple[_CascadeStation, ...]:
-        """Build exactly one user HX before each interheater-group bleed.
+        """The single user exchanger E-302, as a one-element station tuple.
 
-        All coolant starts in one hot trunk. Station zero sees the complete
-        inventory; after it, group zero bleeds off. The residual crosses station
-        one, group one bleeds off, and so on. The final station is followed by
-        the final bleed, so no exchanger is drawn with zero downstream flow.
+        The whole conserved inventory leaves the hot store and crosses this one
+        counter-current body, which cools it from the available store
+        temperature down to the FIRST extraction. Everything below that belongs
+        to E-304 and is recuperated inside the plant instead of being sold, so
+        the user is served entirely from the hot end of the store.
+
+        The tuple shape is what the exergy books and the result schema already
+        speak, so it is kept rather than special-cased away.
         """
-        groups = self._stage_cascade_groups(store)
-        count = self.config.coolant_cascade_groups
-        group_flows = [0.0] * count
-        group_supplies: list[float | None] = [None] * count
-        for group, supply_k, branch in zip(groups, supplies, design.returns):
-            group_flows[group] += branch[0]
-            previous = group_supplies[group]
-            if previous is not None and abs(previous - supply_k) > 1e-7:
-                raise ValueError(
-                    "stages assigned to one cascade group have inconsistent "
-                    "coolant supply temperatures"
-                )
-            group_supplies[group] = supply_k
-
-        if any(flow <= 0.0 for flow in group_flows):
-            raise ValueError(
-                "every coolant cascade group must own a non-empty interheater bleed"
-            )
-
-        stations: list[_CascadeStation] = []
+        del design
         inlet_k = store.hot_available_k
-        for index in range(count):
-            outlet_k = group_supplies[index]
-            assert outlet_k is not None
-            trunk_flow = sum(group_flows[index:])
-            if outlet_k > inlet_k + 1e-9:
-                raise ValueError("coolant cascade temperature rises toward a later bleed")
-            stations.append(_CascadeStation(trunk_flow, inlet_k, outlet_k))
-            inlet_k = outlet_k
+        outlet_k = max(supplies)                 # the hottest extraction
+        if outlet_k > inlet_k + 1e-9:
+            raise ValueError(
+                "the first E-304 extraction is hotter than the available hot "
+                "store, so E-302 would have to heat the trunk"
+            )
+        return (_CascadeStation(store.total_ratio, inlet_k, outlet_k),)
 
-        if abs(sum(group_flows) - store.total_ratio) > MAX_WATER_MASS_CLOSURE_ERROR:
-            raise ValueError("coolant cascade bleeds do not consume the hot-store flow")
-        return tuple(stations)
+    def _build_extraction_exchanger(
+        self,
+        store: _ThermalStore,
+        design: _DischargeDesign,
+        return_inlet_k: float,
+    ) -> ExtractionExchangerSummary:
+        """Solve E-304 zone by zone and return its complete solved state.
+
+        The trunk enters at the first extraction carrying the whole inventory
+        and is withdrawn stage by stage until it is exhausted at the last one,
+        so its heat-capacity rate is a STEP function of position. A single
+        whole-body LMTD or effectiveness would therefore be wrong, and wrong in
+        no predictable direction. The body is instead cut at the extractions:
+        inside one zone both capacity rates are constant, which is exactly the
+        condition ordinary counter-current effectiveness needs.
+
+        The cold side is the plant's own mixed coolant return, carrying the full
+        inventory through every zone. It is therefore always the C_max stream
+        and the trunk is always C_min.
+
+        Two things are checked and never assumed:
+
+        * the pinch, at EVERY node rather than only at the two ends of the body.
+          With a variable trunk capacity rate the tightest approach migrates
+          inside, so terminal-only checking would miss a crossed profile;
+        * the finite area, as the same required-vs-available effectiveness
+          statement every other exchanger in this model is held to.
+
+        A zone that fails either check makes the whole candidate infeasible.
+        That is the honest response and it is also self-correcting: less
+        inventory needs a wider margin, which lifts the whole ladder away from
+        the return it is exchanging against, so the outer inventory search walks
+        out of a pinched region on its own.
+        """
+        c = self.config
+        inventory = store.total_ratio
+        cold_capacity = inventory * WATER_CP_J_PER_KGK
+        extractions = [
+            (branch[0], supply_k)
+            for supply_k, branch in zip(design.stage_supplies, design.returns)
+        ]
+        temperatures = [supply_k for _, supply_k in extractions]
+        flows = [ratio for ratio, _ in extractions]
+
+        # Guard, not a physical constraint: the ladder is built from a
+        # non-increasing envelope, so this can only fire on a construction bug.
+        for earlier, later in zip(temperatures, temperatures[1:]):
+            if later > earlier + 1e-9:
+                raise ValueError(
+                    "the E-304 extraction ladder is not monotone: a later "
+                    "expansion stage was placed hotter than an earlier one, so "
+                    "the trunk would have to be reheated inside the body"
+                )
+
+        # Trunk flow crossing the zone BELOW extraction g is the suffix sum of
+        # everything still to be withdrawn.
+        remaining = inventory
+        zone_flows: list[float] = []
+        for ratio in flows[:-1]:
+            remaining -= ratio
+            zone_flows.append(remaining)
+
+        # March from the cold end, where the return enters: only there is the
+        # cold-side temperature known before the duties are.
+        duties = [
+            flow * WATER_CP_J_PER_KGK * (hot - cold)
+            for flow, hot, cold in zip(zone_flows, temperatures, temperatures[1:])
+        ]
+        cold_side = [return_inlet_k]
+        for duty in reversed(duties):
+            cold_side.append(cold_side[-1] + duty / cold_capacity)
+        cold_side.reverse()          # cold_side[g] is the return at extraction g
+
+        segments: list[ExtractionSegment] = []
+        for index, (flow, duty) in enumerate(zip(zone_flows, duties)):
+            trunk_inlet_k = temperatures[index]
+            trunk_outlet_k = temperatures[index + 1]
+            return_outlet_k = cold_side[index]
+            return_zone_inlet_k = cold_side[index + 1]
+            capacity_ratio = flow / inventory if inventory > 0.0 else 0.0
+            driving_force = trunk_inlet_k - return_zone_inlet_k
+            hot_capacity = flow * WATER_CP_J_PER_KGK
+            if duty > 0.0 and (driving_force <= 0.0 or hot_capacity <= 0.0):
+                raise ValueError(
+                    "an E-304 zone has no positive inlet temperature driving "
+                    f"force: trunk enters at {trunk_inlet_k - 273.15:.2f} °C "
+                    f"against a return at {return_zone_inlet_k - 273.15:.2f} °C"
+                )
+            required = (
+                duty / (hot_capacity * driving_force) if duty > 0.0 else 0.0
+            )
+            available = counterflow_effectiveness(
+                c.extraction_exchanger_ntu, capacity_ratio
+            )
+            if required > available + 2e-6:
+                raise ValueError(
+                    "the E-304 exchanger class is too small in the zone between "
+                    f"{trunk_inlet_k - 273.15:.1f} and "
+                    f"{trunk_outlet_k - 273.15:.1f} °C: required "
+                    f"effectiveness={required:.4f}, available={available:.4f} "
+                    f"at NTU={c.extraction_exchanger_ntu:g}"
+                )
+            segment = ExtractionSegment(
+                index=index,
+                trunk_flow_per_kg_air=flow,
+                trunk_inlet_temperature_k=trunk_inlet_k,
+                trunk_outlet_temperature_k=trunk_outlet_k,
+                return_inlet_temperature_k=return_zone_inlet_k,
+                return_outlet_temperature_k=return_outlet_k,
+                duty_j_per_kg_air=duty,
+                capacity_ratio=capacity_ratio,
+                required_effectiveness=required,
+                available_effectiveness=available,
+            )
+            if segment.terminal_difference_k <= 0.0 and duty > 0.0:
+                raise ValueError(
+                    "the E-304 temperature profiles cross: the trunk falls to "
+                    f"{trunk_outlet_k - 273.15:.2f} °C while the coolant return "
+                    f"it is heating is already at "
+                    f"{return_zone_inlet_k - 273.15:.2f} °C. The extraction "
+                    "ladder reaches below its own cold side"
+                )
+            segments.append(segment)
+
+        recuperated = sum(duties)
+        t0 = c.ambient_temperature_k
+        # Internal recuperation: the trunk's loss and the return's gain are both
+        # inside the plant, so what is destroyed is the difference between them.
+        trunk_exergy_drop = sum(
+            flow * (
+                water_exergy(hot, t0) - water_exergy(cold, t0)
+            )
+            for flow, hot, cold in zip(zone_flows, temperatures, temperatures[1:])
+        )
+        return_exergy_gain = inventory * (
+            water_exergy(cold_side[0], t0) - water_exergy(return_inlet_k, t0)
+        )
+        return ExtractionExchangerSummary(
+            margin_k=(
+                temperatures[0] - self._extraction_demands(store)[0]
+                if temperatures
+                else 0.0
+            ),
+            exchanger_ntu=c.extraction_exchanger_ntu,
+            trunk_inlet_temperature_k=temperatures[0],
+            trunk_outlet_temperature_k=temperatures[-1],
+            return_inlet_temperature_k=return_inlet_k,
+            return_outlet_temperature_k=cold_side[0],
+            total_water_mass_ratio=inventory,
+            recuperated_heat_j_per_kg_air=recuperated,
+            extraction_temperatures_k=tuple(temperatures),
+            extraction_mass_ratios=tuple(flows),
+            segments=tuple(segments),
+            minimum_terminal_difference_k=min(
+                (segment.terminal_difference_k for segment in segments),
+                default=0.0,
+            ),
+            maximum_required_effectiveness=max(
+                (segment.required_effectiveness for segment in segments),
+                default=0.0,
+            ),
+            minimum_effectiveness_margin=min(
+                (
+                    segment.available_effectiveness - segment.required_effectiveness
+                    for segment in segments
+                ),
+                default=0.0,
+            ),
+            exergy_destruction_j_per_kg_air=max(
+                0.0, trunk_exergy_drop - return_exergy_gain
+            ),
+        )
+
+    def _recuperated_heat_j_per_kg_air(
+        self,
+        inventory: float,
+        supplies: tuple[float, ...] | list[float],
+        returns: tuple[tuple[float, float, float], ...],
+    ) -> float:
+        """Duty E-304 moves from the trunk into the coolant return [J/kg-air].
+
+        The trunk crosses the zone below extraction ``g`` carrying the suffix
+        sum of everything still to be withdrawn, and cools by the gap to the
+        next extraction. Summing those zone duties is the whole recuperation.
+
+        The coolant-loop residual needs this number on EVERY trial, so it is
+        computed from the same suffix sums the reporting builder uses but
+        without the per-zone effectiveness and pinch checks - those only the
+        accepted candidate has to survive.
+
+        The suffix is floored at zero. Exact mass closure is the job of
+        :meth:`_solve_extraction_margin` and is already held to the one-joule
+        budget by the time this runs; the floor only stops a root that bailed on
+        iteration count from turning a small overdraw into a negative flow.
+        """
+        if inventory <= 0.0:
+            return 0.0
+        remaining = inventory
+        recuperated = 0.0
+        for branch, hot, cold in zip(returns, supplies, supplies[1:]):
+            remaining = max(0.0, remaining - branch[0])
+            recuperated += remaining * WATER_CP_J_PER_KGK * (hot - cold)
+        return recuperated
+
+    def _recuperated_tank_inlet_k(
+        self,
+        inventory: float,
+        supplies: tuple[float, ...] | list[float],
+        returns: tuple[tuple[float, float, float], ...],
+        mixed_return_k: float,
+    ) -> float:
+        """Cold-tank inlet after E-304 has warmed the mixed coolant return [K].
+
+        Without a heat user there is no E-304 and the mixed return reaches the
+        tank unchanged.
+        """
+        if not self._dispatches_heat_to_user() or inventory <= 0.0:
+            return mixed_return_k
+        recuperated = self._recuperated_heat_j_per_kg_air(
+            inventory, supplies, returns
+        )
+        return mixed_return_k + recuperated / (inventory * WATER_CP_J_PER_KGK)
 
     def _closed_loop_supply_temperature(
         self, store: _ThermalStore, returned_mean_k: float
@@ -2654,7 +2690,9 @@ class CAESPlant:
             )
         charging = self._annotate_exergy(charging)
         discharging = self._annotate_exergy(discharge.cycle)
-        thermal, exergy, district = self._summarize_adiabatic(charging, discharging, store, discharge)
+        thermal, exergy, district, extraction = self._summarize_adiabatic(
+            charging, discharging, store, discharge
+        )
         # The validated charge train already ran the moisture analysis once;
         # its summary is reused, not recomputed.
         assert store.moisture is not None
@@ -2665,6 +2703,7 @@ class CAESPlant:
             thermal_store=thermal,
             exergy=exergy,
             heat_offtake=district,
+            extraction_exchanger=extraction,
             external_heat_input_j_per_kg=(
                 thermal.cold_return_heat_absorbed_from_ambient_j_per_kg_air
             ),
@@ -2922,7 +2961,12 @@ class CAESPlant:
     def _summarize_adiabatic(
         self, charging: Cycle, discharging: Cycle,
         store: _ThermalStore, discharge: _DischargeDesign,
-    ) -> tuple[TwoTankSummary, ExergySummary, HeatOfftakeSummary | None]:
+    ) -> tuple[
+        TwoTankSummary,
+        ExergySummary,
+        HeatOfftakeSummary | None,
+        ExtractionExchangerSummary | None,
+    ]:
         c = self.config
         t0 = c.ambient_temperature_k
         compression, expansion, component, losses = self._base_books(
@@ -2984,9 +3028,18 @@ class CAESPlant:
             for level in levels
         )
         recovery = self._optimize_cold_return_recovery(discharge.returns)
-        cold_tank_inlet_k = recovery.mixed_tank_inlet_k
-        cold_tank_inlet_exergy = store.total_ratio * water_exergy(
-            cold_tank_inlet_k, t0
+        mixed_return_k = recovery.mixed_tank_inlet_k
+        # E-304 is the LAST thing on the return path, between the final mixing
+        # and the cold tank, so it is what actually sets the tank inlet.
+        extraction = (
+            self._build_extraction_exchanger(store, discharge, mixed_return_k)
+            if self._dispatches_heat_to_user()
+            else None
+        )
+        cold_tank_inlet_k = (
+            extraction.return_outlet_temperature_k
+            if extraction is not None
+            else mixed_return_k
         )
         component["hot_tank_mixing"] = max(0.0, branch_exergy(store.charge_returns) - hot_before_exergy)
         component["thermal_storage_loss"] = max(0.0, hot_before_exergy - hot_available_exergy)
@@ -2999,13 +3052,23 @@ class CAESPlant:
         cold_return_exergy_destruction = max(
             0.0, selected_inlet_exergy - selected_outlet_exergy
         )
+        # Mixing is booked against the return BEFORE recuperation: E-304 raises
+        # that stream afterwards, and charging its gain to the mixing header
+        # would net two unrelated irreversibilities against each other.
         component["cold_tank_mixing"] = max(
             0.0,
             branch_exergy(discharge.returns)
-            - cold_tank_inlet_exergy
+            - store.total_ratio * water_exergy(mixed_return_k, t0)
             - cold_return_exergy_destruction,
         )
         component["cold_return_ambient_exchange"] = cold_return_exergy_destruction
+        if extraction is not None:
+            # Internal recuperation destroys the gap between what the trunk
+            # gives up and what the return picks up. Neither side crosses the
+            # plant boundary, so nothing here is a product or a loss.
+            component["extraction_exchanger"] = (
+                extraction.exergy_destruction_j_per_kg_air
+            )
         # The cold tank also stands for the configured dwell and drifts toward
         # ambient. The drift always lowers the water's exergy (toward the
         # dead-state minimum), so the leaked amount is destruction too.
@@ -3019,6 +3082,7 @@ class CAESPlant:
         minimum_water_reached_k = min(
             store.cold_k,
             cold_tank_inlet_k,
+            mixed_return_k,
             recovery.inlet_k,
             recovery.outlet_k,
             discharge.returned_mean_k,
@@ -3060,6 +3124,12 @@ class CAESPlant:
             cold_return_recovery_mass_ratio=recovery.mass_ratio,
             cold_return_recovery_inlet_temperature_k=recovery.inlet_k,
             cold_return_recovery_outlet_temperature_k=recovery.outlet_k,
+            recuperator_inlet_temperature_k=mixed_return_k,
+            extraction_recuperated_heat_j_per_kg_air=(
+                extraction.recuperated_heat_j_per_kg_air
+                if extraction is not None
+                else 0.0
+            ),
             cold_loop_closure_error_k=(
                 c.ambient_temperature_k
                 + (cold_tank_inlet_k - c.ambient_temperature_k)
@@ -3120,7 +3190,7 @@ class CAESPlant:
             total_loss_j_per_kg_air=loss,
             balance_residual_j_per_kg_air=compression - (expansion + dh_exergy + destruction + loss),
         )
-        return thermal, exergy, district
+        return thermal, exergy, district, extraction
 
 
 @lru_cache(maxsize=128)

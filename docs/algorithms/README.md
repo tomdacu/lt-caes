@@ -12,9 +12,10 @@ that a speed-up cannot silently change the plant being solved.
 candidate coolant inventory
   -> cold-loop closure
        -> charge train and hot store
-       -> equal-drop discharge cascade
+       -> extraction-margin root (also fixes the E-302 duty)
             -> inverse finite-NTU interheater duties and exact bleed mass
-       -> O(N) heat-only E-303 suffix selection and cold-tank return
+       -> O(N) heat-only E-303 coldest-group selection and final mixing
+       -> E-304 zone-by-zone recuperation into the cold-tank inlet
   -> objective ranking
 ```
 
@@ -24,8 +25,8 @@ candidate coolant inventory
 | Charge | [Charge train](charge_train.md) | stage water splits and hot-store temperatures |
 | Discharge | [Discharge train](discharge_train.md) | turbine work, coolant returns and feasibility |
 | Coolant-loop root | [Cold-loop closure](cold_loop.md) | cold-tank temperature reproduced after selected E-303 routing and dwell |
-| E-303 placement | [Cold-return recovery](cold_return_recovery.md) | maximum-ambient-duty ordered return suffix |
-| Cascade profile | [Equal-drop cascade root](ladder_theta.md) | common station drop and group bleed distribution |
+| E-303 placement | [Cold-return recovery](cold_return_recovery.md) | maximum-ambient-duty coldest return group |
+| Extraction ladder | [Extraction-margin mass root](ladder_theta.md) | common margin, extraction temperatures and bleed distribution |
 | Interheater sizing | [Inverse heat exchanger](heat_exchanger_inverse.md) | water/air ratio delivering a fixed duty |
 
 Each page states invariants, numerical method, performance implications,

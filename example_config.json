@@ -19,8 +19,8 @@
   "thermal_storage_tank_ua_w_per_k": 0.0,
   "storage_duration_hours": 4.0,
   "heat_offtake": "heat_user",
-  "coolant_cascade_groups": 1,
   "heat_user_supply_temperature_c": 80.0,
   "heat_user_return_temperature_c": 45.0,
-  "heat_user_exchanger_ntu": 5.0
+  "heat_user_exchanger_ntu": 5.0,
+  "extraction_exchanger_ntu": 5.0
 }

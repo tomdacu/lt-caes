@@ -249,26 +249,32 @@ def test_hero_symbols_reach_the_canvas():
         plt.close(figure)
 
 
-def test_group_count_draws_one_hot_tank_and_exactly_that_many_user_hxs():
-    """K changes discharge routing, not the number of stored hot states."""
-    for groups in (1, 2, 3, 4):
+def test_one_hot_tank_one_user_hx_and_one_bleed_per_stage():
+    """The drawn topology, and the two counts that must never drift apart.
+
+    There is exactly one user exchanger whatever the stage count, and E-304
+    carries exactly one extraction nozzle per expansion stage. The dormant
+    coolant_cascade_groups field must not change either of them.
+    """
+    for stages, groups in ((4, 1), (6, 3), (8, 4)):
         diagram = pid.layout(PlantConfig(
             heat_offtake=HeatOfftake.HEAT_USER,
+            compressor_stages=stages,
+            expander_stages=stages,
             coolant_cascade_groups=groups,
         ))
         assert diagram.by_tag("TK-301") is not None
         assert diagram.by_tag("TK-301A") is None
-        exchangers = sorted(
-            diagram.of_kind("offtake_tap"), key=lambda item: item.x
-        )
-        assert len(exchangers) == groups
-        assert len({item.tag for item in exchangers}) == groups
-        expected_tags = (
-            ["E-302"] if groups == 1
-            else [f"E-302{chr(ord('A') + index)}" for index in range(groups)]
-        )
-        assert [item.tag for item in exchangers] == expected_tags
-        assert [item.x for item in exchangers] == sorted(item.x for item in exchangers)
+
+        exchangers = diagram.of_kind("offtake_tap")
+        assert [item.tag for item in exchangers] == ["E-302"]
+
+        extraction = diagram.by_tag("E-304")
+        assert extraction is not None
+        assert extraction.ports == stages
+        assert len(pid._extraction_ports(extraction.x, extraction.ports)) == stages
+        # Process order along the tank band: sell first, then stage the rest.
+        assert exchangers[0].x < extraction.x < diagram.by_tag("H-301").x
 
 
 def test_the_heat_user_is_not_called_a_district_heating_network():

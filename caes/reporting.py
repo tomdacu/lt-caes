@@ -208,17 +208,22 @@ def summary(result: PlantResult) -> str:
                 f"coldest={store.coolant_minimum_temperature_reached_k - 273.15:.2f} °C, "
                 f"hottest={store.coolant_maximum_temperature_reached_k - 273.15:.2f} °C",
                 f"Untreated all-return mean: {store.returned_temperature_k - 273.15:.1f} °C",
-                "E-303 heat-only optimized suffix: "
+                # The group is chosen by TEMPERATURE, so it is reported by size
+                # rather than as a stage range: with E-304 the returns are no
+                # longer ordered by stage and "stages 4 onward" would be a lie.
+                "E-303 heat-only optimized group: "
                 + (
-                    f"stages {store.cold_return_recovery_start_stage + 1} onward, "
-                    if store.cold_return_recovery_start_stage is not None
+                    f"{store.cold_return_recovery_branch_count} coldest returns, "
+                    if store.cold_return_recovery_branch_count
                     else "bypassed, "
                 )
                 + f"selected mix {store.cold_return_recovery_inlet_temperature_k - 273.15:.1f} -> "
                 f"{store.cold_return_recovery_outlet_temperature_k - 273.15:.1f} °C, "
-                f"final mixed tank inlet {store.cold_return_exchanger_outlet_temperature_k - 273.15:.1f} °C, "
+                f"mixed return {store.recuperator_inlet_temperature_k - 273.15:.1f} °C, "
                 f"NTU={store.cold_return_exchanger_ntu:.3g}, absorbed "
                 f"{store.cold_return_heat_absorbed_from_ambient_j_per_kg_air / 1000:.2f} kJ/kg-air",
+                f"Cold-tank inlet after E-304: "
+                f"{store.cold_return_exchanger_outlet_temperature_k - 273.15:.1f} °C",
                 f"Total normalized coolant mass: {store.total_water_mass_ratio:.3f} kg-coolant/kg-air",
                 f"Hot-tank standing loss: {store.storage_loss_j_per_kg_air / 1000:.2f} kJ/kg-air "
                 f"over {store.storage_duration_hours:.2f} h "
@@ -238,19 +243,20 @@ def summary(result: PlantResult) -> str:
         )
 
     if result.heat_offtake:
-        # The turbines are served first; the user gets what their exact duties
-        # left in the trunk, station by station down the cascade.
+        # The user is served FIRST, off the top of the store, and E-304 then
+        # stages what is left down to the turbines. That is the reverse of the
+        # old cascade, where the turbines' own duties set what the user could
+        # have, and it is the whole reason the heat comes out hotter.
         dh = result.heat_offtake
         store = result.thermal_store
         assert store is not None
         lines.extend(
             (
                 "",
-                f"Heat user [{dh.mode}] - series cascade, "
-                f"{len(dh.taps)} station" + ("s" if len(dh.taps) != 1 else "")
-                + f", {store.total_water_mass_ratio:.3f} kg-coolant/kg-air in the store:",
+                f"Heat user [{dh.mode}] - one exchanger on the whole trunk, "
+                f"{store.total_water_mass_ratio:.3f} kg-coolant/kg-air in the store:",
                 f"  trunk: {dh.hot_tank_temperature_k - 273.15:.1f} -> "
-                f"{dh.turbine_supply_temperature_k - 273.15:.1f} °C at the hottest bleed",
+                f"{dh.turbine_supply_temperature_k - 273.15:.1f} °C at the first extraction",
                 f"  heat sold: {dh.heat_j_per_kg_air / 1000:.2f} kJ/kg-air",
                 f"  exergy sold: {dh.exergy_j_per_kg_air / 1000:.2f} kJ/kg-air",
                 f"  user: {dh.return_temperature_k - 273.15:.0f} -> {dh.supply_temperature_k - 273.15:.0f} °C, "
@@ -260,24 +266,51 @@ def summary(result: PlantResult) -> str:
                 f"margin={dh.minimum_effectiveness_margin:.4f}",
             )
         )
-        if len(dh.taps) > 1:
-            lines.append("  stations, hot end first:")
-            for tap in dh.taps:
-                lines.append(
-                    f"    E-302{chr(ord('a') + tap.station_index)}: trunk "
-                    f"{tap.plant_inlet_temperature_k - 273.15:6.1f} -> "
-                    f"{tap.plant_outlet_temperature_k - 273.15:6.1f} °C at "
-                    f"{tap.plant_water_per_kg_air:.3f} kg/kg-air, user "
-                    f"{tap.user_inlet_temperature_k - 273.15:5.1f} -> "
-                    f"{tap.user_outlet_temperature_k - 273.15:5.1f} °C, "
-                    f"{tap.heat_j_per_kg_air / 1000:6.2f} kJ/kg-air"
-                )
         lines.append(
             "  wet-expander outlet minimum: "
             f"{WATER_FREEZING_TEMPERATURE_K - 273.15 + EXPANDER_ICE_MARGIN_K:.0f} °C "
             "in the permitted liquid region; otherwise local frost point "
             f"+ {EXPANDER_ICE_MARGIN_K:.0f} K"
         )
+    if result.extraction_exchanger:
+        # The table is the point of the device: the demand column is what each
+        # stage needs, the extraction column is what it gets, and the gap is the
+        # common margin. Under one tank temperature that gap was tens of kelvin
+        # at the back of the train, and every one of those kelvin was destroyed.
+        ex = result.extraction_exchanger
+        demands = [
+            process.outlet.temperature_k
+            for process in result.discharging.processes
+            if process.kind == "interheating"
+        ]
+        lines.extend((
+            "",
+            f"E-304 extraction exchanger - {len(ex.extraction_temperatures_k)} bleeds, "
+            f"per-zone NTU={ex.exchanger_ntu:g}:",
+            f"  trunk: {ex.trunk_inlet_temperature_k - 273.15:.1f} -> "
+            f"{ex.trunk_outlet_temperature_k - 273.15:.1f} °C, fully withdrawn "
+            f"({ex.total_water_mass_ratio:.3f} kg-coolant/kg-air in, 0 out)",
+            f"  common margin above each stage demand: {ex.margin_k:.2f} K",
+            f"  recuperated into the return: "
+            f"{ex.recuperated_heat_j_per_kg_air / 1000:.2f} kJ/kg-air, "
+            f"{ex.return_inlet_temperature_k - 273.15:.1f} -> "
+            f"{ex.return_outlet_temperature_k - 273.15:.1f} °C",
+            f"  tightest zone approach: {ex.minimum_terminal_difference_k:.2f} K; "
+            f"maximum required effectiveness={ex.maximum_required_effectiveness:.4f}; "
+            f"minimum margin={ex.minimum_effectiveness_margin:.4f}",
+            "  stage      demand   extraction   bleed [kg/kg-air]",
+        ))
+        for index, (supply_k, ratio) in enumerate(
+            zip(ex.extraction_temperatures_k, ex.extraction_mass_ratios)
+        ):
+            demand_c = (
+                f"{demands[index] - 273.15:7.2f}" if index < len(demands) else "      -"
+            )
+            lines.append(
+                f"    {index + 1:>3}    {demand_c}      "
+                f"{supply_k - 273.15:7.2f}       {ratio:.4f}"
+            )
+
     if result.optimization:
         lines.append(
             f"Optimization: {result.optimization.objective}, objective={result.optimization.objective_value:.5g}, "

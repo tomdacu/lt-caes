@@ -120,12 +120,12 @@ class PlantConfig:
     # any pressure or phase-equilibrium correlation.
     coolant_maximum_temperature_c: float = 200.0
     coolant_minimum_temperature_c: float = -80.0
-    # Number of serial heat-user stations and interheater branch groups. The
-    # hot store itself is always one perfectly mixed inventory. At station g,
-    # the complete remaining trunk crosses the user HX, one group bleeds off,
-    # and only the residual flow continues to station g+1. Groups are
-    # contiguous along the expansion train, so the count is bounded only by
-    # the number of expander stages.
+    # DORMANT. It used to set the number of serial heat-user stations and the
+    # matching count of interheater branch groups. The active LTHP topology has
+    # exactly one user exchanger (E-302) and one extraction per expansion stage
+    # on E-304, so there is nothing left for it to control. It is still
+    # accepted, and still range-checked, so configuration files written against
+    # the serial cascade keep loading unchanged; see caes.logic.
     coolant_cascade_groups: int = 1
     optimization_objective: OptimizationObjective = OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY
     # Combined per-tank conductance on the normalized one-kilogram-air basis,
@@ -140,10 +140,17 @@ class PlantConfig:
     heat_offtake: HeatOfftake = HeatOfftake.HEAT_USER
     heat_user_supply_temperature_c: float = 80.0
     heat_user_return_temperature_c: float = 45.0
-    # Installed performance class of every serial plant/user exchanger. As for
+    # Installed performance class of the single plant/user exchanger. As for
     # all other HXs, constant NTU means the body is implicitly resized when the
     # plant flow changes.
     heat_user_exchanger_ntu: float = 5.0
+    # E-304, the counter-current multi-stream body with staged extractions that
+    # replaced the serial user cascade. It is solved zone by zone - one zone per
+    # extraction interval - because the trunk's heat-capacity rate steps down at
+    # every extraction and a single whole-body effectiveness would be invalid.
+    # This NTU is the performance class of EACH zone, so as everywhere else in
+    # the model the physical area follows the plant flow instead of being fixed.
+    extraction_exchanger_ntu: float = 5.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", PlantMode(self.mode))
@@ -202,6 +209,8 @@ class PlantConfig:
             raise ValueError("storage_duration_hours must be non-negative")
         if self.heat_user_exchanger_ntu <= 0:
             raise ValueError("heat_user_exchanger_ntu must be positive")
+        if self.extraction_exchanger_ntu <= 0:
+            raise ValueError("extraction_exchanger_ntu must be positive")
         # Domain validity first, then cross-field consistency: a temperature
         # below absolute zero is meaningless regardless of any other field.
         for name in (

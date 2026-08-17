@@ -1,24 +1,33 @@
 # Heat-only cold-return ambient recovery
 
 > **Parent:** [Algorithm index](README.md)  
-> **Architecture:** [Single-store cascade](../12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)  
+> **Architecture:** [Single-store extraction architecture](../12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)  
 > **Code:** `CAESPlant._optimize_cold_return_recovery`
 
 ## Topology being optimized
 
-There is exactly one E-303. For a cutoff `s`, return branches `s..N-1` mix
-first, pass through E-303, and then join the bypass branches `0..s-1` before
-the cold tank. The candidate set is therefore the N ordered suffixes plus the
-bypass state. Arbitrary subsets are excluded because they would require a
-cross-connected selection manifold rather than the ordered return header being
-screened.
+There is exactly one E-303. For a candidate group, its members mix first, pass
+through E-303, and then join the bypass returns before the cold tank.
+
+The candidates are the returns SORTED BY TEMPERATURE, coldest first, giving N
+thresholds plus the bypass state. That is the complete search, not a heuristic
+slice of the `2**N` subsets: any optimal group is downward closed in
+temperature, because swapping a warmer member for a colder non-member always
+lowers the mixed inlet and so raises the duty.
+
+Ordering by temperature rather than by stage index is what changed with E-304.
+The former serial cascade fed every interheater from one trunk temperature,
+which happened to make the returns monotone in stage order and let an
+ordered-suffix search be optimal by accident. E-304 gives each stage its own
+supply, the returns are no longer sorted by stage, and a stage-ordered suffix
+would quietly stop being the optimum.
 
 E-303 is heat-only. A selected mixture at or above ambient bypasses it; the
 model never reverses E-303 into a rejection cooler.
 
 ## Closed-form candidate score
 
-For suffix mass ratio `R_s` and its mass-weighted inlet temperature `T_s`, the
+For group mass ratio `R_s` and its mass-weighted inlet temperature `T_s`, the
 ambient side is treated as an infinite capacity rate. With the configured
 constant-NTU exchanger class,
 
@@ -30,8 +39,12 @@ Q_ambient,s = R_s cp (T0 - T_s) [1 - exp(-NTU_303)].
 After E-303, the selected outlet mixes with the bypass returns. Since total
 mass and `cp` are fixed, maximizing `Q_ambient,s` is exactly equivalent to
 maximizing the final cold-tank inlet temperature for that discharge solution.
-The solver evaluates all N suffixes in O(N); it does not need another root or
-the 2^N search over arbitrary subsets.
+The solver sorts once and evaluates the N thresholds in O(N log N); it needs no
+nested root and no `2**N` subset search.
+
+E-303's outlet mix is NOT the cold-tank inlet when a heat user is dispatched:
+the mixture then crosses E-304's cold side and reaches the tank warmer. The
+coolant loop closes on that recuperated temperature.
 
 Constant NTU means an exchanger performance class, not one fixed-area body
 shared by all candidates. For every plant and selected subgroup the implied
@@ -47,8 +60,9 @@ mean. The cold-tank temperature is therefore the closure coordinate:
 trial T_cold
  -> charge and mixed hot store
  -> discharge branch returns
- -> suffix optimization and E-303
+ -> coldest-group selection and E-303
  -> final mixing
+ -> E-304 recuperation (heat user only)
  -> cold-tank standing map
  -> produced T_cold.
 ```
@@ -58,7 +72,8 @@ rechecks that residual after materializing the detailed exchanger train.
 
 ## What the objective proves—and what it does not
 
-The selected cutoff is globally optimal inside the ordered-suffix topology for
-ambient heat pickup at a fixed discharge solution. It is not yet a whole-plant
+The selected group is globally optimal for ambient heat pickup at a fixed
+discharge solution, and the temperature ordering makes that a complete claim
+over all subsets rather than one restricted to a particular manifold order. It is not yet a whole-plant
 mixed-integer optimum over arbitrary piping, fixed exchanger area, pump/fan
 parasitics, capital cost or annual weather. Those belong to later design layers.
