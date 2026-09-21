@@ -2,10 +2,9 @@ LT-CAES repository description
 ------------------------------
 
 LT-CAES: screening simulator for low-temperature adiabatic compressed-air
-energy storage. One plant, two uses of the stored heat - all of it back into
-the turbines (LTA), or the top of the store sold as district heat (LTAHP).
-Real-fluid thermodynamics and honest feasibility limits; no cost model and no
-datasheets. (326 characters)
+energy storage. One plant, two uses of the stored heat - back into the
+turbines (LTA), or sold as district heat (LTAHP). Real-fluid thermodynamics
+and honest feasibility limits. (248 characters, the one actually on GitHub)
 
 No-combustion archive description
 ---------------------------------
