@@ -1,88 +1,61 @@
-# LT-CAES: low-temperature adiabatic compressed-air energy storage
+# LT-CAES — low-temperature adiabatic compressed-air energy storage
 
 ![LT-CAES banner](assets/lt-caes-banner.png)
 
-LT-CAES is the low-temperature **adiabatic** CAES family. The code simulates it
-in two forms that differ only in their heat user:
+Compressed-air storage usually starts from a fuel you burn or a cavern a
+kilometre down. This one starts from electricity, air and plain water: compress
+the air, keep the compression heat in a two-tank water store at temperatures
+plain steel and liquid can live with, then spend that heat where it pays. The
+simulator screens the family in two forms that differ in one question — who
+buys the stored heat:
 
 ```text
-LT-CAES: low-temperature adiabatic CAES
-    liquid two-tank TES, sized for the temperature class the liquid can reach
-├── LTA-CAES    no heat user   heat_offtake = "none"
-└── LTAHP-CAES  heat user      heat_offtake = "heat_user"
+LT-CAES — low-temperature adiabatic CAES
+├── LTA-CAES    no heat user   heat_offtake = "none"      all of it back into the turbines
+└── LTAHP-CAES  heat user      heat_offtake = "heat_user" the top of the store is sold
 ```
 
-Its primary purpose is **configuration brainstorming and thermodynamic
-screening**. Each simulated point represents a different candidate plant whose
-components may be resized to meet the selected performance classes. The tool
-is intended to reveal promising architectures, parameter interactions,
-feasibility boundaries and questions worth taking into detailed design. It is
-not an off-design digital twin of one fixed installation, and it does not yet
-perform mechanical sizing, costing or dispatch simulation.
+Every run is one candidate plant, resized to the exchanger class and the
+machinery you asked for, normalized to one kilogram of stored air, solved with
+real-fluid properties. The tool exists to answer thermodynamic questions before
+anyone buys anything: which architecture closes, which constraint binds, what a
+hotter user or a colder return does to the plant. It deliberately does **not**
+do equipment sizing, cost, off-design maps or dispatch — that boundary is
+[written down](docs/02_PHYSICS_AND_MODEL_BOUNDARY.md), and it is what makes the
+comparisons honest.
 
 ## The two forms
 
-`heat_offtake` is the one input that selects the form; everything else - plant,
-machine values, coolant loop, solver - is shared.
+`heat_offtake` is the one input that selects the form. Everything else — the
+plant, the machinery, the coolant loop, the solver — is shared, so a comparison
+between the forms is a comparison of the *use* of heat, not of two different
+plants.
 
-- **LTA-CAES (low-temperature adiabatic CAES)**, `heat_offtake = "none"`: the
-  stored heat is turbine reheat and nothing else. The complete inventory reaches
-  the parallel interheaters at the one stored temperature, and one heat-only
-  E-303 may recover free ambient energy into the coldest returning coolant.
-- **LTAHP-CAES (low-temperature adiabatic heat and power CAES)**,
-  `heat_offtake = "heat_user"`: E-302 exports the band above the first
-  extraction to an external heat user, and E-304 stages the rest to the
-  interheaters.
+- **LTA-CAES** (`heat_offtake = "none"`): the stored heat is turbine reheat and
+  nothing else. The complete inventory reaches the parallel interheaters at the
+  one stored temperature; one heat-only E-303 may recover free ambient energy
+  into the coldest returning coolant.
+- **LTAHP-CAES** (`heat_offtake = "heat_user"`): E-302 exports the band above
+  the first extraction to an external heat user — a district network, a process
+  loop, an absorption chiller, a greenhouse, a dryer; the three numbers that
+  describe the user are its supply temperature, its return temperature and its
+  exchanger NTU class — and E-304 stages the rest of the trunk down to what
+  each expansion stage actually needs.
 
-## This is a heat-and-power plant, not a store with a heating bolt-on
-
-LTAHP-CAES sells two products, electricity and heat, and the heat user is
-described by three inputs: the temperature it wants, the temperature it hands
-back, and the finite-NTU performance class of its exchanger.
-Those three numbers describe a district-heating network, an industrial process
-loop, an absorption chiller, a greenhouse or a drying plant equally well.
-District heating is the most likely application in northern Europe - see the
-[Denmark note](docs/research/LTAHP_CAES_AND_DENMARK.md) - but it is **not the
-model's subject**, and nothing in the solver assumes it.
-
-The configuration says so: `heat_offtake = "heat_user"` with
-`heat_user_supply_temperature_c`, `heat_user_return_temperature_c` and
-`heat_user_exchanger_ntu`. Files written against the older `district_heating`
-temperature names still load; obsolete approach inputs are ignored with a
-deprecation warning because kelvin and NTU are not interchangeable.
-
-Both forms are adiabatic on the air side: there is no ambient exchanger in the
-expansion train, and every joule of turbine reheat comes from the coolant loop.
-One optimized heat-only E-303 may warm a selected sub-ambient coolant-return
-suffix, and that is the model's only ambient thermal interaction.
-
-The project builds on published LTA-CAES research, beginning with the name and
-low-temperature two-tank concept described by Wolf and Budt; see the
-[literature map](docs/research/LITERATURE.md). Literature **AA-CAES** means
-advanced adiabatic CAES and must not be confused with the concepts of this
-repository, which are the low-temperature forms only.
-
-Both forms use the same wet-expander envelope: +10 degC where liquid
-condensation is permitted, or the local frost point plus 10 K in dry sub-zero
-operation. Results are normalized to one kilogram of stored air. The model
-reports real-fluid states, shaft work, heat/exergy flows, optimized tank
-temperatures, stage water ratios, and constraint diagnostics - not plant
-power, equipment size, time evolution, or cost.
+The heat user is generic by design: the model never assumes a network, and the
+[Denmark note](docs/research/LTAHP_CAES_AND_DENMARK.md) is one application, not
+the subject.
 
 ## Quick start
 
-Use an existing global Python environment with the declared dependencies; on
-this machine do not create a local environment or cache under OneDrive.
-
 ```powershell
-python -m caes
-python -m caes.cli --config counterflow_example_config.json
-python -m caes.cli --config heat_and_power_example_config.json
+python -m caes                                        # the GUI is the primary interface
+python -m caes.cli --config counterflow_example_config.json      # study LTA-CAES
+python -m caes.cli --config heat_and_power_example_config.json   # study LTAHP-CAES
 python -m pytest
 ```
 
-The GUI is the primary interface. The CLI supports reproducible batch runs and
-can save the thermodynamic plots, P&ID, and both Sankey diagrams:
+The CLI can also save the cycle plots, the P&ID and both Sankey diagrams:
 
 ```powershell
 python -m caes.cli --config heat_and_power_example_config.json `
@@ -91,341 +64,70 @@ python -m caes.cli --config heat_and_power_example_config.json `
   --sankey artifacts/sankeys.png
 ```
 
-## One user exchanger and one extraction exchanger
+## What one run gives you
 
-The plant always uses one mixed hot coolant tank and one mixed cold
-coolant tank. With a heat user, the discharge side is two bodies:
+- a complete charge/discharge cycle with real-fluid states and moisture
+  diagnostics;
+- the coolant loop closed inside the solve — tank temperatures, per-stage water
+  ratios, E-303's recovery group, the extraction margin of E-304;
+- an electrical round-trip efficiency, a useful-energy delivery ratio and a
+  full exergy book with a closed residual;
+- the constraint that binds, stated in words, when a design is infeasible.
 
-```text
-mixed hot TES
-  -> E-302   one user exchanger, crossed by the WHOLE inventory
-  -> E-304   one counter-current body, one bleed per expansion stage,
-             trunk fully consumed at the last one
-```
+## The one design worth reading about
 
-### Why the trunk is staged
+The discharge side is one user exchanger crossed by the whole trunk (E-302) and
+one extraction body (E-304) with a bleed per expansion stage, fully consumed at
+the last one. The extraction ladder sits a single common margin above each
+stage's own anti-icing demand, so the tail stages are no longer fed water they
+cannot use, and the descent between bleeds is recuperated into the plant's own
+coolant return. Measured against the frozen serial cascade it replaced:
 
-Every expansion stage must reach its own air temperature before its turbine,
-fixed by the anti-icing envelope. Those demands fall steeply along the train:
-
-```text
-  stage          1      2      3      4      5      6
-  demand [C]   65.95  61.24  50.89  41.20  32.13  23.63
-```
-
-Feeding all of them from one temperature means sizing it for stage one and
-handing stage six 44 K it cannot use. E-304 places each bleed a single common
-margin `m` above its own stage's demand, and recuperates the descent between
-bleeds into the plant's own coolant return, on its cold side:
-
-```text
-  T_extraction,g = T_demand,g + m
-  sum_g b_g( T_demand,g + m ) = R_total      <- m is rooted on this
-  T_trunk,in     = T_demand,0 + m            <- so E-302 gets everything above it
-```
-
-Because the first extraction IS the trunk inlet, one root closes the whole
-discharge network: there is no separate split to choose between what is sold and
-what is recuperated.
-
-A progressively withdrawn trunk only gets colder, so where the raw demand
-profile is not monotone - it is not, at 300 bar with eight stages - it is raised
-to its suffix maximum and two stages share one nozzle.
-
-### What it buys, and what it costs
-
-The user's return temperature is no longer chained to what the turbines need.
-Under the former serial cascade the trunk had to stay above the user's return
-all the way to the last bleed, so a hot return squeezed the turbines out; a
-95/75 C user cost 6 points of delivery ratio and 110/90 C was infeasible.
-Measured against that frozen baseline (commit `22b7bb7`):
-
-| user [C] | cascade `R` | E-304 `R` |
+| user [C] | serial cascade `R` | E-302 + E-304 `R` |
 |---|---:|---:|
 | 80/45 | 1.0693 | 1.0744 |
 | 95/75 | 1.0078 | 1.0624 |
 | 100/80 | 0.9820 | 1.0379 |
 | 110/90 | *infeasible* | 0.9847 |
 
-Recuperation does warm the cold tank and does cost compressor work. It is paid
-for by the returns: matched supplies let the interheater returns come back
-genuinely cold, and E-303 then harvests a third more free ambient energy. The
-worst T-Q endpoint spread also falls from 40.4 K to 11.2 K. See
-[the architecture specification](docs/12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
-and [the measured results](docs/08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md#5-measured-against-the-frozen-cascade).
+Same electricity, more heat sold, a T-Q spread that collapses from 40 K to
+11 K, and a user return that no longer dictates what the turbines get.
+[Architecture](docs/12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md) ·
+[measurements](docs/08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md#5-measured-against-the-frozen-cascade).
 
-`coolant_cascade_groups` was removed together with the serial cascade it
-configured. Older files still load: the key is ignored with a deprecation
-warning, because the hot store is one mixed state and the user side is one
-exchanger plus one extraction per stage - there is nothing left for a group
-count to control.
+The headline metric is the **useful-energy delivery ratio**
+`(W_exp + Q_heat_user) / W_comp`. Its denominator is the electricity the plant
+buys and nothing else — ambient energy is free — so it may exceed one, like a
+heat-pump COP, and it is not an efficiency. The exergy books stay bounded and
+below unity; both are
+[defined once](docs/03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md) and never
+quietly redefined.
 
-## Coolant-loop optimization
+## Documentation
 
-The LTA/LTAHP coolant cycle is closed inside the solve:
+| Read | For |
+|---|---|
+| [Plant concepts](docs/01_PLANT_CONCEPTS_AND_ARCHITECTURES.md) | the two architectures, component by component |
+| [Physics boundary](docs/02_PHYSICS_AND_MODEL_BOUNDARY.md) | what is modelled and what is deliberately not |
+| [Objectives and exergy](docs/03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md) | the metrics and the accounting rules |
+| [Configuration logic](docs/05_CONFIGURATION_LOGIC.md) | every input, and which one selects the form |
+| [Moisture and wet expansion](docs/06_MOISTURE_DEW_POINT_AND_WET_EXPANSION.md) | the anti-icing envelope |
+| [Usage](docs/07_USAGE.md) | workflows for both forms |
+| [The E-302/E-304 architecture](docs/12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md) | why the trunk is staged |
+| [Research map](docs/research/README.md) | the literature this builds on (Wolf & Budt onward) |
 
-1. choose a candidate cold-tank temperature;
-2. iterate each charging ratio toward capacity-rate matching;
-3. mix the charging returns into one hot-tank state;
-4. root the common extraction margin so the bleeds consume exactly the stored
-   inventory, which also fixes what E-302 sells;
-5. enforce wet-expander, direct coolant minimum/maximum, icing, and
-   finite-HX temperature constraints, including a pinch check at every node of
-   E-304 rather than only at its two ends;
-6. select the heat-only E-303 group over the coldest returns, mix it with the
-   bypass returns, recuperate that mixture through E-304, and check that the
-   result plus tank standing reproduces the trial cold-tank state.
+## The frozen sibling
 
-With a heat user, E-302 sells the band above the first extraction. Without one,
-both E-302 and E-304 are absent, the complete inventory reaches the interheaters
-at the one stored temperature, and candidates are ranked by real multi-stage
-expansion work.
+Before this line existed, the repository compared three fuel-free concepts:
+the ambient-diabatic **AD-CAES** baseline together with LTA and LTAHP. That
+tool is frozen on the [`no-combustion-caes`
+branch](https://github.com/tomdacu/lt-caes/tree/no-combustion-caes) (tag
+`v2.0.0-no-combustion-caes`) for readers who need the diabatic comparison;
+nothing in this line simulates a diabatic plant.
 
-The loop is closed on the **cold-tank temperature**. Branch-selective E-303
-cannot be reconstructed from one raw mixed mean, so every trial retains the
-individual return flows and temperatures through the placement decision.
+## Artwork and licence
 
-Normally the complete coolant inventory crosses the interheaters. If an LTA
-inventory needs a rejection sink to close, it is infeasible: E-303 is never
-silently reversed into a cooler.
-
-Near-parallel heat-exchanger T-Q profiles are a reported design diagnostic,
-not a hidden ranking rule. The selected objective always ranks feasible
-designs. When no closed design is feasible, the final error reports the
-binding constraints observed across the inventory search and gives
-cause-specific remedies.
-
-See the [optimization workflow](docs/04_OPTIMIZATION_WORKFLOW.md).
-
-## Thermal store and exchangers
-
-Every air/coolant and air/ambient exchanger uses the same finite counter-current
-NTU model. The atmosphere is the `Cr = 0` limit, so its effectiveness is
-`1 - exp(-NTU)`. Air heat capacity is iterated at the exchanger mean
-temperature. For balanced capacity rates, `epsilon = NTU/(1+NTU)`; NTU=3
-therefore removes about 75% of the inlet temperature gap rather than reaching
-the cold-stream inlet exactly.
-
-NTU is intentionally held constant as an exchanger **performance class**.
-Every different candidate plant implicitly receives a resized exchanger with
-`UA_design = NTU * C_min,design`; the optimization is therefore a comparison of
-complete plant designs at equal dimensionless exchanger performance, not an
-off-design simulation of one fixed core at different flows. Geometry, area,
-part-load correlations and cost are outside this thermodynamic layer.
-
-Every coolant state must satisfy
-`coolant_minimum_temperature_c <= T_coolant <= coolant_maximum_temperature_c`.
-The direct limits are checked at every branch return and mixed tank state. A
-negative minimum is only a low-freezing coolant
-sensitivity: real glycol or brine design also needs mixture properties,
-corrosion checks, and pump work.
-
-Both tanks use the same normalized conductance and standing time. Each
-lumped-capacitance standing period obeys
-
-```text
-Q_dot_loss = UA_tank (T_tank - T_ambient)
-T_after = T_ambient + (T_before - T_ambient)
-          exp[-UA_tank t / (r_total cp_coolant)]
-```
-
-The hot tank stands between charge and discharge; the cold tank stands between
-E-303 and the next charge. `thermal_storage_tank_ua_w_per_k` is normalized to
-one kilogram of stored air, so
-`UA_normalized = UA_physical / stored_air_mass`.
-
-## Heat destination and coolant balance
-
-```text
-LTA:
-hot store -> parallel interheaters -> E-303 -> cold tank
-
-LTAHP, one mixed hot store:
-hot TES -> E-302 (whole trunk) -> E-304 -> bleed 1 -> bleed 2 -> ... -> bleed N
-              |                     ^                                     |
-        one user stream             |                              interheaters
-        (counter-current)           |                                     |
-                                    +----- E-303 <---- mixed return <-----+
-                                    |
-                                 cold TES
-
-air side:
-cavern -> E-20x coolant interheater -> turbine
-```
-
-The coolant first-law balance has the following destination terms:
-
-```text
-Q_recovered + Q_E303,ambient
-    = Q_turbine_reheat + Q_user
-    + Q_hot_tank_standing + Q_cold_tank_standing
-```
-
-`E-303` is one finite heat-only coolant/ambient exchanger. The solver sorts the
-returns by temperature, warms the maximum-duty coldest group, and then mixes it
-with the warmer bypass returns. The P&ID is generated after the solve and draws
-that actual selection.
-
-Note that `Q_recup`, the duty E-304 moves from the trunk into the return, does
-not appear in the balance above. It is INTERNAL: the trunk's loss and the
-return's gain are the same joules, so they cancel. What it changes is grade, and
-the cold-tank temperature.
-
-There is no surplus-rejection cooler anywhere. E-302 must fit
-`heat_user_exchanger_ntu` and every E-304 zone must fit
-`extraction_exchanger_ntu`; requested temperatures are never silently capped.
-
-Because E-304 continues cooling the trunk below what E-302 took, a bleed CAN now
-be colder than `T_user,return` - which is exactly the constraint the serial
-cascade could not escape. What remains is an ordinary finite-area limit on one
-body: a required effectiveness above one means E-302 would have to take the
-trunk below its own cold-side inlet, and that is reported as such rather than
-as N separate interheater duty failures.
-
-## Objectives and metrics
-
-The concept policy is:
-
-- LTA-CAES: maximum electrical RTE;
-- LTAHP-CAES: maximum useful-energy delivery ratio.
-
-Only `max_electric_efficiency` and `max_combined_energy_delivery` are active
-objectives. Old JSON containing `max_total_exergy_efficiency` loads with a
-deprecation warning and maps to the appropriate active objective. Useful
-exergy efficiency remains a reported guard metric.
-
-The delivery ratio `(W_exp + Q_heat_user) / W_comp` is the single energy metric.
-Its denominator is the electricity the plant buys and nothing else: harvested
-ambient energy is free, so neither the ambient heat E-303 harvests nor the
-energy an exhaust below intake enthalpy carries in is charged to it. It may
-therefore exceed 100%, like a heat-pump COP, and it is not a thermodynamic
-efficiency.
-The energy Sankey is the closed boundary balance; the exergy books are the
-bounded accounting and stay below unity. Electrical RTE remains shaft work out
-over shaft work in. Definitions and accounting rules are canonicalized in
-[Objectives, metrics, and exergy accounting](docs/03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md).
-
-## GUI, diagrams, and accounting
-
-The GUI recalculates in a spawned background process and retains only the
-newest requested result. It includes a configuration-derived P&ID, T-s, h-s,
-and p-h traces, composite curves, stage tables, component energy/exergy books,
-an energy Sankey and an exergy Sankey (Grassmann diagram).
-
-The window is one draggable split between the plots and the tables, with the
-plots taking the larger share by default: a sixteen-panel composite figure and
-a six-row table do not want the same amount of height.
-
-### Every coolant temperature is drawn on the cycle plots
-
-The T-s, h-s and p-h traces carry dotted isotherms for the mixed cold tank, the
-one mixed hot store, every distinct post-user group supply, and every distinct
-interheater return. Supply rungs are discharge states, not stored TES levels.
-
-### One composite-curve panel per exchanger
-
-The composite tab draws **every** coolant-coupled exchanger, and the single
-`E-302` user station comes first where a heat user is configured, since it is
-the first thing the trunk meets after the store. Each panel plots that body's
-OWN end temperatures.
-
-### The Sankeys run inlet to outlet, one arrow per station
-
-Both diagrams draw the stream from the air intake to the stack rather than
-summing everything into two columns with an opaque box between them. A
-four-stage plant has eight machines and eight exchangers, and lumping them into
-"compression work" and "heat rejected" throws away exactly the per-stage
-structure the solver works so hard to produce. Every compressor, intercooler,
-interheater and expander therefore gets **its own arrow**, tagged with the
-equipment number, and the band's thickness at any point is the energy the
-stream is carrying there - so the picture cannot lie about the balance.
-
-Naming three times as many things at readable size would crowd the picture past
-usefulness, so each arrow carries a very small tag and **the full description
-with its number appears when the cursor is over it**. Saved PNGs have no
-cursor, so they keep the tags alone.
-
-The energy band is the AIR stream and closes the first law on it exactly. The
-coolant loop's own disposition - to the turbines, to the heat user, to E-303, to
-tank standing - is reported in the caption rather than drawn on the same band,
-because the heat that leaves the air at E-10x and returns at E-20x is already
-on it at both ends and drawing what the loop then does with the difference
-would count the same joules twice.
-
-The Grassmann balance is
-
-```text
-W_compression = W_expansion + B_heat_user + destruction + exhaust loss + residual
-```
-
-The residual should remain within about 1 J/kg-air. Heat sent to the ambient
-dead state - a tank standing loss, or any heat rejected to atmosphere - is
-classified as destruction. Heat received by a real external user
-is a product. Only exhaust air leaves as intact exergy loss.
-
-### The P&ID follows the configuration
-
-Change the expander stage count and the P&ID keeps one TK-301 and one `E-302`
-while redrawing `E-304` with exactly one extraction nozzle per stage. The body
-is drawn TAPERED because that is its distinguishing feature: the trunk inside it
-thins at every nozzle until it is exhausted. Add a heat off-take and both
-exchangers plus the external user appear; remove it and all three vanish.
-`E-20x` always means a coolant interheater: it once shared a tag band with the
-ambient reheaters an earlier revision carried, which made "the reheater" mean
-two different devices depending on which concept was drawn.
-
-## Documentation map
-
-Start from the [hierarchical documentation map](docs/00_DOCUMENTATION_MAP.md).
-It routes from plant concepts and theory to the nested solver algorithms,
-performance registry, reproducible benchmarks, usage and research notes.
-
-The performance/theory entry points are:
-
-- [Theory and design objectives](docs/11_THEORY_AND_DESIGN_OBJECTIVES.md)
-- [Single-store extraction architecture (E-302 + E-304)](docs/12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
-- [Optimization workflow](docs/04_OPTIMIZATION_WORKFLOW.md)
-- [Performance and optimization](docs/09_PERFORMANCE_AND_OPTIMIZATION.md)
-- [Benchmarks and regression protocol](docs/10_BENCHMARKS_AND_REGRESSION.md)
-- [Detailed algorithm index](docs/algorithms/README.md)
-
-Research notes:
-
-- [Research map](docs/research/README.md)
-- [LTA-CAES literature](docs/research/LITERATURE.md)
-- [People, groups, and related software](docs/research/PEOPLE_AND_GROUPS.md)
-- [LTAHP-CAES and the Denmark opportunity](docs/research/LTAHP_CAES_AND_DENMARK.md)
-- [LTAHP-CAES heat rejection and cogeneration](docs/research/LTAHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
-
-Project artwork: [`assets/lt-caes-banner.png`](assets/lt-caes-banner.png) and
-[`assets/lt-caes-icon.png`](assets/lt-caes-icon.png).
-
-## Model boundary
-
-CoolProp supplies dry-air properties. Moisture is a separate diagnostic:
-latent heat, finite droplet separation, and two-phase machinery physics remain
-outside the energy balance.
-
-Water vapour in compressed air is **not** treated as pure-component water
-vapour. The equilibrium content is `f(T,p) · p_sat,pure(T)`, where `f` is the
-enhancement factor: 1.004 at 1 bar, 1.10 at 30 bar, 1.39 at 100 bar. Ignoring
-it understated the stored moisture by 28% at 100 bar and the wet-expander
-anti-icing floor by 3 to 4 K at every stage — the wrong direction for a safety
-screen. `f` is tabulated once from CoolProp's humid-air backend (agreement
-better than 0.2% over its validity range) and applied in the single place the
-forward map and the dew/frost-point inversion share, so the two can never
-disagree. Above 10 MPa the backend has no validated data and `f` is
-extrapolated; that is an admitted extrapolation for 100 to 300 bar caverns and
-it errs toward more water, never less. The 0.1 wt% maximum-condensate screen bounds only
-the discharge-side dry-air approximation; charge-side latent heat is a
-separate admitted limitation. Dryers and liquid separators are deliberately
-omitted from the simplified P&ID but remain required by the documented
-moisture design. The thermal-loop coolant is represented as an incompressible
-constant-`cp` sensible-storage medium with direct minimum and maximum
-temperature limits; pressure, phase behaviour, pump work and variable liquid
-properties are outside the current model.
-
-The three-concept screening tool this line was split from - the ambient
-diabatic baseline together with LTA and LTAHP - is frozen on branch
-`no-combustion-caes`, tag `v2.0.0-no-combustion-caes`, for readers who need the
-diabatic comparison.
+The banner and the application icon are generated, not drawn:
+`scripts/make_brand_assets.py` writes the PNG and its SVG source from the same
+colour vocabulary as the diagrams. Everything here is released under the
+[MIT licence](LICENSE).
