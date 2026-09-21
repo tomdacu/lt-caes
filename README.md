@@ -72,7 +72,7 @@ The GUI is the primary interface. The CLI supports reproducible batch runs and
 can save the thermodynamic plots, P&ID, and both Sankey diagrams:
 
 ```powershell
-python -m caes.cli --config example_config.json `
+python -m caes.cli --config heat_and_power_example_config.json `
   --plot artifacts/cycles.png `
   --pid artifacts/pid.png `
   --sankey artifacts/sankeys.png
@@ -141,8 +141,11 @@ worst T-Q endpoint spread also falls from 40.4 K to 11.2 K. See
 [the architecture specification](docs/12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
 and [the measured results](docs/08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md#5-measured-against-the-frozen-cascade).
 
-`coolant_cascade_groups` is dormant. It still loads, and is still range checked,
-so configuration files written against the cascade keep working.
+`coolant_cascade_groups` was removed together with the serial cascade it
+configured. Older files still load: the key is ignored with a deprecation
+warning, because the hot store is one mixed state and the user side is one
+exchanger plus one extraction per stage - there is nothing left for a group
+count to control.
 
 ## Coolant-loop optimization
 

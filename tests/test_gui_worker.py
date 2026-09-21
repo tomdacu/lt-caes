@@ -31,7 +31,7 @@ class _Value:
         return self.value
 
 
-def test_gui_parser_keeps_coolant_cascade_groups_integer():
+def test_gui_parser_keeps_stage_counts_integer():
     """The GUI's displayed numeric text must preserve count-valued fields."""
     config = PlantConfig()
     gui = CAESGUI.__new__(CAESGUI)
@@ -42,5 +42,5 @@ def test_gui_parser_keeps_coolant_cascade_groups_integer():
 
     parsed = gui._parse_values()
 
-    assert parsed.coolant_cascade_groups == 1
-    assert isinstance(parsed.coolant_cascade_groups, int)
+    assert parsed.compressor_stages == config.compressor_stages
+    assert isinstance(parsed.compressor_stages, int)

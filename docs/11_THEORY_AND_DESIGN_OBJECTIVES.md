@@ -100,7 +100,7 @@ For each parameter, separate three outputs:
 3. numerical work, to reveal solver pathologies independently of plant physics.
 
 The first sweep should cover storage pressure, stage count, compressor/expander
-efficiency, HX NTU class, pressure loss, coolant limits, cascade groups, normalized
+efficiency, HX NTU class, pressure loss, coolant limits, normalized
 tank UA, duration, humidity and LTHP supply/return/user NTU. Use dimensionless
 groups where possible: overall pressure ratio, per-stage pressure ratio,
 capacity ratio, NTU, temperature approach ratios and normalized storage loss.
@@ -133,8 +133,8 @@ local trend.
 | Ambient E-303 NTU | Warms the selected sub-ambient return suffix more strongly toward ambient | It never rejects heat; changed recovery alters the next charge and can move the optimal suffix |
 | Pressure drop | Normally degrades work recovery and raises compression burden | It also changes downstream temperature and moisture constraints, so feasibility can switch abruptly |
 | Conserved coolant inventory | More heat capacity improves air cooling but lowers coolant temperature grade | This is the core interior trade-off; direct coolant limits, finite-HX duty asymptotes and heat-user approaches create a bounded feasible band |
-| Coolant cascade groups K | Creates more discharge supply grades without splitting the hot store | More exchangers and group constraints can make an extra group neutral or infeasible |
 | Optimized E-303 cutoff | Selects the ordered cold-return suffix with maximum ambient pickup | The local O(N) optimum excludes fixed-area cost, pumps/fans and arbitrary cross-connected subsets |
+
 | Normalized tank UA × duration | Exponentially relaxes stored water toward ambient | Hot and cold tank losses can have different signs relative to ambient; duration is not yet a dispatch variable |
 | Heat-user supply temperature | Raises delivered heat quality/exergy | Requires a hotter store and tighter hot-end approach, shrinking feasibility |
 | Heat-user return temperature | A colder return permits more useful duty | It may be unrealistic for the intended network and changes the cold-end terminal constraint |

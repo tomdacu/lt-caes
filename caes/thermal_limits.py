@@ -23,6 +23,28 @@ from .moisture import phase_change_temperature_k
 # Plant-wide design rules.  The old unconditional floor is replaced by a
 # physical wet/liquid versus dry/frost envelope.
 EXPANDER_ICE_MARGIN_K = 10.0
+# The liquid arm of the envelope: the freezing reference plus the margin.  The
+# two coincide only because pure water freezes at 0 degC; keeping the sum named
+# here is what stops the report, the GUI table and the two drawings from
+# drifting apart when the margin is retuned.
+WET_EXPANDER_LIQUID_FLOOR_C = WATER_FREEZING_TEMPERATURE_K - 273.15 + EXPANDER_ICE_MARGIN_K
+
+
+def wet_expander_floor_label(phase_boundary_c: float) -> str:
+    """The arm of the envelope in force at a phase boundary: liquid or frost."""
+
+    if phase_boundary_c >= 0.0:
+        return f"{WET_EXPANDER_LIQUID_FLOOR_C:.0f} °C liquid-water floor"
+    return f"frost point + {EXPANDER_ICE_MARGIN_K:.0f} K"
+
+
+def wet_expander_envelope_label() -> str:
+    """The whole lower envelope, in the short form used on drawings and titles."""
+
+    return (
+        f"{WET_EXPANDER_LIQUID_FLOOR_C:.0f} °C liquid"
+        f" / local frost + {EXPANDER_ICE_MARGIN_K:.0f} K"
+    )
 # Single numerical acceptance tolerance for enforcing temperature limits
 # everywhere in the solver (wet-expander envelope and coolant limits).  It is
 # a numerical guard sized just above the

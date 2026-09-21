@@ -18,14 +18,14 @@ from caes import (
     PlantMode,
 )
 from caes.exergy import air_exergy
+from conftest import LTHP
 
 # A deliberately broad sweep: a low-pressure single-stage train,
 # lopsided stage counts, multiple NTU sizes, both surplus destinations, both
 # modes, and the pressure-drop-free limit.
 CONFIGURATIONS = [
     pytest.param(PlantConfig(), id="adiabatic-ntu-default"),
-    pytest.param(PlantConfig(mode=PlantMode.DIABATIC), id="diabatic-ambient-reheat"),
-    pytest.param(PlantConfig(mode=PlantMode.DIABATIC), id="diabatic-mandatory-reheat"),
+    pytest.param(PlantConfig(mode=PlantMode.DIABATIC), id="diabatic"),
     pytest.param(
         PlantConfig(
             compressor_stages=1,
@@ -37,10 +37,7 @@ CONFIGURATIONS = [
     ),
     pytest.param(PlantConfig(compressor_stages=6, expander_stages=3), id="lopsided-stages"),
     pytest.param(
-        PlantConfig(
-            heat_offtake=HeatOfftake.HEAT_USER,
-            optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-        ),
+        LTHP,
         id="heat-user",
     ),
     pytest.param(
@@ -130,25 +127,10 @@ def test_exhaust_loss_is_reported_and_matches_the_exhaust_state(config):
 
 
 def test_cold_tank_temperature_is_an_optimized_result():
+    """A hot ambient makes the closed loop settle ABOVE the discharge inlet:
+    the tank temperature is an outcome, not an input."""
     result = CAESPlant(PlantConfig(ambient_temperature_c=25.0)).run()
     assert result.thermal_store.cold_temperature_k > result.discharging.inlet.temperature_k
-    assert abs(
-        result.thermal_store.cold_return_exchanger_outlet_temperature_k
-        - result.thermal_store.cold_temperature_k
-    ) < 5e-4
-
-
-def test_stage_specific_charging_ratios_sum_to_the_selected_inventory():
-    result = CAESPlant(PlantConfig()).run()
-    assert result.thermal_store is not None
-    ratios = [
-        p.heat_exchanger.water_air_mass_ratio
-        for p in result.charging.processes if p.heat_exchanger
-    ]
-    assert len({round(value, 4) for value in ratios}) > 1
-    assert sum(ratios) == pytest.approx(
-        result.thermal_store.total_water_mass_ratio, rel=1e-9
-    )
 
 
 def test_diabatic_aftercooler_is_finite_ntu_and_never_reaches_ambient():

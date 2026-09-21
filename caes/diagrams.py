@@ -34,23 +34,25 @@ from CoolProp.CoolProp import PropsSI
 from .models import PlantResult, Process
 from .nomenclature import plant_concept_label
 from .moisture import phase_change_temperature_k
-from .constants import WATER_FREEZING_TEMPERATURE_K
-from .thermal_limits import EXPANDER_ICE_MARGIN_K, minimum_wet_expander_temperature_k
+from .thermal_limits import minimum_wet_expander_temperature_k, wet_expander_envelope_label
+from . import palette
 
-CHARGE_COLOR = "#c62828"
-DISCHARGE_COLOR = "#1565c0"
-AIR_COLOR = "#37474f"
-WATER_COLOR = "#1565c0"
-APPROACH_COLOR = "#ef6c00"
-HOT_REFERENCE_COLOR = "#c62828"
-COLD_REFERENCE_COLOR = "#0277bd"
-SUPPLY_REFERENCE_COLOR = "#ef6c00"
-RETURN_REFERENCE_COLOR = "#6a1b9a"
-NETWORK_COLOR = "#00897b"
-PRESSURE_REFERENCE_COLOR = "#78909c"
-MOISTURE_SURFACE_COLOR = "#ef6c00"
-DEW_POINT_COLOR = "#00838f"
-FROST_POINT_COLOR = "#6a1b9a"
+# One hue, one declaration (see caes.palette): the names here say which trace,
+# stream or reference a colour belongs to, the module says what it IS.
+CHARGE_COLOR = palette.HOT                  # charging train
+DISCHARGE_COLOR = palette.COLD              # discharging train
+AIR_COLOR = palette.AIR                     # process air
+WATER_COLOR = palette.COLD                  # coolant water
+APPROACH_COLOR = palette.WARM               # the approach gap
+HOT_REFERENCE_COLOR = palette.HOT           # hot-store isotherm
+COLD_REFERENCE_COLOR = palette.DEEP         # cold-tank isotherm
+SUPPLY_REFERENCE_COLOR = palette.WARM       # interheater supply isotherm
+RETURN_REFERENCE_COLOR = palette.ELEC       # interheater return isotherm
+NETWORK_COLOR = palette.NETWORK             # the heat-user network itself
+PRESSURE_REFERENCE_COLOR = palette.MUTED    # cycle isobars
+MOISTURE_SURFACE_COLOR = palette.WARM       # saturation line
+DEW_POINT_COLOR = palette.DEW               # dew point
+FROST_POINT_COLOR = palette.ELEC            # frost point
 PRESSURE_CLUSTER_RATIO = 1.03
 
 
@@ -232,13 +234,7 @@ def _level_color(index: int, count: int) -> str:
     """
     if count <= 1:
         return HOT_REFERENCE_COLOR
-    cold = (0x02, 0x77, 0xbd)
-    hot = (0xc6, 0x28, 0x28)
-    fraction = index / (count - 1)
-    return "#" + "".join(
-        f"{round(low + (high - low) * fraction):02x}"
-        for low, high in zip(cold, hot)
-    )
+    return palette.lerp(COLD_REFERENCE_COLOR, HOT_REFERENCE_COLOR, index / (count - 1))
 
 
 def thermal_reference_temperatures(result: PlantResult) -> list[tuple[str, float, str]]:
@@ -427,9 +423,7 @@ def _draw_moisture_boundaries(
             linewidth=1.25,
             alpha=0.9,
             label=(
-                "wet-rated lower envelope: "
-                f"{WATER_FREEZING_TEMPERATURE_K - 273.15 + EXPANDER_ICE_MARGIN_K:.0f} °C liquid"
-                f" / frost + {EXPANDER_ICE_MARGIN_K:.0f} K"
+                "wet-rated lower envelope: " + wet_expander_envelope_label()
             ),
             zorder=1.4,
         )
@@ -769,11 +763,11 @@ def draw_composites(figure, result: PlantResult, fluid: str) -> None:
         ax.axis("off")
         return
 
-    # The user's cascade stations come FIRST and in hot-to-cold order, so the
-    # figure reads the way the coolant flows: down the trunk through the user
-    # taps, then out to the interheaters. Every station is its own panel -
-    # a cascade is several exchangers and drawing one averaged curve for them
-    # would hide exactly the per-station approach the ladder is built to widen.
+    # The user exchanger comes FIRST, so the figure reads the way the coolant
+    # flows: down the trunk through the user tap, then out to the interheaters.
+    # Every listed panel gets its own curve: an older result carrying several
+    # cascade stations must not be averaged into one, which would hide exactly
+    # the per-station approach the ladder is built to widen.
     rows, cols = grid_shape(len(items) + len(stations))
     dh = result.heat_offtake
     for index, (tag, tap) in enumerate(stations):
@@ -815,27 +809,19 @@ def draw_composites(figure, result: PlantResult, fluid: str) -> None:
 # :func:`attach_hover`).  Saved PNGs have no cursor, so they keep the small
 # tags and nothing else.
 
-WORK_INPUT_COLOR = "#6a1b9a"
-WORK_OUTPUT_COLOR = "#2e7d32"
-AMBIENT_HEAT_COLOR = "#f9a825"
-REJECTION_COLOR = "#c62828"
-STORAGE_LOSS_COLOR = "#8d6e63"
-EXHAUST_COLOR = "#546e7a"
-DESTRUCTION_COLOR = "#bf360c"
-STREAM_COLOR = "#90a4ae"
-STORE_COLOR = "#ef6c00"
+WORK_INPUT_COLOR = palette.ELEC
+WORK_OUTPUT_COLOR = palette.SHAFT
+AMBIENT_HEAT_COLOR = palette.AMBER
+REJECTION_COLOR = palette.HOT
+STORAGE_LOSS_COLOR = palette.GEOLOGY
+EXHAUST_COLOR = palette.EXHAUST
+DESTRUCTION_COLOR = palette.DESTRUCTION
+STREAM_COLOR = palette.ATMOSPHERE
+STORE_COLOR = palette.WARM
 
 # Only flows above this size get their own arrow [J/kg-air]; smaller ones are
 # numerical noise on a whole-plant scale and are simply not drawn.
 _SANKEY_MIN_SLICE_J = 50.0
-
-
-def _abbreviate(kind: str) -> str:
-    """A four-character tag a reader can still map back to the component."""
-    words = kind.split("_")
-    if len(words) == 1:
-        return words[0][:4]
-    return (words[0][:2] + "".join(word[0] for word in words[1:]))[:4]
 
 
 @dataclass(frozen=True)

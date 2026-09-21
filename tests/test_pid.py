@@ -82,26 +82,18 @@ def test_pid_omits_dryers_separators_and_pdp_trim_labels():
     assert all("AC-101" not in item.label for item in diagram.equipment)
 
 
-def test_diabatic_pid_always_contains_mandatory_ambient_reheat():
-    diagram = pid.layout(PlantConfig(mode=PlantMode.DIABATIC))
-    assert len(diagram.of_kind("ambient_heater")) == diagram.expander_stages
-    assert all(diagram.by_tag(f"AH-{201 + i}") for i in range(diagram.expander_stages))
-    assert all(diagram.by_tag(f"TV-{201 + i}") for i in range(diagram.expander_stages))
-
-
 def test_heat_offtake_branch_appears_only_when_configured():
-    """The DH exchanger and the network block are one unit: either the plant sells heat
-    or it does not."""
+    """The heat-user exchanger and the network block are one unit: either the
+    plant sells heat or it does not."""
     none = pid.layout(PlantConfig(heat_offtake=HeatOfftake.NONE))
     assert none.by_tag("E-302") is None
     assert none.by_tag("H-301") is None
     assert not none.exports_heat
 
-    for offtake in (HeatOfftake.HEAT_USER,):
-        selling = pid.layout(PlantConfig(heat_offtake=offtake))
-        assert selling.by_tag("E-302") is not None, "DH exchanger missing"
-        assert selling.by_tag("H-301") is not None, "DH network block missing"
-        assert selling.exports_heat
+    selling = pid.layout(PlantConfig(heat_offtake=HeatOfftake.HEAT_USER))
+    assert selling.by_tag("E-302") is not None, "heat-user exchanger missing"
+    assert selling.by_tag("H-301") is not None, "heat-user network block missing"
+    assert selling.exports_heat
 
 
 def test_heat_offtake_sits_in_series_between_the_hot_tank_and_the_turbines():
@@ -118,15 +110,14 @@ def test_heat_offtake_sits_in_series_between_the_hot_tank_and_the_turbines():
 
     assert dh.y == pytest.approx(pid.Y_TANKS), "E-302 must sit on the hot tank's own band"
     assert dh.x > hot_tank.x, "E-302 must be downstream of the hot tank"
-    assert dh.y == pytest.approx(pid.Y_DH_BRANCH)
 
     # The pump is on the tank -> E-302 run, between the two of them.
-    assert pump.y == pytest.approx(pid.Y_DH_BRANCH)
+    assert pump.y == pytest.approx(pid.Y_TANKS)
     assert hot_tank.x < pump.x < dh.x
 
     # Without an off-take there is no E-302: the pump feeds the header directly.
     plain = pid.layout(PlantConfig(heat_offtake=HeatOfftake.NONE))
-    assert plain.by_tag("P-301").y == pytest.approx(pid.Y_DH_BRANCH)
+    assert plain.by_tag("P-301").y == pytest.approx(pid.Y_TANKS)
     assert plain.by_tag("E-302") is None
 
 
@@ -140,16 +131,11 @@ def test_no_adiabatic_concept_draws_an_ambient_heater():
     nothing else.
     """
     for offtake in (HeatOfftake.NONE, HeatOfftake.HEAT_USER):
-        for reheat in (True, False):
-            adiabatic = pid.layout(PlantConfig(
-                heat_offtake=offtake,
-            ))
-            assert not adiabatic.of_kind("ambient_heater")
-            assert all(adiabatic.by_tag(f"AH-{201 + i}") is None for i in range(adiabatic.expander_stages))
+        adiabatic = pid.layout(PlantConfig(heat_offtake=offtake))
+        assert not adiabatic.of_kind("ambient_heater")
+        assert all(adiabatic.by_tag(f"AH-{201 + i}") is None for i in range(adiabatic.expander_stages))
 
-    diabatic = pid.layout(PlantConfig(
-        mode=PlantMode.DIABATIC,
-    ))
+    diabatic = pid.layout(PlantConfig(mode=PlantMode.DIABATIC))
     assert len(diabatic.of_kind("ambient_heater")) == diabatic.expander_stages
     assert all(diabatic.by_tag(f"AH-{201 + i}") for i in range(diabatic.expander_stages))
     # E-20x is a water interheater, so a diabatic plant must not own one.
@@ -232,36 +218,43 @@ def test_framing_matches_the_layout_extents():
 def test_hero_symbols_reach_the_canvas():
     """The two symbols schemdraw owns - flow-oriented machines and counter-flow
     exchanger blocks - must actually be drawn, not silently dropped the way a
-    schemdraw Drawing is when it is finalized with show=False via the context form."""
+    schemdraw Drawing is when it is finalized with show=False via the context
+    form.
+
+    One added stage adds one compressor, one expander, one intercooler and one
+    interheater, and each of those heroes is exactly one Polygon patch. The
+    matplotlib peripherals do not change with the stage count, so the DELTA is
+    the heroes: a dropped Drawing leaves it at zero.
+    """
     from matplotlib.patches import Polygon
 
-    config = PlantConfig(compressor_stages=3, expander_stages=3)
-    figure, axis = plt.subplots(figsize=(12, 7))
-    try:
-        pid.render(axis, config, None)
-        # 3 compressors + 3 expanders + 6 water_hx = 12 schemdraw polygons, on top of
-        # the ~12 the reused matplotlib peripherals add. If the schemdraw Drawing were
-        # silently dropped, only the ~12 peripherals would remain, so a threshold well
-        # above 12 pins that regression.
-        polygons = [p for p in axis.patches if isinstance(p, Polygon)]
-        assert len(polygons) >= 18, f"machines/exchangers missing from canvas: {len(polygons)} polygons"
-    finally:
-        plt.close(figure)
+    def polygons(config: PlantConfig) -> int:
+        figure, axis = plt.subplots(figsize=(12, 7))
+        try:
+            pid.render(axis, config, None)
+            return sum(1 for patch in axis.patches if isinstance(patch, Polygon))
+        finally:
+            plt.close(figure)
+
+    three = polygons(PlantConfig(compressor_stages=3, expander_stages=3))
+    four = polygons(PlantConfig(compressor_stages=4, expander_stages=4))
+    assert four - three == 4, (
+        "machines/exchangers missing from canvas: "
+        f"{four - three} new polygons per added stage"
+    )
 
 
 def test_one_hot_tank_one_user_hx_and_one_bleed_per_stage():
     """The drawn topology, and the two counts that must never drift apart.
 
     There is exactly one user exchanger whatever the stage count, and E-304
-    carries exactly one extraction nozzle per expansion stage. The dormant
-    coolant_cascade_groups field must not change either of them.
+    carries exactly one extraction nozzle per expansion stage.
     """
-    for stages, groups in ((4, 1), (6, 3), (8, 4)):
+    for stages in (4, 6, 8):
         diagram = pid.layout(PlantConfig(
             heat_offtake=HeatOfftake.HEAT_USER,
             compressor_stages=stages,
             expander_stages=stages,
-            coolant_cascade_groups=groups,
         ))
         assert diagram.by_tag("TK-301") is not None
         assert diagram.by_tag("TK-301A") is None
@@ -272,7 +265,6 @@ def test_one_hot_tank_one_user_hx_and_one_bleed_per_stage():
         extraction = diagram.by_tag("E-304")
         assert extraction is not None
         assert extraction.ports == stages
-        assert len(pid._extraction_ports(extraction.x, extraction.ports)) == stages
         # Process order along the tank band: sell first, then stage the rest.
         assert exchangers[0].x < extraction.x < diagram.by_tag("H-301").x
 

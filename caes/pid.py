@@ -79,24 +79,26 @@ from schemdraw import elements as elm
 from schemdraw.segments import Segment, SegmentPoly
 
 from .config import HeatOfftake, PlantConfig, PlantMode
-from .constants import WATER_FREEZING_TEMPERATURE_K
 from .models import PlantResult
 from .nomenclature import plant_concept_label
-from .thermal_limits import EXPANDER_ICE_MARGIN_K
+from . import palette
+from .thermal_limits import wet_expander_envelope_label
 
 # --------------------------------------------------------------------------- palette
+# One hue, one declaration (see caes.palette): the names here say what a colour
+# MEANS on this canvas, the module says what it IS.
 
-AIR = "#37474f"        # process air
-HOT = "#c62828"        # highest-temperature water: intercoolers -> hot tank
-WARM = "#ef6c00"       # minimum-duty turbine supply downstream of DH E-302
-COLD = "#1565c0"       # cold coolant, at cold-tank temperature
-SHAFT = "#2e7d32"      # MECHANICAL power on a shaft
-ELEC = "#6a1b9a"       # ELECTRICAL power across the plant boundary
-VENT = "#90a4ae"       # atmosphere
-ROCK = "#8d6e63"       # geology
-FILL = "#ffffff"
-INK = "#263238"        # symbol outlines and text
-MUTED = "#78909c"
+AIR = palette.AIR       # process air
+HOT = palette.HOT       # highest-temperature water: intercoolers -> hot tank
+WARM = palette.WARM     # minimum-duty turbine supply downstream of the heat-user HX
+COLD = palette.COLD     # cold coolant, at cold-tank temperature
+SHAFT = palette.SHAFT   # MECHANICAL power on a shaft
+ELEC = palette.ELEC     # ELECTRICAL power across the plant boundary
+VENT = palette.ATMOSPHERE   # atmosphere
+ROCK = palette.GEOLOGY      # geology
+FILL = palette.WHITE
+INK = palette.INK       # symbol outlines and text
+MUTED = palette.MUTED
 
 # --------------------------------------------------------------------------- geometry
 # The pitch is generous on purpose. Symbols are drawn in data coordinates but
@@ -128,17 +130,6 @@ Y_GRID_TOP = 9.0      # grid import, above the motor
 Y_GRID_BOT = -9.0     # grid export, below the generator
 Y_GROUND = -10.4      # grade level
 Y_CAVERN = -13.0      # cavern centreline
-
-# Back-compat aliases (a few callers still read the old band names).
-Y_CHARGE = Y_KC
-Y_DISCHARGE = Y_KE
-Y_MOTOR = Y_KC
-Y_GENERATOR = Y_KE
-Y_DH_BRANCH = Y_TANKS
-Y_COLD_TOP = Y_CHDR_C
-Y_HOT_TOP = Y_CHDR_H
-Y_HOT_BOT = Y_DHDR_W
-Y_COLD_BOT = Y_DHDR_C
 
 # Dedicated water pipe runs (the "corridors"): horizontal segments that leave
 # the tank band sideways and rise/fall on two verticals kept left of every
@@ -413,13 +404,6 @@ TANK_W, TANK_H = 2.3, 2.2
 HXW, HXH = 1.9, 1.05       # counter-flow block width / height
 
 
-def _lerp(c1: str, c2: str, t: float) -> str:
-    """Interpolate two #rrggbb colours - used for the graded water pass of an HX."""
-    a = tuple(int(c1[i:i + 2], 16) for i in (1, 3, 5))
-    b = tuple(int(c2[i:i + 2], 16) for i in (1, 3, 5))
-    return "#%02x%02x%02x" % tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
-
-
 class Machine(elm.Element):
     """Compressor (narrows in the flow direction) or expander (widens).
 
@@ -427,12 +411,11 @@ class Machine(elm.Element):
         EXPANDER    widens  in the direction of flow  (the gas is letting go)
 
     ``widen`` picks which; ``flow`` (+1 / -1) mirrors the body for the bottom row.
-    Air ties in at the two vertices on the exchanger side (``air_down`` puts them on
-    the bottom, for the charging train whose coolers sit below); ``sh_l``/``sh_r`` are
+    Air ties in at the two vertices on the exchanger side; ``sh_l``/``sh_r`` are
     the shaft centres, where the solid-green shaft connects one machine to the next.
     """
 
-    def __init__(self, *args, widen: bool = False, flow: int = 1, air_down: bool = True,
+    def __init__(self, *args, widen: bool = False, flow: int = 1,
                  fill: str = "#e3f2fd", **kwargs):
         super().__init__(*args, **kwargs)
         x_in, x_out = -flow * HALF_W, flow * HALF_W
@@ -443,10 +426,9 @@ class Machine(elm.Element):
                 closed=True, fill=fill, color=INK, lw=1.4,
             )
         )
-        s = -1 if air_down else 1
         self.anchors["center"] = (0, 0)
-        self.anchors["air_in"] = (x_in, s * h_in)
-        self.anchors["air_out"] = (x_out, s * h_out)
+        self.anchors["air_in"] = (x_in, -h_in)
+        self.anchors["air_out"] = (x_out, -h_out)
         self.anchors["sh_l"] = (-HALF_W, 0)
         self.anchors["sh_r"] = (HALF_W, 0)
 
@@ -475,7 +457,7 @@ class CounterflowHX(elm.Element):
         wpts = [(xs[i], yw + (amp if i % 2 else -amp)) for i in range(n + 1)]
         wpts[0], wpts[-1] = (-w / 2, yw), (w / 2, yw)          # ends flush with the pipes
         for i in range(n):
-            self.segments.append(Segment([wpts[i], wpts[i + 1]], color=_lerp(c_l, c_r, i / (n - 1)), lw=2.0))
+            self.segments.append(Segment([wpts[i], wpts[i + 1]], color=palette.lerp(c_l, c_r, i / (n - 1)), lw=2.0))
         apts = [(xs[i], ya + (amp if i % 2 else -amp)) for i in range(n + 1)]
         apts[0], apts[-1] = (-w / 2, ya), (w / 2, ya)
         self.segments.append(Segment(apts, color=AIR, lw=2.0))
@@ -1452,13 +1434,13 @@ def _annotate_values(
                  fs * 0.95, HOT if diagram.has_water_loop else VENT, va="bottom")
             # Air temperature LEAVING each cooler: the number that tells you whether
             # the exchanger is doing its job, and what the next stage has to swallow.
-            _stream_label(ax, e.x + STAGE_PITCH / 2 - 0.4, Y_CHARGE, f"{cool.outlet.temperature_c:.0f}°C", fs * 0.9)
+            _stream_label(ax, e.x + STAGE_PITCH / 2 - 0.4, Y_KC, f"{cool.outlet.temperature_c:.0f}°C", fs * 0.9)
 
     charge_states = result.charging.states
-    _stream_label(ax, X_ORIGIN + 1.3, Y_CHARGE - 1.5,
+    _stream_label(ax, X_ORIGIN + 1.3, Y_KC - 1.5,
                   f"{charge_states[0].temperature_c:.0f} °C\n{charge_states[0].pressure_bar:.2f} bar", fs * 0.95)
     cav_in = charge_states[-1]
-    _stream_label(ax, diagram.by_tag("V-401").x - 2.1, Y_CHARGE - 1.5,
+    _stream_label(ax, diagram.by_tag("V-401").x - 2.1, Y_KC - 1.5,
                   f"{cav_in.temperature_c:.0f} °C\n{cav_in.pressure_bar:.0f} bar", fs * 0.95)
 
     for i, exp in enumerate(expanders):
@@ -1472,7 +1454,7 @@ def _annotate_values(
                  fs * 0.95, HOT if diagram.has_water_loop else VENT, va="bottom")
             # Air temperature INTO each turbine - THE number that decides how much
             # work comes back out of the plant.
-            _stream_label(ax, e.x - STAGE_PITCH / 2 + 0.4, Y_DISCHARGE, f"{heat.outlet.temperature_c:.0f}°C", fs * 0.9)
+            _stream_label(ax, e.x - STAGE_PITCH / 2 + 0.4, Y_KE, f"{heat.outlet.temperature_c:.0f}°C", fs * 0.9)
 
     for i, heat in enumerate(ambient_heaters):
         e = diagram.by_tag(f"AH-{201 + i}")
@@ -1553,9 +1535,7 @@ def _annotate_values(
     if dh and dh_hx and network and store:
         # T_x is the optimized minimum turbine supply, fixed before heat destination.
         lines = [
-            "wet-expander target: "
-            f"{WATER_FREEZING_TEMPERATURE_K - 273.15 + EXPANDER_ICE_MARGIN_K:.0f} °C liquid"
-            f" / local frost + {EXPANDER_ICE_MARGIN_K:.0f} K",
+            "wet-expander target: " + wet_expander_envelope_label(),
             f"trunk: {dh.hot_tank_temperature_k - 273.15:.0f} °C  →  "
             f"{dh.turbine_supply_temperature_k - 273.15:.0f} °C first extraction   "
             f"({store.total_water_mass_ratio:.2f} kg/kg-air in total)",
@@ -1569,7 +1549,7 @@ def _annotate_values(
 
         # The block describes the off-take branch; put it to the RIGHT of the user so it
         # no longer eats the vertical space below the tank band.
-        ax.text(network.x + 1.9, Y_DH_BRANCH, "\n".join(lines), ha="left", va="center",
+        ax.text(network.x + 1.9, Y_TANKS, "\n".join(lines), ha="left", va="center",
                 fontsize=fs * 0.85,
                 color=HOT,
                 zorder=8,
@@ -1580,7 +1560,7 @@ def _annotate_values(
         # cascade it is the top of the ladder, and the rest of the ladder is
         # below it.
         _stream_label(
-            ax, dh_hx.x, Y_HOT_BOT + 0.9,
+            ax, dh_hx.x, Y_DHDR_W + 0.9,
             f"hottest bleed {dh.turbine_supply_temperature_k - 273.15:.0f} °C",
             fs * 0.9, color=HOT,
         )
@@ -1653,11 +1633,7 @@ def _draw_title_block(ax, diagram, config, result, fs):
         lines.append("TES: none - heat rejected to atmosphere")
         lines.append("Fuel: none; frost control by turbine + throttle")
         lines.append("Ambient reheat: mandatory (icing-safe AD-CAES operation)")
-    lines.append(
-        "Lower envelope: "
-        f"{WATER_FREEZING_TEMPERATURE_K - 273.15 + EXPANDER_ICE_MARGIN_K:.0f} °C liquid"
-        f" / local frost + {EXPANDER_ICE_MARGIN_K:.0f} K"
-    )
+    lines.append("Lower envelope: " + wet_expander_envelope_label())
     if result is not None:
         lines.append(f"Electrical RTE:     {result.round_trip_efficiency:6.1%}")
         lines.append(f"Useful-energy ratio:{result.useful_energy_delivery_ratio:6.1%}")

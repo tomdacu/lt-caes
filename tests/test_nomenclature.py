@@ -7,15 +7,15 @@ from caes.nomenclature import (
 )
 
 
-def test_mode_label_keeps_machine_value_separate_from_user_text():
+def test_concept_labels_separate_machine_values_from_user_text():
+    """The machine value is stable; the label is the only thing users read."""
     assert plant_mode_label(PlantMode.DIABATIC) == "AD-CAES (ambient diabatic)"
     assert plant_mode_label(PlantMode.ADIABATIC).startswith("LTA/LTHP-CAES")
 
-
-def test_adiabatic_mode_is_named_lta_or_lthp_by_heat_offtake():
+    # The heat flag, not the mode value, is what names the concept.
     assert plant_concept_label("adiabatic") == LTA_LABEL
     assert plant_concept_label("adiabatic", exports_heat=True) == LTHP_LABEL
-
-
-def test_diabatic_concept_does_not_change_with_heat_flag():
-    assert plant_concept_label("diabatic", exports_heat=True) == "AD-CAES (ambient diabatic)"
+    assert (
+        plant_concept_label("diabatic", exports_heat=True)
+        == plant_mode_label(PlantMode.DIABATIC)
+    )

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from math import exp, inf
 
+from .numerics import illinois_residuals, trial_point
 from .models import HeatExchangerPerformance, Process, State
 from .thermodynamics import COOL_ONLY, HEAT_ONLY, air_cp, state_ph
 
@@ -303,6 +304,8 @@ def water_ratio_for_duty(
     fluid: str,
     ntu: float,
     max_ratio: float,
+    *,
+    relative_tolerance: float = 1e-6,
 ) -> tuple[float, float]:
     """Invert an interheater: how much water do I need to deliver exactly this duty?
 
@@ -367,49 +370,18 @@ def water_ratio_for_duty(
     for _ in range(40):
         duty_ratio = duty_at(ratio)
         f_ratio = duty_ratio - target_duty_j_per_kg_air
-        if abs(f_ratio) <= 1e-6 * target_duty_j_per_kg_air:
+        if abs(f_ratio) <= relative_tolerance * target_duty_j_per_kg_air:
             return ratio, duty_ratio
 
         if f_ratio < 0:
-            low, f_low = ratio, f_ratio
-            f_high *= 0.5          # the Illinois fix: stops one endpoint from sticking
+            low = ratio
+            f_low, f_high = illinois_residuals(f_ratio, f_high, moved_high=False)
         else:
-            high, f_high = ratio, f_ratio
-            f_low *= 0.5
+            high = ratio
+            f_low, f_high = illinois_residuals(f_low, f_ratio, moved_high=True)
 
-        denominator = f_high - f_low
-        nxt = 0.5 * (low + high) if abs(denominator) < 1e-30 else (low * f_high - high * f_low) / denominator
-        # Regula falsi can wander outside the bracket on badly-scaled problems; if it
-        # does, fall back to the midpoint for that step. Guarantees convergence.
-        ratio = nxt if low < nxt < high else 0.5 * (low + high)
+        ratio = trial_point(low, f_low, high, f_high)
         if high - low < 1e-9 * max(1.0, max_ratio):
             break
 
     return ratio, duty_at(ratio)
-
-
-def cascade_station_duty(
-    water_air_mass_ratio: float,
-    inlet_temperature_k: float,
-    outlet_temperature_k: float,
-) -> float:
-    """Duty of ONE user exchanger in the descending plant-water cascade.
-
-        Q_station = r_trunk . cp . (T_in - T_out)                              (20)
-
-    ``r_trunk`` is the flow through THIS station, not the plant's inventory: the
-    trunk thins by one bleed every time an expansion stage takes what it needs,
-    and thickens again when a colder storage level joins.  Using the inventory
-    here would sell heat the exchanger never saw.
-
-    The user side is a slave and is solved once for the whole cascade rather
-    than per station, because it is ONE counter-current stream through all of
-    them; see :meth:`caes.plant.CAESPlant._build_offtake_taps`.
-    """
-    if water_air_mass_ratio <= 0.0 or outlet_temperature_k >= inlet_temperature_k:
-        return 0.0
-    return (
-        water_air_mass_ratio
-        * WATER_CP_J_PER_KGK
-        * (inlet_temperature_k - outlet_temperature_k)
-    )

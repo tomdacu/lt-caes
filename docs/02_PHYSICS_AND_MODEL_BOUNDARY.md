@@ -119,9 +119,9 @@ or flash algorithms.
 The complete comparison can be repeated without writing project caches:
 
 ```powershell
-python -B scripts/compare_property_apis.py --config example_config.json
+python -B scripts/compare_property_apis.py --config heat_and_power_example_config.json
 python -B scripts/compare_property_apis.py `
-  --config heat_and_power_example_config.json
+  --config counterflow_example_config.json
 ```
 
 The second command is intentionally a complete K=4 plant comparison rather

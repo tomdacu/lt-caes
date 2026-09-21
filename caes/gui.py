@@ -18,7 +18,7 @@ from .config import (
     save_config,
 )
 from . import diagrams, pid
-from .logic import CONFIG_GROUPS, FIELD_RULES, active_fields, editable_fields
+from .logic import FIELD_RULES, active_fields, grouped_fields
 from .models import PlantResult, Process
 from .nomenclature import (
     HEAT_OFFTAKE_LABELS,
@@ -27,21 +27,8 @@ from .nomenclature import (
     PLANT_MODE_LABELS,
     plant_concept_label,
 )
-from .moisture import (
-    compressor_moisture_inventory,
-    expander_moisture_inventory,
-    phase_change_temperature_k,
-)
-from .thermal_limits import (
-    DRY_AIR_MODEL_MAX_POSSIBLE_LIQUID_MASS_FRACTION,
-    EXPANDER_ICE_MARGIN_K,
-    REFERENCE_WET_EXPANDER_MAX_DISCHARGE_LIQUID_MASS_FRACTION,
-    REFERENCE_WET_EXPANDER_MAX_INLET_LIQUID_MASS_FRACTION,
-    maximum_possible_liquid_mass_fraction,
-    minimum_wet_expander_temperature_k,
-    wet_expander_hard_floor_temperature_k,
-)
 from .plant import CAESPlant
+from .reporting import summary_rows
 
 ENUM_TYPES = {
     "mode": PlantMode,
@@ -60,17 +47,13 @@ ENUM_DISPLAY = {
         offtake.value: label for offtake, label in HEAT_OFFTAKE_LABELS.items()
     },
 }
-# These values are used as counts by the plant solver (``range(count)``).
-# Keep the GUI parser aligned with the dataclass schema. ``coolant_cascade_groups``
-# is dormant but still range checked by ``PlantConfig``, and it stays an integer
-# here so a loaded configuration file survives a round trip through the GUI: the
-# startup parse used to convert the displayed ``1`` to ``1.0``, which then failed
-# validation with ``TypeError: 'float' object cannot be interpreted as an
-# integer``.
+# These values are used as counts by the plant solver (``range(count)``). Keep
+# the GUI parser aligned with the dataclass schema: the startup parse used to
+# convert the displayed ``4`` to ``4.0``, which then failed validation with
+# ``TypeError: 'float' object cannot be interpreted as an integer``.
 INTEGER_FIELDS = {
     "compressor_stages",
     "expander_stages",
-    "coolant_cascade_groups",
 }
 
 
@@ -218,7 +201,7 @@ class CAESGUI(tk.Tk):
             )
 
         field_map = {field.name: field for field in fields(PlantConfig)}
-        for group_name, names in CONFIG_GROUPS:
+        for group_name, names in grouped_fields():
             group = ttk.LabelFrame(
                 body, text=group_name, padding=(8, 3, 6, 5),
                 style="Section.TLabelframe",
@@ -308,14 +291,13 @@ class CAESGUI(tk.Tk):
     def _refresh_dependencies(self, config: PlantConfig | None = None) -> None:
         config = config or PlantConfig(**self._values)
         active = active_fields(config)
-        editable = editable_fields(config)
         dormant: list[str] = []
         for name, widget in self._widgets.items():
             enabled = name in active
             if isinstance(widget, ttk.Combobox):
-                widget.configure(state="readonly" if name in editable else "disabled")
+                widget.configure(state="readonly" if enabled else "disabled")
             else:
-                widget.configure(state="normal" if name in editable else "disabled")
+                widget.configure(state="normal" if enabled else "disabled")
             if not enabled:
                 dormant.append(FIELD_RULES[name].label)
         if dormant:
@@ -727,251 +709,8 @@ class CAESGUI(tk.Tk):
         tree = self._summary_table
         for item in tree.get_children():
             tree.delete(item)
-        rows = [
-            ("Electrical round-trip efficiency", f"{result.round_trip_efficiency:.3%}"),
-            (
-                "Electricity-based useful-energy delivery ratio",
-                f"{result.useful_energy_delivery_ratio:.3%}",
-            ),
-            ("Total useful exergy efficiency", f"{result.exergy.total_useful_exergy_efficiency:.3%}"),
-            ("Compression specific work", f"{result.compression_work_input_j_per_kg / 1000:.2f} kJ/kg-air"),
-            ("Expansion specific work", f"{result.expansion_work_output_j_per_kg / 1000:.2f} kJ/kg-air"),
-        ]
-        if result.thermal_store:
-            s = result.thermal_store
-            rows += [                ("Optimized cold-coolant temperature", f"{s.cold_temperature_k - 273.15:.2f} °C"),
-                ("Hot-coolant temperature available", f"{s.hot_temperature_available_k - 273.15:.2f} °C"),
-                (
-                    "Coolant minimum / maximum",
-                    f"{s.coolant_minimum_temperature_k - 273.15:.2f} / "
-                    f"{s.coolant_maximum_temperature_k - 273.15:.2f} °C",
-                ),
-                (
-                    "Calculated coolant extrema (cold / hot)",
-                    f"{s.coolant_minimum_temperature_reached_k - 273.15:.2f} / "
-                    f"{s.coolant_maximum_temperature_reached_k - 273.15:.2f} °C",
-                ),
-                (
-                    "Coolant minimum / coldest calculated",
-                    f"{s.coolant_minimum_temperature_k - 273.15:.2f} / "
-                    f"{s.coolant_minimum_temperature_reached_k - 273.15:.2f} °C",
-                ),
-                ("Recovered heat", f"{s.recovered_heat_j_per_kg_air / 1000:.2f} kJ/kg-air"),
-                ("Air-reheat delivery", f"{s.delivered_heat_j_per_kg_air / 1000:.2f} kJ/kg-air"),
-                ("Heat sold to the external user", f"{s.offtake_heat_j_per_kg_air / 1000:.2f} kJ/kg-air"),
-                (
-                    "Hot store (one mixed state)",
-                    ", ".join(
-                        f"{temperature - 273.15:.1f} °C ({mass:.3f} kg/kg)"
-                        for temperature, mass in zip(
-                            s.hot_level_temperatures_k, s.hot_level_water_mass_ratios
-                        )
-                    ) or "—",
-                ),
-                ("Hot-tank standing loss", f"{s.storage_loss_j_per_kg_air / 1000:.2f} kJ/kg-air"),
-                ("Cold-tank standing loss", f"{s.cold_storage_loss_j_per_kg_air / 1000:.2f} kJ/kg-air"),
-                (
-                    # The group is picked by TEMPERATURE, not by stage order, so
-                    # naming a stage range here would misdescribe it.
-                    "E-303 optimized placement",
-                    (
-                        f"{s.cold_return_recovery_branch_count} coldest of "
-                        f"{len([p for p in result.discharging.processes if p.kind == 'interheating'])}"
-                        " returns"
-                        if s.cold_return_recovery_branch_count
-                        else "bypassed (no sub-ambient return)"
-                    ),
-                ),
-                (
-                    "E-303 selected mix / warmed outlet",
-                    f"{s.cold_return_recovery_inlet_temperature_k - 273.15:.2f} → "
-                    f"{s.cold_return_recovery_outlet_temperature_k - 273.15:.2f} °C",
-                ),
-                (
-                    "Mixed return, before E-304",
-                    f"{s.recuperator_inlet_temperature_k - 273.15:.2f} °C",
-                ),
-                (
-                    "E-304 recuperation (internal)",
-                    f"{s.extraction_recuperated_heat_j_per_kg_air / 1000:.2f} kJ/kg-air",
-                ),
-                (
-                    "Cold-tank inlet, after E-304",
-                    f"{s.cold_return_exchanger_outlet_temperature_k - 273.15:.2f} °C",
-                ),
-                (
-                    "E-303 ambient heat absorbed",
-                    f"{s.cold_return_heat_absorbed_from_ambient_j_per_kg_air / 1000:.2f} kJ/kg-air",
-                ),
-                (
-                    "E-303 exergy destruction",
-                    f"{s.cold_return_exergy_destruction_j_per_kg_air / 1000:.2f} kJ/kg-air",
-                ),
-                ("Thermal storage duration", f"{s.storage_duration_hours:.2f} h"),
-                (
-                    "Normalized hot-tank UA",
-                    f"{s.thermal_storage_tank_ua_w_per_k:.6g} W/K per kg-air",
-                ),
-                ("Total normalized coolant", f"{s.total_water_mass_ratio:.4f} kg/kg-air"),
-            ]
-        if result.external_heat_input_j_per_kg > 0.0:
-            rows.append((
-                "Ambient energy scavenged (zero exergy at T0)",
-                f"{result.external_heat_input_j_per_kg / 1000:.2f} kJ/kg-air",
-            ))
-        throttle_loss = sum(
-            p.exergy_destruction_j_per_kg
-            for p in result.discharging.processes
-            if p.kind == "throttling"
-        )
-        if throttle_loss > 0.0:
-            rows.append((
-                "Anti-icing throttling exergy destruction",
-                f"{throttle_loss / 1000:.2f} kJ/kg-air",
-            ))
-        if result.moisture:
-            moisture = result.moisture
-            storage_limit_c = phase_change_temperature_k(
-                moisture.storage_pressure_pa,
-                moisture.stored_air_water_vapor_kg_per_kg_dry_air,
-            ) - 273.15
-            worst_liquid_fraction = maximum_possible_liquid_mass_fraction(
-                moisture.stored_air_water_vapor_kg_per_kg_dry_air
-            )
-            compressor_inventory = compressor_moisture_inventory(
-                result,
-                separate_after_each_cooler=True,
-            )
-            final_only_inventory = compressor_moisture_inventory(
-                result,
-                separate_after_each_cooler=False,
-            )
-            expander_inventory = expander_moisture_inventory(result)
-            maximum_expander_suction_liquid = max(
-                (
-                    point.condensed_water_mass_fraction
-                    for point in expander_inventory
-                    if point.position == "suction"
-                ),
-                default=worst_liquid_fraction,
-            )
-            rows += [
-                ("Ambient relative humidity", f"{moisture.ambient_relative_humidity:.1%}"),
-                (
-                    "Inlet water vapour",
-                    f"{moisture.inlet_water_vapor_kg_per_kg_dry_air * 1000:.4f} g/kg-dry-air",
-                ),
-                (
-                    "Water removed by charge separators",
-                    f"{moisture.surface_separator_water_kg_per_kg_dry_air * 1000:.4f} g/kg-dry-air",
-                ),
-                (
-                    f"Stored-air PDP at {moisture.storage_pressure_pa / 1e5:.1f} bar",
-                    f"{storage_limit_c:.2f} °C",
-                ),
-                (
-                    "Worst-case wet-expander liquid",
-                    f"{worst_liquid_fraction:.4%} mass "
-                    f"(reference cap "
-                    f"{REFERENCE_WET_EXPANDER_MAX_DISCHARGE_LIQUID_MASS_FRACTION:.0%}; "
-                    f"model cap "
-                    f"{DRY_AIR_MODEL_MAX_POSSIBLE_LIQUID_MASS_FRACTION:.1%})",
-                ),
-                (
-                    "Maximum expander-suction liquid",
-                    f"{maximum_expander_suction_liquid:.6%} mass "
-                    f"(reference cap "
-                    f"{REFERENCE_WET_EXPANDER_MAX_INLET_LIQUID_MASS_FRACTION:.0%})",
-                ),
-            ]
-            for process in result.discharging.processes:
-                if process.kind not in {"expansion", "throttling"}:
-                    continue
-                limit_c = phase_change_temperature_k(
-                    process.outlet.pressure_pa,
-                    moisture.stored_air_water_vapor_kg_per_kg_dry_air,
-                ) - 273.15
-                phase = "PDP" if limit_c >= 0.0 else "frost"
-                if process.kind == "throttling":
-                    operating_minimum_c = wet_expander_hard_floor_temperature_k(
-                        process.outlet.pressure_pa,
-                        moisture.stored_air_water_vapor_kg_per_kg_dry_air,
-                    ) - 273.15
-                    basis = "temporary hard floor before trim"
-                    threshold_name = "required floor"
-                else:
-                    operating_minimum_c = minimum_wet_expander_temperature_k(
-                        process.outlet.pressure_pa,
-                        moisture.stored_air_water_vapor_kg_per_kg_dry_air,
-                    ) - 273.15
-                    basis = (
-                        "liquid floor"
-                        if limit_c >= 0.0
-                        else f"frost + {EXPANDER_ICE_MARGIN_K:.0f} K"
-                    )
-                    threshold_name = "wet-rated minimum"
-                rows.append((
-                    f"Moisture limit at {process.outlet.pressure_bar:.2f} bar",
-                    f"{limit_c:.2f} °C ({phase}); {threshold_name} "
-                    f"{operating_minimum_c:.2f} °C ({basis})",
-                ))
-            for point in compressor_inventory:
-                if point.position not in {"suction", "discharge"}:
-                    continue
-                rows.append((
-                    f"{point.equipment_tag} {point.position} water",
-                    f"vapour {point.water_vapor_mass_fraction:.6%}; "
-                    f"liquid {point.condensed_water_mass_fraction:.6%}",
-                ))
-            for point in compressor_inventory:
-                if point.position != "cooler outlet / separator inlet":
-                    continue
-                rows.append((
-                    f"{point.equipment_tag} pre-separator water",
-                    f"vapour {point.water_vapor_mass_fraction:.6%}; "
-                    f"liquid {point.condensed_water_mass_fraction:.6%}",
-                ))
-            for point in final_only_inventory:
-                if point.position != "suction":
-                    continue
-                rows.append((
-                    f"{point.equipment_tag} suction, final separator only",
-                    f"vapour {point.water_vapor_mass_fraction:.6%}; "
-                    f"liquid {point.condensed_water_mass_fraction:.6%}",
-                ))
-            for point in expander_inventory:
-                if point.position not in {"suction", "discharge"}:
-                    continue
-                rows.append((
-                    f"{point.equipment_tag} {point.position} water",
-                    f"vapour {point.water_vapor_mass_fraction:.6%}; "
-                    f"liquid {point.condensed_water_mass_fraction:.6%}",
-                ))
-        if result.optimization:
-            store = result.thermal_store
-            assert store is not None
-            closure_error_k = store.cold_loop_closure_error_k
-            rows += [
-                ("Optimization objective", result.optimization.objective),
-                ("Worst HX endpoint ΔT spread", f"{result.optimization.max_hx_temperature_spread_k:.3f} K"),
-                ("Cold-loop closure error", f"{closure_error_k:.4f} K"),
-            ]
-
-        # The Grassmann books, laid out so they visibly add up: destruction is what
-        # the components wrecked, loss is what walked out of the boundary intact,
-        # and the residual proves nothing has been left out. Sort each block
-        # largest-first, because the reason anyone reads this table is to find out
-        # what to attack next.
-        exergy = result.exergy
-        for component, value in sorted(exergy.component_destruction_j_per_kg_air.items(), key=lambda kv: -kv[1]):
-            rows.append((f"Exergy destruction: {component}", f"{value / 1000:.3f} kJ/kg-air"))
-        rows.append(("Total exergy destruction", f"{exergy.total_destruction_j_per_kg_air / 1000:.2f} kJ/kg-air"))
-        for route, value in sorted(exergy.loss_j_per_kg_air.items(), key=lambda kv: -kv[1]):
-            rows.append((f"Exergy loss: {route}", f"{value / 1000:.3f} kJ/kg-air"))
-        rows.append(("Total exergy loss", f"{exergy.total_loss_j_per_kg_air / 1000:.2f} kJ/kg-air"))
-        rows.append(("Exergy balance residual", f"{exergy.balance_residual_j_per_kg_air:.3f} J/kg-air"))
-
-        for metric, value in rows:
+        # One formatter for plant output: the CLI report prints these same rows.
+        for metric, value in summary_rows(result):
             tree.insert("", "end", values=(metric, value))
 
     def _populate_processes(self, tree: ttk.Treeview, processes: list[Process]) -> None:

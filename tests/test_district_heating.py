@@ -6,6 +6,7 @@ from CoolProp.CoolProp import PropsSI
 from caes import CAESPlant, HeatOfftake, OptimizationObjective, PlantConfig
 from caes.heat_exchangers import WATER_CP_J_PER_KGK
 from caes.thermal_limits import minimum_wet_expander_temperature_k
+from conftest import LTHP, assert_expander_envelope
 
 
 def _expander_outlets_c(result):
@@ -43,17 +44,7 @@ def test_every_expander_outlet_respects_its_pressure_dependent_moisture_minimum(
         storage_pressure_bar=30.0,
         coolant_maximum_temperature_c=450.0,
     )
-    result = CAESPlant(config).run()
-    humidity = (
-        result.moisture.stored_air_water_vapor_kg_per_kg_dry_air
-    )
-    for process in result.discharging.processes:
-        if process.kind != "expansion":
-            continue
-        target_k = minimum_wet_expander_temperature_k(
-            process.outlet.pressure_pa, humidity
-        )
-        assert process.outlet.temperature_k >= target_k - 0.02
+    assert_expander_envelope(CAESPlant(config).run())
 
 
 def test_charge_and_discharge_use_different_stage_specific_splits():
@@ -117,39 +108,19 @@ def test_cold_tank_follows_the_optimized_heat_only_return_recovery():
     )
 
 
-def test_default_heat_only_return_architecture_needs_the_heat_user_sink():
-    with pytest.raises(ValueError, match="no closed two-tank design"):
-        CAESPlant(PlantConfig(heat_offtake=HeatOfftake.NONE)).run()
-    sold = CAESPlant(PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )).run()
-
-    # With E-303 forbidden to reject heat, the default periodic loop needs the
-    # installed high-grade user sink; it must not invent a hidden cooler.
-    assert sold.thermal_store.offtake_heat_j_per_kg_air > 0.0
-    assert sold.exergy.useful_heat_exergy_j_per_kg_air > 0.0
-
-
 def test_electric_only_dispatch_does_not_hide_a_return_cooler():
     with pytest.raises(ValueError, match="no closed two-tank design"):
         CAESPlant(PlantConfig(
             heat_offtake=HeatOfftake.HEAT_USER,
             optimization_objective=OptimizationObjective.MAX_ELECTRIC_EFFICIENCY,
         )).run()
-    lthp_combined = CAESPlant(PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )).run()
+    lthp_combined = CAESPlant(LTHP).run()
 
     assert lthp_combined.thermal_store.offtake_heat_j_per_kg_air > 0.0
 
 
 def test_series_exchanger_duty_follows_the_plant_side_temperature_drop():
-    result = CAESPlant(PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )).run()
+    result = CAESPlant(LTHP).run()
     dh = result.heat_offtake
     expected = result.thermal_store.total_water_mass_ratio * WATER_CP_J_PER_KGK * (
         dh.hot_tank_temperature_k - dh.turbine_supply_temperature_k
@@ -261,15 +232,4 @@ def test_high_ntu_eight_stage_search_finds_a_closed_loop_window():
 
 @pytest.mark.parametrize("ntu", [3.0, 6.0])
 def test_finite_ntu_hxs_meet_all_stage_targets(ntu):
-    result = CAESPlant(PlantConfig(heat_exchanger_ntu=ntu)).run()
-    humidity = (
-        result.moisture.stored_air_water_vapor_kg_per_kg_dry_air
-    )
-    for process in result.discharging.processes:
-        if process.kind == "expansion":
-            assert process.outlet.temperature_k >= (
-                minimum_wet_expander_temperature_k(
-                    process.outlet.pressure_pa, humidity
-                )
-                - 0.02
-            )
+    assert_expander_envelope(CAESPlant(PlantConfig(heat_exchanger_ntu=ntu)).run())

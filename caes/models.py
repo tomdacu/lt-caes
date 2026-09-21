@@ -147,7 +147,6 @@ class TwoTankSummary:
     cold_return_exchanger_outlet_temperature_k: float = 0.0
     cold_return_recovery_start_stage: int | None = None  # zero-based stage index
     cold_return_recovery_branch_count: int = 0
-    cold_return_recovery_mass_ratio: float = 0.0
     cold_return_recovery_inlet_temperature_k: float = 0.0
     cold_return_recovery_outlet_temperature_k: float = 0.0
     # Mixed coolant return AFTER E-303 and the final remix, but BEFORE the
@@ -177,21 +176,13 @@ class OfftakeTap:
     counter-current body, and only then reaches E-304 to be extracted stage by
     stage. So ``plant_water_per_kg_air`` is always the plant inventory and
     ``plant_inlet_temperature_k`` is always the available hot-store temperature.
-
-    The station tuple on :class:`HeatOfftakeSummary` is retained - and the
-    ``station_index`` field with it - so result files written against the former
-    K-station serial cascade still load. The active architecture puts exactly
-    one entry in it: the descending duty that used to be spread over K user
-    exchangers is now recuperated inside E-304 instead of being sold to the
-    user, which is what lets the user keep the hot end of the store to itself.
     """
 
-    station_index: int                      # 0 is the HOTTEST station
     plant_inlet_temperature_k: float        # trunk temperature entering
     plant_outlet_temperature_k: float       # trunk temperature leaving
-    plant_water_per_kg_air: float           # trunk flow THROUGH this station
-    user_inlet_temperature_k: float         # user water entering (from the colder station)
-    user_outlet_temperature_k: float        # user water leaving (on to the hotter station)
+    plant_water_per_kg_air: float           # trunk flow, the whole inventory
+    user_inlet_temperature_k: float         # user water entering
+    user_outlet_temperature_k: float        # user water leaving
     user_water_per_kg_air: float            # the ONE user stream, from (17)
     heat_j_per_kg_air: float                # duty handed to the user, eq. (20)
     required_effectiveness: float = 0.0
@@ -289,28 +280,28 @@ class ExtractionExchangerSummary:
 
 @dataclass(frozen=True)
 class HeatOfftakeSummary:
-    """Heat sold to an EXTERNAL USER, summed over the cascade stations.
+    """Heat sold to an EXTERNAL USER through the one user exchanger E-302.
 
     The user is described by the temperatures it wants and hands back plus the
     exchanger NTU class, so this is equally a
     district-heating network, an industrial process loop, an absorption chiller
     or a dryer. District heating is the likely application, not the subject.
 
-    Each group is served after its user exchanger: the exchanger cools the
-    entire remaining trunk, then the group bleeds the exact flow required by
-    its moisture-safe interheater duties.  What is not bled continues to the
-    next user exchanger.
+    The whole conserved trunk crosses E-302, which cools it from the available
+    hot-store temperature down to the FIRST extraction. What E-304 takes below
+    that is recuperated inside the plant rather than sold, so the user is
+    served entirely from the hot end of the store.
     """
 
     mode: str
-    hot_tank_temperature_k: float           # trunk temperature entering the top station
+    hot_tank_temperature_k: float           # trunk temperature entering E-302
     turbine_supply_temperature_k: float     # hottest temperature reaching the turbines
     supply_temperature_k: float             # requested supply; infeasible HX matches raise
     return_temperature_k: float             # what the user gives back
     heat_j_per_kg_air: float                # total duty handed to the user, eq. (20)
     exergy_j_per_kg_air: float              # exergy the user RECEIVES - this is the product
     network_water_per_kg_air: float         # the ONE user flow, from (17)
-    taps: tuple[OfftakeTap, ...] = ()       # cascade stations, hottest first
+    taps: tuple[OfftakeTap, ...] = ()       # the one E-302 tap
     heat_exchanger_ntu: float = 0.0
     maximum_required_effectiveness: float = 0.0
     minimum_effectiveness_margin: float = 0.0
@@ -358,24 +349,6 @@ class OptimizationSummary:
 
 
 @dataclass(frozen=True)
-class MoistureRemoval:
-    """Condensate formed at one charging-side cooling location.
-
-    These values are a separate humidity diagnostic. The main thermodynamic
-    cycle remains a dry-air energy balance and does not silently gain latent
-    heat terms.
-    """
-
-    process_index: int
-    location: str
-    pressure_pa: float
-    temperature_k: float
-    inlet_water_vapor_kg_per_kg_dry_air: float
-    outlet_water_vapor_kg_per_kg_dry_air: float
-    condensed_water_kg_per_kg_dry_air: float
-
-
-@dataclass(frozen=True)
 class MoistureSummary:
     """Vapour and condensate balance through the calculated charge train.
 
@@ -399,7 +372,6 @@ class MoistureSummary:
     stored_air_water_vapor_kg_per_kg_dry_air: float
     surface_separator_water_kg_per_kg_dry_air: float
     storage_pressure_pa: float
-    removals: tuple[MoistureRemoval, ...] = ()
 
 
 @dataclass

@@ -32,7 +32,7 @@ from .constants import (
     WATER_TRIPLE_POINT_K,
     WATER_TRIPLE_POINT_PRESSURE_PA,
 )
-from .models import Cycle, MoistureRemoval, MoistureSummary
+from .models import Cycle, MoistureSummary
 from .thermodynamics import (
     PropertyAPI,
     current_property_api,
@@ -42,11 +42,6 @@ from .thermodynamics import (
 
 if TYPE_CHECKING:
     from .models import PlantResult
-
-
-# Every charge-side removal in this model is the same device pair, so the label
-# is a shared constant rather than a per-removal string that only looks variable.
-CHARGE_SEPARATOR_LOCATION = "charge cooler + liquid separator"
 
 
 @dataclass(frozen=True)
@@ -83,10 +78,6 @@ class MoistureInventoryPoint:
             + self.condensed_water_kg_per_kg_dry_air
         )
         return self.condensed_water_kg_per_kg_dry_air / total
-
-    @property
-    def total_water_mass_fraction(self) -> float:
-        return self.water_vapor_mass_fraction + self.condensed_water_mass_fraction
 
     @property
     def pressure_bar(self) -> float:
@@ -482,9 +473,8 @@ def analyze_charge_moisture(config: PlantConfig, charging: Cycle) -> MoistureSum
     inlet_ratio = inlet_humidity_ratio(config)
     current_ratio = inlet_ratio
     surface_removed = 0.0
-    removals: list[MoistureRemoval] = []
 
-    for index, process in enumerate(charging.processes):
+    for process in charging.processes:
         if process.kind not in {"intercooling", "aftercooling"}:
             continue
         if process.outlet.temperature_k >= process.inlet.temperature_k - 1e-9:
@@ -497,19 +487,6 @@ def analyze_charge_moisture(config: PlantConfig, charging: Cycle) -> MoistureSum
         outlet_ratio = min(current_ratio, saturated_outlet_ratio)
         condensed = max(0.0, current_ratio - outlet_ratio)
         surface_removed += condensed
-
-        if condensed > 0.0:
-            removals.append(
-                MoistureRemoval(
-                    process_index=index,
-                    location=CHARGE_SEPARATOR_LOCATION,
-                    pressure_pa=process.outlet.pressure_pa,
-                    temperature_k=process.outlet.temperature_k,
-                    inlet_water_vapor_kg_per_kg_dry_air=current_ratio,
-                    outlet_water_vapor_kg_per_kg_dry_air=outlet_ratio,
-                    condensed_water_kg_per_kg_dry_air=condensed,
-                )
-            )
         current_ratio = outlet_ratio
 
     return MoistureSummary(
@@ -518,7 +495,6 @@ def analyze_charge_moisture(config: PlantConfig, charging: Cycle) -> MoistureSum
         stored_air_water_vapor_kg_per_kg_dry_air=current_ratio,
         surface_separator_water_kg_per_kg_dry_air=surface_removed,
         storage_pressure_pa=config.storage_pressure_bar * 1e5,
-        removals=tuple(removals),
     )
 
 

@@ -159,21 +159,28 @@ def test_final_aftercooler_and_separator_remove_cavern_liquid_risk():
     This used to compare two summary fields that were identical by construction,
     so it could never fail. It now checks the reported cavern vapour ratio
     against the physics that is supposed to produce it: the last charge-side
-    removal, and the local saturation ratio at that removal's own state.
+    cooler that actually condenses, and the local saturation ratio at its own
+    outlet state.
     """
-    adiabatic = CAESPlant(PlantConfig(mode=PlantMode.ADIABATIC)).run().moisture
-    diabatic = CAESPlant(PlantConfig(mode=PlantMode.DIABATIC)).run().moisture
-    assert adiabatic is not None and diabatic is not None
+    adiabatic = CAESPlant(PlantConfig(mode=PlantMode.ADIABATIC)).run()
+    diabatic = CAESPlant(PlantConfig(mode=PlantMode.DIABATIC)).run()
 
-    for moisture in (adiabatic, diabatic):
+    for result in (adiabatic, diabatic):
+        moisture = result.moisture
+        assert moisture is not None
         assert moisture.surface_separator_water_kg_per_kg_dry_air > 0.0
-        assert moisture.removals, "the default trains must condense somewhere"
-        final = moisture.removals[-1]
+        condensers = [
+            process
+            for process in result.charging.processes
+            if process.kind in {"intercooling", "aftercooling"}
+            and process.outlet.temperature_k < process.inlet.temperature_k - 1e-9
+        ]
+        assert condensers, "the default trains must condense somewhere"
+        final = condensers[-1]
         assert moisture.stored_air_water_vapor_kg_per_kg_dry_air == pytest.approx(
-            final.outlet_water_vapor_kg_per_kg_dry_air, rel=1e-12
-        )
-        assert moisture.stored_air_water_vapor_kg_per_kg_dry_air == pytest.approx(
-            saturation_humidity_ratio(final.pressure_pa, final.temperature_k),
+            saturation_humidity_ratio(
+                final.outlet.pressure_pa, final.outlet.temperature_k
+            ),
             rel=1e-12,
         )
         assert (

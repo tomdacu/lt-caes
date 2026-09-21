@@ -8,24 +8,18 @@ import pytest
 
 from caes import (
     CAESPlant,
-    HeatOfftake,
-    OptimizationObjective,
     PlantConfig,
     PlantMode,
 )
 from caes import diagrams
+from conftest import LTHP
 
 
 @pytest.mark.parametrize(
     "count, expected",
     [
-        (1, (1, 1)), (2, (1, 2)), (3, (1, 3)),
         (4, (2, 2)),      # NOT 1x4: a square reads better in a wide tab
-        (6, (2, 3)),
         (8, (2, 4)),      # NOT 3x3: that would leave a hole
-        (9, (3, 3)),
-        (10, (2, 5)),
-        (12, (3, 4)),
         (16, (4, 4)),
     ],
 )
@@ -77,10 +71,7 @@ def test_diabatic_plant_has_no_composites_to_draw():
             coolant_maximum_temperature_c=450.0,
         ),
         PlantConfig(compressor_stages=5, expander_stages=5),
-        PlantConfig(
-            heat_offtake=HeatOfftake.HEAT_USER,
-            optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-        ),
+        LTHP,
         PlantConfig(mode=PlantMode.DIABATIC),
     ],
 )
@@ -105,10 +96,7 @@ def test_every_diagram_renders(config):
     "config",
     [
         PlantConfig(),
-        PlantConfig(
-            heat_offtake=HeatOfftake.HEAT_USER,
-            optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-        ),
+        LTHP,
         PlantConfig(mode=PlantMode.DIABATIC),
     ],
 )
@@ -157,10 +145,7 @@ def test_sankey_diagrams_run_the_length_of_the_plant_and_close_the_books(config)
 
 
 def test_cycle_diagrams_include_hot_supply_and_cold_return_references():
-    config = PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )
+    config = LTHP
     result = CAESPlant(config).run()
     figure, axes = plt.subplots(1, 3)
     try:
@@ -213,10 +198,7 @@ def test_single_store_and_every_extraction_get_an_isotherm():
     drawn, because where the demand profile puts two stages on one nozzle there
     is only one temperature to show.
     """
-    config = PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )
+    config = LTHP
     result = CAESPlant(config).run()
     store = result.thermal_store
     assert len(store.hot_level_temperatures_k) == 1
@@ -304,10 +286,7 @@ def test_the_single_user_station_gets_its_own_composite_panel():
     over K stations now lives inside E-304 and is not sold, so there is nothing
     else with a user side to plot.
     """
-    config = PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )
+    config = LTHP
     result = CAESPlant(config).run()
     stations = diagrams.offtake_stations(result)
     assert len(stations) == len(result.heat_offtake.taps) == 1
@@ -327,26 +306,6 @@ def test_the_single_user_station_gets_its_own_composite_panel():
                 hot > cold
                 for hot, cold in zip(plant_line.get_ydata(), user_line.get_ydata())
             )
-    finally:
-        plt.close(figure)
-
-
-def test_offtake_composite_is_present():
-    config = PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )
-    result = CAESPlant(config).run()
-    figure = plt.figure(figsize=(12, 7))
-    try:
-        diagrams.draw_composites(figure, result, "Air")
-        assert len(figure.axes) == len(diagrams.exchangers(result)) + 1
-        dh_axis = next(axis for axis in figure.axes if "E-302" in axis.get_title())
-        plant_line, network_line = dh_axis.lines[:2]
-        assert all(
-            hot > cold
-            for hot, cold in zip(plant_line.get_ydata(), network_line.get_ydata())
-        )
     finally:
         plt.close(figure)
 

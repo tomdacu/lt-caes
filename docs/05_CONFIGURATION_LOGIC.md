@@ -36,7 +36,7 @@ real candidate fluids must replace them with characterized limits/properties.
 |---|---|---|---|---|
 | AD-CAES | `diabatic` | dormant / `none` | always enabled; otherwise expansion temperatures violate the icing envelope | `--mode diabatic` |
 | LTA-CAES | `adiabatic` | `none` | dormant | concept option; each point must prove a heat-only closed loop |
-| LTHP-CAES | `adiabatic` | `heat_user` | dormant | `example_config.json`, `heat_and_power_example_config.json` |
+| LTHP-CAES | `adiabatic` | `heat_user` | dormant | `heat_and_power_example_config.json` |
 
 The off-take enum value is `heat_user`. The older `district_heating` still
 loads and maps to it, as do the older `district_heating_supply_temperature_c`,
@@ -47,12 +47,12 @@ experiment, so old records must stay readable; the names were changed because
 the heat user is not necessarily a network, and code that says otherwise keeps
 misleading its reader.
 
-`coolant_cascade_groups` is **dormant**. It used to select the number of
-contiguous expansion-stage groups and the matching number of serial heat-user
-exchangers. The active topology has exactly one user exchanger (E-302) and one
-extraction per expansion stage on E-304, so nothing is left for it to control.
-It is still accepted and still range checked so configuration files written
-against the cascade keep loading unchanged.
+`coolant_cascade_groups` (and the older `thermal_storage_levels`) was
+**removed** together with the serial cascade it configured: the topology has
+exactly one user exchanger (E-302) and one extraction per expansion stage on
+E-304, so a grouping count has nothing left to control. Old files still load -
+the key is ignored with a deprecation warning, never remapped onto another
+field.
 
 `extraction_exchanger_ntu` sizes EACH ZONE of E-304. The zone, rather than the
 body, is the unit here because the trunk loses mass at every extraction, so its

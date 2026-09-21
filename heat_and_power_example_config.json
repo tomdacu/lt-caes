@@ -10,7 +10,6 @@
   "expander_efficiency": 0.85,
   "intercooler_pressure_drop": 0.02,
   "interheater_pressure_drop": 0.02,
-  "ambient_heat_exchanger_ntu": 5.0,
   "heat_exchanger_ntu": 5.0,
   "coolant_maximum_temperature_c": 200.0,
   "coolant_minimum_temperature_c": -80.0,

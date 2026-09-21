@@ -11,7 +11,6 @@ from __future__ import annotations
 WATER_TRIPLE_POINT_K = 273.16
 WATER_TRIPLE_POINT_PRESSURE_PA = 611.657
 WATER_CRITICAL_POINT_K = 647.096
-WATER_CRITICAL_PRESSURE_PA = 22.064e6
 # Nominal 0 degC equipment floor for liquid water.  Distinct from the triple
 # point above: the frost/liquid branch decision uses the triple point (the
 # correlation boundary), the hard floor itself is the conventional 0 degC.

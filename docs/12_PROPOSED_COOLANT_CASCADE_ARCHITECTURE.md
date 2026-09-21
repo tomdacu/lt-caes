@@ -20,9 +20,9 @@ one mixed hot TES
             fully consumed at the last extraction
 ```
 
-`coolant_cascade_groups` is dormant. It is still accepted and still range
-checked so configuration files written against the cascade keep loading, but it
-controls nothing.
+`coolant_cascade_groups` was removed together with the serial cascade it
+configured. Older configuration files still load: the key is ignored with a
+deprecation warning, because there is no group count left for it to control.
 
 ## 2. Why the trunk is staged at all
 

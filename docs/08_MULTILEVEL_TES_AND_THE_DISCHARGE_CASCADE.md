@@ -17,8 +17,9 @@ The result fields `hot_level_temperatures_k` and `hot_level_water_mass_ratios`
 remain tuples for result compatibility, but each contains exactly one value.
 They must not be read as a control for stratified storage.
 
-`coolant_cascade_groups` is dormant. It is still accepted and range checked so
-older configuration files keep loading; it controls nothing.
+`coolant_cascade_groups` was removed together with the serial cascade it
+configured. Older configuration files still load: the key is ignored with a
+deprecation warning.
 
 ## 2. Solve hierarchy
 

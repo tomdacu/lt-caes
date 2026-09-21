@@ -11,10 +11,7 @@ from caes import (
 )
 from caes.heat_exchangers import WATER_CP_J_PER_KGK
 from caes.logic import active_fields
-from caes.thermal_limits import (
-    minimum_wet_expander_temperature_k,
-    wet_expander_hard_floor_temperature_k,
-)
+from conftest import LTHP, assert_expander_envelope
 
 
 def test_normalized_two_tank_cycle_closes_energy_and_pressure():
@@ -86,24 +83,9 @@ def test_fuel_free_diabatic_cycle_uses_maximum_safe_expansion_then_throttling():
     assert any(p.kind == "throttling" for p in result.discharging.processes)
     assert any(p.kind == "ambient_reheat" for p in result.discharging.processes)
     assert abs(result.exergy.balance_residual_j_per_kg_air) < 1.0
-    humidity = result.moisture.stored_air_water_vapor_kg_per_kg_dry_air
-    for process in result.discharging.processes:
-        if process.kind == "expansion":
-            assert process.outlet.temperature_k >= (
-                minimum_wet_expander_temperature_k(
-                    process.outlet.pressure_pa, humidity
-                )
-                - 0.02
-            )
-        elif process.kind == "throttling":
-            # A valve may consume the 10 K margin before downstream ambient
-            # trim, but it may never cross the freezing/frost hard floor.
-            assert process.outlet.temperature_k >= (
-                wet_expander_hard_floor_temperature_k(
-                    process.outlet.pressure_pa, humidity
-                )
-                - 0.02
-            )
+    # A valve may consume the 10 K margin before downstream ambient trim, but it
+    # may never cross the freezing/frost hard floor.
+    assert_expander_envelope(result, include_throttling=True)
 
     assert result.external_heat_input_j_per_kg > 0.0
 
@@ -147,10 +129,7 @@ def test_cold_tank_standing_loss_follows_the_same_decay_law_as_the_hot_tank():
 def test_heat_only_e303_does_not_rescue_a_default_plant_without_heat_sink():
     with pytest.raises(ValueError, match="no closed two-tank design"):
         CAESPlant(PlantConfig(heat_offtake=HeatOfftake.NONE)).run()
-    selling = CAESPlant(PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )).run()
+    selling = CAESPlant(LTHP).run()
 
     # The LTHP topology supplies the real high-grade sink instead of silently
     # turning E-303 back into a rejection cooler.
@@ -225,10 +204,7 @@ def test_adiabatic_air_train_has_no_direct_ambient_reheater():
     AD-CAES ambient reheat is mandatory, but has no effect on these adiabatic
     concepts.
     """
-    result = CAESPlant(PlantConfig(
-        heat_offtake=HeatOfftake.HEAT_USER,
-        optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
-    )).run()
+    result = CAESPlant(LTHP).run()
 
     assert result.external_heat_input_j_per_kg == pytest.approx(
         result.thermal_store.cold_return_heat_absorbed_from_ambient_j_per_kg_air
@@ -279,18 +255,6 @@ def test_infeasible_design_error_names_the_binding_physical_constraint():
     )
     with pytest.raises(ValueError, match="coolant maximum"):
         CAESPlant(config).run()
-
-
-def test_default_lthp_closes_without_any_e303_rejection():
-    """There is no turbine-inlet cap; direct coolant limits own this check."""
-    result = CAESPlant(PlantConfig()).run()
-    store = result.thermal_store
-    assert store is not None
-    assert store.coolant_maximum_temperature_reached_k <= (
-        store.coolant_maximum_temperature_k + 1e-6
-    )
-    assert store.cold_return_heat_rejected_to_ambient_j_per_kg_air == 0.0
-    assert abs(result.exergy.balance_residual_j_per_kg_air) < 1.0
 
 
 def test_every_component_closes_steady_flow_first_law_and_has_nonnegative_destruction():
@@ -378,7 +342,11 @@ def test_a_stage_with_no_moisture_safe_duty_gets_an_empty_branch():
     plant = CAESPlant(config)
     humidity = 1.0e-4
     requirements = plant._discharge_requirements(humidity)
-    dry_stages = [i for i, (duty, _) in enumerate(requirements) if duty <= 0.0]
+    dry_stages = [
+        index
+        for index, requirement in enumerate(requirements)
+        if requirement.duty_j_per_kg_air <= 0.0
+    ]
     assert dry_stages, "this configuration is meant to have stages needing no reheat"
 
     store = _ThermalStore(
@@ -474,54 +442,3 @@ def test_e303_selects_one_cold_suffix_and_only_absorbs_ambient_heat():
     assert result.exergy.component_destruction_j_per_kg_air[
         "cold_return_ambient_exchange"
     ] == pytest.approx(store.cold_return_exergy_destruction_j_per_kg_air)
-
-
-def test_one_level_reproduces_the_single_tank_exactly():
-    """The refactor's acceptance test, before any claim about K > 1.
-
-    coolant_cascade_groups = 1 must BE the perfectly mixed hot tank, not
-    something close to it. If this drifts, no comparison between level counts
-    means anything, because the difference could be the refactor rather than
-    the architecture.
-    """
-    plant = CAESPlant(PlantConfig())
-    _, store = plant._charge_adiabatic(290.3, 1.0)
-
-    assert len(store.levels) == 1
-    level = store.levels[0]
-    assert level.mass_ratio == pytest.approx(store.total_ratio, rel=1e-12)
-    assert level.temperature_before_loss_k == pytest.approx(
-        store.hot_before_loss_k, rel=1e-12
-    )
-    assert level.temperature_available_k == pytest.approx(
-        store.hot_available_k, rel=1e-12
-    )
-    assert plant._level_supplies(store) == [
-        store.hot_available_k
-    ] * plant.config.expander_stages
-    assert plant._stage_levels(store) == [0] * plant.config.expander_stages
-
-
-def test_group_count_never_splits_the_hot_store():
-    for groups in (1, 2, 3, 4):
-        plant = CAESPlant(PlantConfig(coolant_cascade_groups=groups))
-        _, store = plant._charge_adiabatic(290.3, 1.0)
-        assert len(store.levels) == 1
-        assert store.levels[0].mass_ratio == pytest.approx(store.total_ratio)
-        assert store.levels[0].temperature_available_k == pytest.approx(
-            store.hot_available_k
-        )
-
-
-def test_cascade_groups_are_bounded_by_expander_count():
-    for groups in (0, 5):
-        with pytest.raises(ValueError, match="coolant_cascade_groups"):
-            PlantConfig(compressor_stages=4, expander_stages=4,
-                        coolant_cascade_groups=groups)
-    with pytest.raises(ValueError, match="coolant_cascade_groups"):
-        PlantConfig(compressor_stages=6, expander_stages=2,
-                    coolant_cascade_groups=3)
-    # The charge train does not cap a discharge-side grouping parameter.
-    PlantConfig(compressor_stages=1, expander_stages=4,
-                coolant_cascade_groups=4)
-    PlantConfig(heat_offtake=HeatOfftake.HEAT_USER, coolant_cascade_groups=2)

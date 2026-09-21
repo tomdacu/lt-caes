@@ -120,13 +120,6 @@ class PlantConfig:
     # any pressure or phase-equilibrium correlation.
     coolant_maximum_temperature_c: float = 200.0
     coolant_minimum_temperature_c: float = -80.0
-    # DORMANT. It used to set the number of serial heat-user stations and the
-    # matching count of interheater branch groups. The active LTHP topology has
-    # exactly one user exchanger (E-302) and one extraction per expansion stage
-    # on E-304, so there is nothing left for it to control. It is still
-    # accepted, and still range-checked, so configuration files written against
-    # the serial cascade keep loading unchanged; see caes.logic.
-    coolant_cascade_groups: int = 1
     optimization_objective: OptimizationObjective = OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY
     # Combined per-tank conductance on the normalized one-kilogram-air basis,
     # applied to BOTH tanks (hot tank standing between charge and discharge,
@@ -179,12 +172,6 @@ class PlantConfig:
             raise ValueError("ambient_relative_humidity must be in (0, 1]")
         if self.compressor_stages < 1 or self.expander_stages < 1:
             raise ValueError("stage counts must be at least one")
-        if not 1 <= self.coolant_cascade_groups <= self.expander_stages:
-            raise ValueError(
-                "coolant_cascade_groups must be between 1 and "
-                f"expander_stages = {self.expander_stages}: each non-empty "
-                "group must feed at least one expansion stage"
-            )
         for name in ("compressor_efficiency", "expander_efficiency"):
             value = getattr(self, name)
             if not 0 < value <= 1:
@@ -279,18 +266,33 @@ _LEGACY_FIELD_NAMES = {
     "district_heating_return_temperature_c": "heat_user_return_temperature_c",
 }
 
-# An approach temperature and an NTU are not interchangeable. Silently copying
-# an old 5 K value into an NTU field would alter the experiment while pretending
-# to migrate it. Old approach-only inputs are therefore ignored explicitly and
-# the current NTU default is used.
+# Inputs that no longer exist. Silently copying an old value into a different
+# field would alter the experiment while pretending to migrate it, so every one
+# of these is ignored explicitly, with its own reason, and the current default
+# is used. A configuration file is a record of an experiment and old records
+# must stay readable.
 _REMOVED_LEGACY_FIELDS = {
-    "district_heating_approach_c",
-    "heat_user_approach_c",
+    "district_heating_approach_c": (
+        "terminal approach is not an exchanger sizing model; "
+        "heat_user_exchanger_ntu keeps its default unless explicitly set"
+    ),
+    "heat_user_approach_c": (
+        "terminal approach is not an exchanger sizing model; "
+        "heat_user_exchanger_ntu keeps its default unless explicitly set"
+    ),
+    "coolant_cascade_groups": (
+        "the hot store is always one mixed state and the user side is one "
+        "exchanger (E-302) plus one extraction per expansion stage (E-304), so "
+        "a grouping count has nothing left to control"
+    ),
+    "thermal_storage_levels": (
+        "the hot store is always one mixed state, so no level count is "
+        "configurable"
+    ),
 }
 
 _LEGACY_FIELD_NAMES.update({
     "coolant_freezing_temperature_c": "coolant_minimum_temperature_c",
-    "thermal_storage_levels": "coolant_cascade_groups",
 })
 
 
@@ -302,9 +304,8 @@ def config_from_dict(data: dict[str, Any]) -> PlantConfig:
     for key, value in data.items():
         if key in _REMOVED_LEGACY_FIELDS:
             warnings.warn(
-                f"configuration field '{key}' was removed because terminal "
-                "approach is not an exchanger sizing model; "
-                "heat_user_exchanger_ntu keeps its default unless explicitly set",
+                f"configuration field '{key}' was removed because "
+                f"{_REMOVED_LEGACY_FIELDS[key]}",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -320,11 +321,6 @@ def config_from_dict(data: dict[str, Any]) -> PlantConfig:
                 reason = (
                     "the coolant loop now uses direct minimum/maximum "
                     "temperature limits"
-                )
-            elif key == "thermal_storage_levels":
-                reason = (
-                    "the hot store is now always mixed; this count controls "
-                    "serial coolant-cascade groups"
                 )
             else:
                 reason = (

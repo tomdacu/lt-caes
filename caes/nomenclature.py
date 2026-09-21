@@ -47,9 +47,3 @@ def plant_concept_label(
     if selected_mode is PlantMode.DIABATIC:
         return PLANT_MODE_LABELS[selected_mode]
     return LTHP_LABEL if exports_heat else LTA_LABEL
-
-
-def heat_offtake_label(offtake: HeatOfftake | str) -> str:
-    """Return the canonical UI label for the heat-offtake selection."""
-
-    return HEAT_OFFTAKE_LABELS[HeatOfftake(offtake)]

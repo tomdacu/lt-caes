@@ -14,22 +14,30 @@ def test_gui_and_cli_share_one_json_round_trip(tmp_path):
     assert load_config(path) == source
 
 
-def test_shared_json_loader_rejects_unknown_fields(tmp_path):
-    path = tmp_path / "invalid.json"
-    path.write_text(json.dumps({"obsolete_option": True}), encoding="utf-8")
+@pytest.mark.parametrize(
+    "unknown",
+    (
+        "obsolete_option",
+        "thermal_storage_loss_fraction",
+        "minimum_expander_outlet_temperature_c",
+        "use_natural_gas_topping",
+        "combustor_efficiency",
+        "natural_gas_lhv_mj_per_kg",
+        "natural_gas_exergy_factor",
+        "ambient_heat_exchanger_approach_c",
+    ),
+)
+def test_unknown_and_retired_fields_fail_loudly(tmp_path, unknown):
+    """A file naming a field this model does not have must stop, not be guessed at.
 
-    with pytest.raises(ValueError, match="obsolete_option"):
-        load_config(path)
+    Renamed keys keep loading (with a warning) and *removed* keys are ignored
+    explicitly; a key that is neither is an error. The JSON-file variant is
+    included because ``load_config`` is what a user actually calls.
+    """
+    path = tmp_path / "unknown.json"
+    path.write_text(json.dumps({unknown: 1.0}), encoding="utf-8")
 
-
-def test_fractional_storage_loss_field_is_rejected(tmp_path):
-    path = tmp_path / "obsolete-storage-loss.json"
-    path.write_text(
-        json.dumps({"thermal_storage_loss_fraction": 0.02}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="thermal_storage_loss_fraction"):
+    with pytest.raises(ValueError, match=unknown):
         load_config(path)
 
 
@@ -69,30 +77,20 @@ def test_coolant_limits_are_active_only_for_the_coolant_tes():
     )
 
 
-@pytest.mark.parametrize(
-    "removed",
-    (
-        "minimum_expander_outlet_temperature_c",
-        "use_natural_gas_topping",
-        "combustor_efficiency",
-        "natural_gas_lhv_mj_per_kg",
-        "natural_gas_exergy_factor",
-    ),
-)
-def test_removed_fixed_temperature_and_fuel_fields_fail_loudly(removed):
+@pytest.mark.parametrize("retired", ("coolant_cascade_groups", "thermal_storage_levels"))
+def test_retired_cascade_group_counts_load_with_a_warning(retired):
+    """Old cascade files keep loading: the count is ignored, not remapped.
+
+    The hot store is one mixed state and the user side is one exchanger plus
+    one extraction per stage, so a grouping count has nothing left to control;
+    silently copying it into another field would alter the experiment.
+    """
     from caes import config_from_dict
 
-    with pytest.raises(ValueError, match=removed):
-        config_from_dict({removed: 1.0})
+    with pytest.warns(DeprecationWarning, match=retired):
+        config = config_from_dict({retired: 3})
 
-
-def test_removed_ideal_approach_field_is_rejected():
-    """The D-CAES ambient exchangers are finite-NTU now; the old idealized
-    approach-temperature input must fail loudly, not be silently ignored."""
-    from caes import config_from_dict
-
-    with pytest.raises(ValueError, match="ambient_heat_exchanger_approach_c"):
-        config_from_dict({"ambient_heat_exchanger_approach_c": 5.0})
+    assert config == PlantConfig()
 
 
 @pytest.mark.parametrize(
