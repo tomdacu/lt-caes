@@ -1,7 +1,7 @@
-# LTHP-CAES literature and the Denmark opportunity
+# LTAHP-CAES literature and the Denmark opportunity
 
 This note distinguishes what has already been explored from what is specific to
-the LTHP-CAES model in this repository.
+the LTAHP-CAES model in this repository.
 
 ## What is established
 
@@ -122,7 +122,7 @@ constraint, not a completed glycol property package.
 
 ## Research questions worth publishing
 
-1. Does ambient preheat increase annual LTHP-CAES revenue after fan power and HX
+1. Does ambient preheat increase annual LTAHP-CAES revenue after fan power and HX
    capital cost?
 2. Which DH supply/return temperatures maximize heat export without destroying
    electrical value?
@@ -132,4 +132,4 @@ constraint, not a completed glycol property package.
    included?
 5. What cavern pressure schedule maximizes joint electricity and heat revenue?
 6. How does DH thermal inertia change optimal charge/discharge timing?
-7. At what duration does LTHP-CAES outperform batteries plus a separate heat pump?
+7. At what duration does LTAHP-CAES outperform batteries plus a separate heat pump?

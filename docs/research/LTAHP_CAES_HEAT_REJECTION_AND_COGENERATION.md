@@ -1,4 +1,4 @@
-# LTHP-CAES cold-return recovery and cogeneration
+# LTAHP-CAES cold-return recovery and cogeneration
 
 > **Historical note:** the numerical rejection audit below describes the
 > retired bidirectional, all-return E-303 model. The active architecture has
@@ -8,7 +8,7 @@
 
 This note answers two separate questions:
 
-1. where the present LTHP-CAES still rejects heat;
+1. where the present LTAHP-CAES still rejects heat;
 2. which research directions can turn that residual into a useful product.
 
 Citation counts are a bibliometric snapshot, not a quality score. The counts in

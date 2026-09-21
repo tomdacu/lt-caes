@@ -16,7 +16,7 @@ The solver follows one kilogram of **dry** air through steady-flow components. T
 cavern is a fixed-pressure, ambient-rock-temperature boundary. There is no time
 domain, power rating, tank geometry, component cost, or water-pump model.
 
-For the plant-level definition of AD-CAES, LTA-CAES, and LTHP-CAES,
+For the plant-level definition of LTA-CAES and LTAHP-CAES,
 including left-to-right exergy flowcharts, read
 [Plant concepts and architectures](01_PLANT_CONCEPTS_AND_ARCHITECTURES.md).
 
@@ -103,8 +103,8 @@ selected optimum.
 The A/B validation made with the locally installed CoolProp 7.2.0 covered
 `Air` from 1 to 300 bar and 180 to 1050 K, including `(P,T)`, `(P,h)`, `(P,s)`
 and `cp`, plus pure-water saturation. The returned values were bit-for-bit
-equal. Complete AD-CAES, LTA-CAES, LTHP-CAES and counterflow results were also
-equal as full result dataclasses. The four-level LTHP-CAES case followed
+equal. Complete LTA-CAES, LTAHP-CAES and counterflow results were also
+equal as full result dataclasses. The four-level LTAHP-CAES case followed
 the same 6,792 discharge-train evaluations and gave the same objective; its
 actual state envelope was 1.013 to 102.04 bar and 248.78 to 574.55 K. This is
 inside the primitive-property test envelope.
@@ -129,8 +129,8 @@ than a property-call microbenchmark.
 
 ## Finite counter-flow exchangers, one code path
 
-Every exchanger in the plant - air/water on the LTA/LTHP side and
-air/atmosphere on the AD-CAES side - uses the same finite counter-current
+Every exchanger in the plant - the coolant-coupled bodies and the heat-only
+E-303 ambient exchanger - uses the same finite counter-current
 model:
 
 ```text
@@ -141,8 +141,8 @@ Cr = C_min / C_max
 epsilon = [1 - exp(-NTU(1-Cr))] / [1 - Cr exp(-NTU(1-Cr))]
 ```
 
-The atmosphere is an *infinite* capacity rate, so the ambient coolers and
-reheaters are the `Cr = 0` limit of the same formula:
+The atmosphere is an *infinite* capacity rate, so E-303 is the `Cr = 0` limit of
+the same formula:
 
 ```text
 epsilon_ambient = 1 - exp(-NTU)
@@ -194,36 +194,7 @@ layer should report the implied `UA_design` and convert it into surface area and
 cost, but it must preserve the NTU class selected here unless the research
 question explicitly changes that class.
 
-## AD-CAES ambient reheat and throttling
-
-AD-CAES uses the same wet-expander lower envelope as LTA/LTHP-CAES:
-
-```text
-T_hard,i = 0 degC        if T_phase >= 0 degC
-           T_frost,i     if T_phase <  0 degC
-T_min,i  = T_hard,i + 10 K
-```
-
-Each stage first takes all finite-NTU ambient heat available. The solver then
-tests a complete turbine expansion. If unsafe, it finds the lowest intermediate
-pressure at which the turbine outlet just reaches `T_min`; an isenthalpic valve
-completes the remaining pressure drop. If the inlet is already too close to the
-boundary for any turbine work, the whole stage is throttled. A zero-pressure-
-drop ambient trim reheater can restore the 10 K margin after the valve, but the
-valve outlet itself may never cross the unmargined freezing/frost hard floor.
-
-```text
-cavern -> withdrawal scrubber -> ambient reheat
-       -> maximum safe turbine expansion -> h=constant throttle
-               -> moisture separator/demister -> optional ambient anti-icing trim
-```
-
-The throttle obeys `h_out = h_in`, `q = 0`, `w = 0`. Its physical-exergy drop
-is component destruction: it is the work opportunity deliberately sacrificed
-to remain fuel-free. There is no burner, fuel energy, fuel mass or chemical
-exergy anywhere in the model.
-
-## LTHP-CAES process order
+## LTAHP-CAES process order
 
 With a heat user, the hot TES first crosses the `E-302` taps; only the remaining
 temperature level reaches the turbine coolant interheaters. The air-side order at
@@ -233,10 +204,10 @@ every adiabatic expansion stage is simply:
 previous turbine outlet -> finite coolant interheater -> turbine
 ```
 
-There is no ambient exchanger on the adiabatic air side. AD-CAES is the only
-concept that scavenges ambient heat, and there it is the sole discharge heat
-source. Ambient heat is a positive energy input, but at the selected dead-state
-temperature its heat-transfer exergy is approximately zero.
+There is no ambient exchanger on the adiabatic air side: the only ambient heat
+the plant receives is what the heat-only E-303 absorbs into the coldest
+returning coolant. Ambient heat is a positive energy input, but at the selected
+dead-state temperature its heat-transfer exergy is approximately zero.
 
 ## Coupled charging design
 
@@ -488,17 +459,17 @@ R_delivery = (W_expansion + Q_district) / W_compression
 `R_delivery` is the single energy metric: an electricity-based sector-coupling
 delivery ratio, not a thermodynamic efficiency. Its denominator is purchased
 electricity only, so every ambient stream the plant harvests for free - the
-AD-CAES ambient reheat duty and the energy carried in by an exhaust leaving
+ambient heat E-303 absorbs and the energy carried in by an exhaust leaving
 below intake enthalpy - stays out of it. It is therefore not bounded by one. The
 exergy metric correctly assigns approximately zero exergy to heat received at
 the ambient dead-state temperature, and is bounded by one. The closed first-law
 boundary balance is the energy Sankey. See
 [Objectives, metrics, and exergy accounting](03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md#the-one-energy-metric-and-what-it-deliberately-excludes).
 
-One classification, every concept. Finite HX temperature difference, pressure
+One classification, both forms. Finite HX temperature difference, pressure
 loss, turbomachinery, throttling, tank mixing and tank standing leaks
-appear as destruction. Heat pushed into the ambient dead state - AD-CAES
-cooler heat, tank standing loss, or E-303 duty in EITHER direction - is
+appear as destruction. Heat pushed into the ambient dead state - a
+tank standing loss, or any heat rejected to the atmosphere - is
 DESTRUCTION: the atmosphere is the dead state itself, so nothing usable crosses
 the boundary. Warming a sub-ambient return destroys its cold exergy exactly as
 cooling a hot one destroys its heat exergy.

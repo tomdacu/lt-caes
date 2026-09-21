@@ -7,9 +7,10 @@
 ## What the program is for
 
 The program is a normalized **brainstorming and configuration-screening tool**.
-It asks which complete plant architecture is worth studying in higher fidelity.
-It does not yet predict annual dispatch, component cost, cavern transients or
-the off-design map of one purchased machine.
+It asks which of the two low-temperature adiabatic forms - LTA without a heat
+user, LTAHP with one - and which parameter set is worth studying in higher
+fidelity. It does not yet predict annual dispatch, component cost, cavern
+transients or the off-design map of one purchased machine.
 
 That distinction determines the interpretation of inputs. Holding NTU constant
 means comparing exchanger designs from the same performance class while
@@ -38,13 +39,12 @@ separate.
    cost, dynamics and experimental validation. The code supplies evidence but
    cannot make this multi-criteria decision from thermodynamics alone.
 
-## Objective by architecture
+## Objective by form
 
-| Architecture | Useful products in the present boundary | Normal screening objective | Why |
+| Form | Useful products in the present boundary | Normal screening objective | Why |
 |---|---|---|---|
-| AD-CAES (ambient diabatic) | electricity | electrical RTE | Ambient reheat is an external energy flow; the sold product is shaft/electric work |
-| LTA-CAES (low-temperature adiabatic CAES) | electricity | electrical RTE | With no heat user, stored heat is valuable only insofar as it raises expansion work |
-| LTHP-CAES (low-temperature heat and power CAES) | electricity and useful heat | useful-energy delivery ratio | The concept is explicitly sector-coupled and must not discard the heat product during ranking |
+| LTA-CAES (`heat_offtake = "none"`) | electricity | electrical RTE | With no heat user, stored heat is valuable only insofar as it raises expansion work |
+| LTAHP-CAES (`heat_offtake = "heat_user"`) | electricity and useful heat | useful-energy delivery ratio | The form is explicitly sector-coupled and must not discard the heat product during ranking |
 
 Useful-exergy efficiency is reported as the thermodynamic quality audit. It is
 not the current ranking objective. Cost, equipment volume, `UA`, water
@@ -63,7 +63,7 @@ The major boundary conditions are:
 - direct coolant minimum and maximum temperatures;
 - wet-expander liquid/frost anti-icing envelope;
 - hot/cold store dwell and normalized loss coefficient;
-- for LTHP, heat-user supply/return temperatures and exchanger NTU class.
+- for LTAHP, heat-user supply/return temperatures and exchanger NTU class.
 
 Changing any of these can change not only the metric but whether a topology is
 feasible and which constraint is active. Sensitivity studies should therefore
@@ -101,7 +101,7 @@ For each parameter, separate three outputs:
 
 The first sweep should cover storage pressure, stage count, compressor/expander
 efficiency, HX NTU class, pressure loss, coolant limits, normalized
-tank UA, duration, humidity and LTHP supply/return/user NTU. Use dimensionless
+tank UA, duration, humidity and LTAHP supply/return/user NTU. Use dimensionless
 groups where possible: overall pressure ratio, per-stage pressure ratio,
 capacity ratio, NTU, temperature approach ratios and normalized storage loss.
 
@@ -124,10 +124,10 @@ local trend.
 
 | Parameter | First-order theoretical effect | Why the result may be non-monotone or change branch |
 |---|---|---|
-| Storage pressure | Raises compression work, available expansion pressure ratio and compression temperature | Thermal limits, real-gas properties, moisture, throttling and stage pressure drops change together |
+| Storage pressure | Raises compression work, available expansion pressure ratio and compression temperature | Thermal limits, real-gas properties, moisture and stage pressure drops change together |
 | Compressor stages | With effective intercooling, approaches isothermal compression and tends to reduce work | Every added cooler adds pressure loss and changes coolant allocation/equipment count |
 | Expander stages | Reheat between stages can recover more stored heat and work | Added interheater pressure loss and moisture-safe duty can offset the gain |
-| Compressor efficiency | Directly reduces actual compression work at fixed pressure ratio | It also reduces recovered compression heat and can lower LTHP heat delivery |
+| Compressor efficiency | Directly reduces actual compression work at fixed pressure ratio | It also reduces recovered compression heat and can lower LTAHP heat delivery |
 | Expander efficiency | Directly raises shaft work | A larger enthalpy drop lowers turbine outlet temperature and can demand more anti-icing reheat |
 | Intercooler/interheater NTU class | Improves approach/effectiveness for a given capacity ratio | Candidate `UA` is resized; water-temperature grade and required flow change, so cost is not represented |
 | Ambient E-303 NTU | Warms the selected sub-ambient return suffix more strongly toward ambient | It never rejects heat; changed recovery alters the next charge and can move the optimal suffix |

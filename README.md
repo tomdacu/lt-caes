@@ -1,15 +1,16 @@
-# Normalized CAES Simulator - AD / LTA / LTHP-CAES
+# LT-CAES: low-temperature adiabatic compressed-air energy storage
 
-A steady-state simulator that compares three compressed-air energy-storage
-concepts on one normalized basis:
+![LT-CAES banner](assets/lt-caes-banner.png)
 
-- **AD-CAES (ambient diabatic)** rejects compression heat through
-  finite-NTU ambient coolers. On discharge it uses only ambient heat, takes the
-  largest anti-icing-safe turbine pressure drop, and throttles the remainder.
-- **LTA-CAES (low-temperature adiabatic CAES)** stores compression heat in a
-  two-tank sensible-coolant loop and returns it through parallel interheaters.
-- **LTHP-CAES (low-temperature heat and power CAES)** adds heat export through
-  the E-302 taps ahead of the coolant interheaters.
+LT-CAES is the low-temperature **adiabatic** CAES family. The code simulates it
+in two forms that differ only in their heat user:
+
+```text
+LT-CAES: low-temperature adiabatic CAES
+    liquid two-tank TES, sized for the temperature class the liquid can reach
+├── LTA-CAES    no heat user   heat_offtake = "none"
+└── LTAHP-CAES  heat user      heat_offtake = "heat_user"
+```
 
 Its primary purpose is **configuration brainstorming and thermodynamic
 screening**. Each simulated point represents a different candidate plant whose
@@ -19,15 +20,29 @@ feasibility boundaries and questions worth taking into detailed design. It is
 not an off-design digital twin of one fixed installation, and it does not yet
 perform mechanical sizing, costing or dispatch simulation.
 
+## The two forms
+
+`heat_offtake` is the one input that selects the form; everything else - plant,
+machine values, coolant loop, solver - is shared.
+
+- **LTA-CAES (low-temperature adiabatic CAES)**, `heat_offtake = "none"`: the
+  stored heat is turbine reheat and nothing else. The complete inventory reaches
+  the parallel interheaters at the one stored temperature, and one heat-only
+  E-303 may recover free ambient energy into the coldest returning coolant.
+- **LTAHP-CAES (low-temperature adiabatic heat and power CAES)**,
+  `heat_offtake = "heat_user"`: E-302 exports the band above the first
+  extraction to an external heat user, and E-304 stages the rest to the
+  interheaters.
+
 ## This is a heat-and-power plant, not a store with a heating bolt-on
 
-LTHP-CAES sells two products, electricity and heat, and the heat user is
+LTAHP-CAES sells two products, electricity and heat, and the heat user is
 described by three inputs: the temperature it wants, the temperature it hands
 back, and the finite-NTU performance class of its exchanger.
 Those three numbers describe a district-heating network, an industrial process
 loop, an absorption chiller, a greenhouse or a drying plant equally well.
 District heating is the most likely application in northern Europe - see the
-[Denmark note](docs/research/LTHP_CAES_AND_DENMARK.md) - but it is **not the
+[Denmark note](docs/research/LTAHP_CAES_AND_DENMARK.md) - but it is **not the
 model's subject**, and nothing in the solver assumes it.
 
 The configuration says so: `heat_offtake = "heat_user"` with
@@ -36,20 +51,18 @@ The configuration says so: `heat_offtake = "heat_user"` with
 temperature names still load; obsolete approach inputs are ignored with a
 deprecation warning because kelvin and NTU are not interchangeable.
 
-Direct air/ambient reheat belongs to AD-CAES alone. The adiabatic concepts take
-every joule of turbine reheat from the coolant loop, while one optimized
-heat-only E-303 may warm a selected sub-ambient coolant-return suffix; the AH-20x ambient
-preheaters they used to carry have been removed, because they were up to eight
-extra high-pressure gas/ambient exchangers and the only ones in the model that
-moved heat into the air without paying an air-side pressure drop.
+Both forms are adiabatic on the air side: there is no ambient exchanger in the
+expansion train, and every joule of turbine reheat comes from the coolant loop.
+One optimized heat-only E-303 may warm a selected sub-ambient coolant-return
+suffix, and that is the model's only ambient thermal interaction.
 
 The project builds on published LTA-CAES research, beginning with the name and
 low-temperature two-tank concept described by Wolf and Budt; see the
 [literature map](docs/research/LITERATURE.md). Literature **AA-CAES** means
-advanced adiabatic CAES and must not be confused with this repository's
-**AD-CAES**, which is ambient diabatic.
+advanced adiabatic CAES and must not be confused with the concepts of this
+repository, which are the low-temperature forms only.
 
-All three concepts use the same wet-expander envelope: +10 degC where liquid
+Both forms use the same wet-expander envelope: +10 degC where liquid
 condensation is permitted, or the local frost point plus 10 K in dry sub-zero
 operation. Results are normalized to one kilogram of stored air. The model
 reports real-fluid states, shaft work, heat/exergy flows, optimized tank
@@ -63,7 +76,7 @@ this machine do not create a local environment or cache under OneDrive.
 
 ```powershell
 python -m caes
-python -m caes.cli --config counterflow_example_config.json --explain-config
+python -m caes.cli --config counterflow_example_config.json
 python -m caes.cli --config heat_and_power_example_config.json
 python -m pytest
 ```
@@ -80,7 +93,7 @@ python -m caes.cli --config heat_and_power_example_config.json `
 
 ## One user exchanger and one extraction exchanger
 
-The adiabatic concepts always use one mixed hot coolant tank and one mixed cold
+The plant always uses one mixed hot coolant tank and one mixed cold
 coolant tank. With a heat user, the discharge side is two bodies:
 
 ```text
@@ -149,7 +162,7 @@ count to control.
 
 ## Coolant-loop optimization
 
-The LTA/LTHP coolant cycle is closed inside the solve:
+The LTA/LTAHP coolant cycle is closed inside the solve:
 
 1. choose a candidate cold-tank temperature;
 2. iterate each charging ratio toward capacity-rate matching;
@@ -227,7 +240,7 @@ one kilogram of stored air, so
 LTA:
 hot store -> parallel interheaters -> E-303 -> cold tank
 
-LTHP, one mixed hot store:
+LTAHP, one mixed hot store:
 hot TES -> E-302 (whole trunk) -> E-304 -> bleed 1 -> bleed 2 -> ... -> bleed N
               |                     ^                                     |
         one user stream             |                              interheaters
@@ -273,39 +286,24 @@ as N separate interheater duty failures.
 
 The concept policy is:
 
-- AD-CAES: maximum electrical RTE; the direct turbine/throttle solve has no
-  independent water-allocation loop;
 - LTA-CAES: maximum electrical RTE;
-- LTHP-CAES: maximum useful-energy delivery ratio.
+- LTAHP-CAES: maximum useful-energy delivery ratio.
 
 Only `max_electric_efficiency` and `max_combined_energy_delivery` are active
 objectives. Old JSON containing `max_total_exergy_efficiency` loads with a
 deprecation warning and maps to the appropriate active objective. Useful
 exergy efficiency remains a reported guard metric.
 
-The delivery ratio `(W_exp + Q_DH) / W_comp` is the single energy metric. Its
-denominator is the electricity the plant buys and nothing else: harvested
-ambient energy is free, so neither the AD-CAES ambient reheat duty nor the
-energy an exhaust below intake enthalpy carries in is charged to it. It may therefore
-exceed 100%, like a heat-pump COP, and it is not a thermodynamic efficiency.
+The delivery ratio `(W_exp + Q_heat_user) / W_comp` is the single energy metric.
+Its denominator is the electricity the plant buys and nothing else: harvested
+ambient energy is free, so neither the ambient heat E-303 harvests nor the
+energy an exhaust below intake enthalpy carries in is charged to it. It may
+therefore exceed 100%, like a heat-pump COP, and it is not a thermodynamic
+efficiency.
 The energy Sankey is the closed boundary balance; the exergy books are the
 bounded accounting and stay below unity. Electrical RTE remains shaft work out
 over shaft work in. Definitions and accounting rules are canonicalized in
 [Objectives, metrics, and exergy accounting](docs/03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md).
-
-## AD-CAES pressure control
-
-```text
-cavern air -> finite-NTU ambient reheater
-           -> turbine to the lowest safe intermediate pressure
-           -> isenthalpic throttle to scheduled stage pressure
-           -> optional ambient anti-icing trim
-```
-
-If the full pressure ratio is safe, the valve is bypassed. If no useful safe
-turbine drop exists, the complete stage is throttled. Throttling produces no
-shaft work and its lost-work opportunity is explicit exergy destruction.
-There is no fuel, combustor, LHV input, or chemical-exergy term.
 
 ## GUI, diagrams, and accounting
 
@@ -327,8 +325,9 @@ interheater return. Supply rungs are discharge states, not stored TES levels.
 ### One composite-curve panel per exchanger
 
 The composite tab draws **every** coolant-coupled exchanger, and the single
-`E-302` user station comes first, since it is the first thing the trunk meets
-after the store. Each panel plots that body's OWN end temperatures.
+`E-302` user station comes first where a heat user is configured, since it is
+the first thing the trunk meets after the store. Each panel plots that body's
+OWN end temperatures.
 
 ### The Sankeys run inlet to outlet, one arrow per station
 
@@ -360,8 +359,8 @@ W_compression = W_expansion + B_heat_user + destruction + exhaust loss + residua
 ```
 
 The residual should remain within about 1 J/kg-air. Heat sent to the ambient
-dead state - in an AD-CAES cooler, a tank standing loss, or E-303 in either
-direction - is classified as destruction. Heat received by a real external user
+dead state - a tank standing loss, or any heat rejected to atmosphere - is
+classified as destruction. Heat received by a real external user
 is a product. Only exhaust air leaves as intact exergy loss.
 
 ### The P&ID follows the configuration
@@ -370,9 +369,9 @@ Change the expander stage count and the P&ID keeps one TK-301 and one `E-302`
 while redrawing `E-304` with exactly one extraction nozzle per stage. The body
 is drawn TAPERED because that is its distinguishing feature: the trunk inside it
 thins at every nozzle until it is exhausted. Add a heat off-take and both
-exchangers plus the external user appear; remove it and all three vanish. `AH-20x` exists only in AD-CAES, where ambient reheat is the
-sole discharge heat source, and `E-20x` now means a coolant interheater and
-nothing else - the two used to share a tag band, which made "the reheater" mean
+exchangers plus the external user appear; remove it and all three vanish.
+`E-20x` always means a coolant interheater: it once shared a tag band with the
+ambient reheaters an earlier revision carried, which made "the reheater" mean
 two different devices depending on which concept was drawn.
 
 ## Documentation map
@@ -395,8 +394,11 @@ Research notes:
 - [Research map](docs/research/README.md)
 - [LTA-CAES literature](docs/research/LITERATURE.md)
 - [People, groups, and related software](docs/research/PEOPLE_AND_GROUPS.md)
-- [LTHP-CAES and the Denmark opportunity](docs/research/LTHP_CAES_AND_DENMARK.md)
-- [LTHP-CAES heat rejection and cogeneration](docs/research/LTHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
+- [LTAHP-CAES and the Denmark opportunity](docs/research/LTAHP_CAES_AND_DENMARK.md)
+- [LTAHP-CAES heat rejection and cogeneration](docs/research/LTAHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
+
+Project artwork: [`assets/lt-caes-banner.png`](assets/lt-caes-banner.png) and
+[`assets/lt-caes-icon.png`](assets/lt-caes-icon.png).
 
 ## Model boundary
 
@@ -422,3 +424,8 @@ moisture design. The thermal-loop coolant is represented as an incompressible
 constant-`cp` sensible-storage medium with direct minimum and maximum
 temperature limits; pressure, phase behaviour, pump work and variable liquid
 properties are outside the current model.
+
+The three-concept screening tool this line was split from - the ambient
+diabatic baseline together with LTA and LTAHP - is frozen on branch
+`no-combustion-caes`, tag `v2.0.0-no-combustion-caes`, for readers who need the
+diabatic comparison.

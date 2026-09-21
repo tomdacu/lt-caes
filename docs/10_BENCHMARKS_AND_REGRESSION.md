@@ -20,7 +20,7 @@ residual.
 
 ## Current structural evidence
 
-Configuration: supplied LTHP example, AbstractState, one session. The baseline
+Configuration: supplied LTAHP example, AbstractState, one session. The baseline
 column is the frozen serial cascade at commit `22b7bb7`, run in a worktree on
 the same machine.
 
@@ -42,7 +42,7 @@ increase is a real cost of the warmer cold tank and is not netted against it.
 
 ## Property-interface comparison
 
-On CoolProp 7.2.0, HEOS Air/Water and the supplied LTHP configuration, the
+On CoolProp 7.2.0, HEOS Air/Water and the supplied LTAHP configuration, the
 controlled comparison produced:
 
 | interface | light trains | materializations | diagnostic time | complete result |

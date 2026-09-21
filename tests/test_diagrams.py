@@ -6,13 +6,9 @@ matplotlib.use("Agg")   # must precede pyplot; no display in CI
 import matplotlib.pyplot as plt
 import pytest
 
-from caes import (
-    CAESPlant,
-    PlantConfig,
-    PlantMode,
-)
+from caes import CAESPlant, PlantConfig
 from caes import diagrams
-from conftest import LTHP
+from conftest import LTAHP
 
 
 @pytest.mark.parametrize(
@@ -47,19 +43,6 @@ def test_exchanger_count_follows_the_stage_count():
     assert tags == [f"E-{101 + i}" for i in range(6)] + [f"E-{201 + i}" for i in range(3)]
 
 
-def test_diabatic_plant_has_no_composites_to_draw():
-    """No water loop means no second stream, so there is nothing to plot against.
-    The figure must say so rather than throwing or drawing an empty grid."""
-    result = CAESPlant(PlantConfig(mode=PlantMode.DIABATIC)).run()
-    assert diagrams.exchangers(result) == []
-
-    figure = plt.figure()
-    try:
-        diagrams.draw_composites(figure, result, "Air")   # must not raise
-    finally:
-        plt.close(figure)
-
-
 @pytest.mark.parametrize(
     "config",
     [
@@ -71,8 +54,7 @@ def test_diabatic_plant_has_no_composites_to_draw():
             coolant_maximum_temperature_c=450.0,
         ),
         PlantConfig(compressor_stages=5, expander_stages=5),
-        LTHP,
-        PlantConfig(mode=PlantMode.DIABATIC),
+        LTAHP,
     ],
 )
 def test_every_diagram_renders(config):
@@ -96,8 +78,7 @@ def test_every_diagram_renders(config):
     "config",
     [
         PlantConfig(),
-        LTHP,
-        PlantConfig(mode=PlantMode.DIABATIC),
+        LTAHP,
     ],
 )
 def test_sankey_diagrams_run_the_length_of_the_plant_and_close_the_books(config):
@@ -123,8 +104,6 @@ def test_sankey_diagrams_run_the_length_of_the_plant_and_close_the_books(config)
         tags = {text.get_text() for text in axes[0].texts}
         for index in range(config.compressor_stages):
             assert f"K-{101 + index}" in tags
-        # AD-CAES may throttle a stage away entirely rather than expand it, so
-        # the count follows the real train, not the configured stage count.
         expansions = sum(
             1 for p in result.discharging.processes if p.kind == "expansion"
         )
@@ -145,7 +124,7 @@ def test_sankey_diagrams_run_the_length_of_the_plant_and_close_the_books(config)
 
 
 def test_cycle_diagrams_include_hot_supply_and_cold_return_references():
-    config = LTHP
+    config = LTAHP
     result = CAESPlant(config).run()
     figure, axes = plt.subplots(1, 3)
     try:
@@ -198,7 +177,7 @@ def test_single_store_and_every_extraction_get_an_isotherm():
     drawn, because where the demand profile puts two stages on one nozzle there
     is only one temperature to show.
     """
-    config = LTHP
+    config = LTAHP
     result = CAESPlant(config).run()
     store = result.thermal_store
     assert len(store.hot_level_temperatures_k) == 1
@@ -260,9 +239,8 @@ def test_cycle_diagrams_show_isobars_and_process_direction():
         plt.close(figure)
 
 
-@pytest.mark.parametrize("mode", [PlantMode.ADIABATIC, PlantMode.DIABATIC])
-def test_cycle_diagrams_show_surface_drying_and_stored_air_dew_frost_limits(mode):
-    result = CAESPlant(PlantConfig(mode=mode)).run()
+def test_cycle_diagrams_show_surface_drying_and_stored_air_dew_frost_limits():
+    result = CAESPlant(PlantConfig()).run()
     figure, axes = plt.subplots(1, 3, figsize=(15, 4.8))
     try:
         diagrams.draw_ts(axes[0], result)
@@ -286,7 +264,7 @@ def test_the_single_user_station_gets_its_own_composite_panel():
     over K stations now lives inside E-304 and is not sold, so there is nothing
     else with a user side to plot.
     """
-    config = LTHP
+    config = LTAHP
     result = CAESPlant(config).run()
     stations = diagrams.offtake_stations(result)
     assert len(stations) == len(result.heat_offtake.taps) == 1

@@ -754,15 +754,6 @@ def draw_composites(figure, result: PlantResult, fluid: str) -> None:
     figure.set_layout_engine("constrained")
     items = exchangers(result)
     stations = offtake_stations(result)
-    if not items and not stations:
-        ax = figure.add_subplot(1, 1, 1)
-        ax.text(0.5, 0.5,
-                "No coolant-coupled exchangers.\n\nA diabatic plant rejects its heat to\n"
-                "atmosphere and reheats from it, so there is\nno second stream to plot against.",
-                ha="center", va="center", fontsize=10, color="#90a4ae")
-        ax.axis("off")
-        return
-
     # The user exchanger comes FIRST, so the figure reads the way the coolant
     # flows: down the trunk through the user tap, then out to the interheaters.
     # Every listed panel gets its own curve: an older result carrying several
@@ -1051,17 +1042,6 @@ def _stage_stations(result: PlantResult) -> list[SankeyStation]:
                     duty, STORE_COLOR,
                 ),),
             ))
-        elif process.kind in {"ambient_reheat", "ambient_anti_icing_reheat"}:
-            duty = process.heat_to_air_j_per_kg
-            if duty <= _SANKEY_MIN_SLICE_J:
-                continue
-            stations.append(SankeyStation(
-                "AH",
-                inflows=(SankeyFlow(
-                    "AH-20x", "AH-20x ambient heat scavenged before expansion",
-                    duty, AMBIENT_HEAT_COLOR,
-                ),),
-            ))
         elif process.kind == "expansion":
             expanders += 1
             stations.append(SankeyStation(
@@ -1122,7 +1102,6 @@ def draw_energy_sankey(ax, result: PlantResult) -> list[tuple[object, str]]:
         )
 
     concept = plant_concept_label(
-        result.mode,
         exports_heat=result.heat_offtake is not None,
     )
     return _draw_process_sankey(
@@ -1200,7 +1179,6 @@ def draw_exergy_sankey(ax, result: PlantResult) -> list[tuple[object, str]]:
         )
     note += ". Hover an arrow for its full name."
     concept = plant_concept_label(
-        result.mode,
         exports_heat=result.heat_offtake is not None,
     )
     return _draw_process_sankey(

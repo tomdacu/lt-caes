@@ -9,7 +9,7 @@ Ice is.  The common operating envelope is:
 * when the boundary is below freezing, keep the outlet at least 10 K above the
   local frost point.
 
-The same rule is used by A-CAES and D-CAES.  It is an equipment-selection
+The same rule governs every expansion stage here.  It is an equipment-selection
 screening rule, not a substitute for an OEM guarantee on liquid loading,
 droplet size, local blade temperature or transient icing.
 """

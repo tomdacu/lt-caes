@@ -12,7 +12,7 @@ matplotlib.use("Agg")   # no display in CI; must be set before pyplot is importe
 import matplotlib.pyplot as plt
 import pytest
 
-from caes import PlantConfig, PlantMode, HeatOfftake
+from caes import PlantConfig, HeatOfftake
 from caes.plant import CAESPlant
 from caes import pid
 
@@ -44,34 +44,12 @@ def test_stage_counts_are_independent():
     assert len(diagram.of_kind("expander")) == 3
 
 
-def test_adiabatic_plant_has_the_whole_water_loop():
+def test_lta_plant_has_the_whole_water_loop():
     diagram = pid.layout(PlantConfig(heat_offtake=HeatOfftake.NONE))
     for tag in ("TK-301", "TK-302", "P-301", "P-302", "E-303", "V-401", "M-101", "G-201", "F-101", "S-201"):
-        assert diagram.by_tag(tag) is not None, f"{tag} missing from the adiabatic plant"
-    assert diagram.has_water_loop
+        assert diagram.by_tag(tag) is not None, f"{tag} missing from the water loop"
     # With no heat user the hot tank feeds the turbine header directly.
     assert diagram.by_tag("E-302") is None
-
-
-def test_diabatic_plant_drops_the_tanks_and_grows_fin_fans():
-    """Switching mode must restructure the plant, not just recolour it."""
-    diagram = pid.layout(PlantConfig(mode=PlantMode.DIABATIC))
-    assert not diagram.has_water_loop
-    for tag in ("TK-301", "TK-302", "P-301", "P-302"):
-        assert diagram.by_tag(tag) is None, f"{tag} must not exist without a thermal store"
-    assert not diagram.of_kind("water_hx"), "diabatic plants have no water exchangers at all"
-    # The intercoolers become air-cooled, the reheaters pull from atmosphere,
-    # and every expander gets an anti-icing throttle path.
-    assert len(diagram.of_kind("air_cooler")) == diagram.compressor_stages
-    assert len(diagram.of_kind("ambient_heater")) == diagram.expander_stages
-    assert all(diagram.by_tag(f"TV-{201 + i}") for i in range(diagram.expander_stages))
-
-
-def test_diabatic_every_stage_has_reheater_and_throttle_control():
-    diagram = pid.layout(PlantConfig(mode=PlantMode.DIABATIC, expander_stages=4))
-    for i in range(4):
-        assert diagram.by_tag(f"AH-{201 + i}") is not None
-        assert diagram.by_tag(f"TV-{201 + i}") is not None
 
 
 def test_pid_omits_dryers_separators_and_pdp_trim_labels():
@@ -121,25 +99,21 @@ def test_heat_offtake_sits_in_series_between_the_hot_tank_and_the_turbines():
     assert plain.by_tag("E-302") is None
 
 
-def test_no_adiabatic_concept_draws_an_ambient_heater():
-    """The AH-20x preheaters are gone from every adiabatic architecture.
+def test_no_concept_draws_an_ambient_reheater_or_an_anti_icing_valve():
+    """Both LTA-CAES forms take every joule of reheat from the coolant loop.
 
-    They were up to eight extra high-pressure gas/ambient exchangers, and the
-    only ones in the model that paid no air-side pressure drop. Ambient reheat
-    now belongs to AD-CAES alone, where it is the sole discharge heat source,
-    and it carries the AH tag there so E-20x means "water interheater" and
-    nothing else.
+    The direct ambient preheaters are gone: they were up to eight extra
+    high-pressure gas/ambient exchangers, and the only bodies in the model that
+    moved heat into the air without paying an air-side pressure drop. So is the
+    anti-icing valve that used to sit in front of an expander - every expansion
+    in this family is a machine. E-20x therefore means "water interheater" and
+    nothing else, and the only valves on the drawing are the two cavern block
+    valves.
     """
     for offtake in (HeatOfftake.NONE, HeatOfftake.HEAT_USER):
-        adiabatic = pid.layout(PlantConfig(heat_offtake=offtake))
-        assert not adiabatic.of_kind("ambient_heater")
-        assert all(adiabatic.by_tag(f"AH-{201 + i}") is None for i in range(adiabatic.expander_stages))
-
-    diabatic = pid.layout(PlantConfig(mode=PlantMode.DIABATIC))
-    assert len(diabatic.of_kind("ambient_heater")) == diabatic.expander_stages
-    assert all(diabatic.by_tag(f"AH-{201 + i}") for i in range(diabatic.expander_stages))
-    # E-20x is a water interheater, so a diabatic plant must not own one.
-    assert all(diabatic.by_tag(f"E-{201 + i}") is None for i in range(diabatic.expander_stages))
+        diagram = pid.layout(PlantConfig(heat_offtake=offtake))
+        assert not diagram.of_kind("ambient_heater")
+        assert [item.tag for item in diagram.of_kind("valve")] == ["XV-401", "XV-402"]
 
 
 def test_equipment_tags_are_unique():
@@ -147,7 +121,6 @@ def test_equipment_tags_are_unique():
     same thing in every downstream document."""
     for config in (
         PlantConfig(),
-        PlantConfig(mode=PlantMode.DIABATIC),
         PlantConfig(compressor_stages=8, expander_stages=8),
         PlantConfig(heat_offtake=HeatOfftake.HEAT_USER),
     ):
@@ -176,7 +149,6 @@ def test_water_corridors_stay_clear_of_every_symbol():
     "config",
     [
         PlantConfig(),
-        PlantConfig(mode=PlantMode.DIABATIC),
         PlantConfig(compressor_stages=1, expander_stages=1),
         PlantConfig(compressor_stages=6, expander_stages=3),
         PlantConfig(heat_offtake=HeatOfftake.HEAT_USER),

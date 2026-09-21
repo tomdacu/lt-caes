@@ -36,7 +36,7 @@ def test_balanced_m0_predictor_closes_at_ambient(stages):
 ])
 def test_reduced_warm_branch_needs_one_charge_not_a_temperature_grid(override, inventory):
     plant = CAESPlant(replace(PlantConfig(), **override))
-    with patch.object(plant, "_charge_adiabatic", wraps=plant._charge_adiabatic) as charge:
+    with patch.object(plant, "_charge", wraps=plant._charge) as charge:
         result = plant._recover_cold_loop(inventory)
     assert charge.call_count == 1
     assert abs(result.thermal_store.cold_loop_closure_error_k) <= 5e-4

@@ -44,7 +44,7 @@ from math import exp, inf
 
 from .numerics import illinois_residuals, trial_point
 from .models import HeatExchangerPerformance, Process, State
-from .thermodynamics import COOL_ONLY, HEAT_ONLY, air_cp, state_ph
+from .thermodynamics import air_cp, state_ph
 
 # Liquid water, near-incompressible, 20-90 C. Varies by well under 1% over the
 # range this plant uses, so a constant is fine and keeps the water side linear
@@ -239,63 +239,6 @@ def heat_air_with_water(
         heat_to_air_j_per_kg=duty,    # positive: heat ENTERS the air
         heat_exchanger=hx,
     )
-
-
-def exchange_air_with_ambient_ntu(
-    inlet: State,
-    ambient_temperature_k: float,
-    pressure_drop: float,
-    fluid: str,
-    ntu: float,
-    kind: str,
-    direction: str,
-) -> Process:
-    """Finite-NTU exchanger against the atmosphere (D-CAES coolers and reheaters).
-
-    The atmosphere is an *infinite* capacity rate - it does not change
-    temperature - so this is the same shared counter-flow code as the water
-    exchangers with Cr = 0, where the effectiveness collapses to
-    ``1 - exp(-NTU)``.  There is no separate idealised "hit the target
-    temperature" model: NTU = UA/C_air sizes the approach exactly as it does
-    for the water side, which keeps the D-CAES and A-CAES comparisons on the
-    same exchanger discipline.
-
-    ``direction`` is one-way, like the real hardware: a cooler
-    (``COOL_ONLY``) cannot heat air that arrives colder than the atmosphere,
-    and a reheater (``HEAT_ONLY``) cannot chill air that arrives warmer.  In
-    those cases the component degenerates to an isenthalpic pressure drop.
-
-    No :class:`~caes.models.HeatExchangerPerformance` is attached: the second
-    stream is the dead state itself, which is what the exergy module keys on to
-    book the exchanger's irreversibility (heat exchanged with the environment
-    carries zero exergy).
-    """
-    p_out = inlet.pressure_pa * (1.0 - pressure_drop)
-
-    if direction == COOL_ONLY:
-        active = inlet.temperature_k > ambient_temperature_k
-        air_is_hot = True
-    elif direction == HEAT_ONLY:
-        active = inlet.temperature_k < ambient_temperature_k
-        air_is_hot = False
-    else:
-        raise ValueError("ambient exchangers are one-way devices: use COOL_ONLY or HEAT_ONLY")
-
-    if not active or ntu <= 0.0:
-        outlet = state_ph(p_out, inlet.enthalpy_j_per_kg, fluid)
-        return Process(kind, inlet, outlet)
-
-    _, outlet, _ = _counterflow_air_duty(
-        inlet, ambient_temperature_k, inf, p_out, fluid, ntu,
-        air_is_hot_side=air_is_hot,
-    )
-    return Process(
-        kind, inlet, outlet,
-        # q is whatever the enthalpy change turns out to be; by (1) with w = 0.
-        heat_to_air_j_per_kg=outlet.enthalpy_j_per_kg - inlet.enthalpy_j_per_kg,
-    )
-
-
 def water_ratio_for_duty(
     target_duty_j_per_kg_air: float,
     inlet: State,

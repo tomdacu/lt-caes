@@ -1,0 +1,24 @@
+LT-CAES repository description
+------------------------------
+
+Low-temperature adiabatic compressed-air energy storage in two simulatable forms: LTA-CAES with no heat user and LTAHP-CAES with an external heat user, selected by the heat_offtake key. Staged two-tank thermal storage, finite-NTU exchangers, wet-expander screening and exergy accounting.
+
+No-combustion archive description
+---------------------------------
+
+Frozen three-concept screening tool: ambient-diabatic AD-CAES together with LTA and LTAHP-CAES on one normalized basis. Branch no-combustion-caes, tag v2.0.0-no-combustion-caes. Retained for readers who need the diabatic baseline.
+
+GitHub topics
+-------------
+
+caes
+compressed-air-energy-storage
+adiabatic-caes
+low-temperature-caes
+thermal-energy-storage
+exergy-analysis
+district-heating
+heat-recovery
+thermodynamics
+energy-storage
+python

@@ -6,8 +6,6 @@ loudly if the bug is reintroduced. If you are changing caes.plant._summarize or
 caes.exergy, these are the tests that decide whether you got away with it.
 """
 
-from math import exp
-
 import pytest
 
 from caes import (
@@ -15,17 +13,15 @@ from caes import (
     HeatOfftake,
     OptimizationObjective,
     PlantConfig,
-    PlantMode,
 )
 from caes.exergy import air_exergy
-from conftest import LTHP
+from conftest import LTAHP
 
 # A deliberately broad sweep: a low-pressure single-stage train,
-# lopsided stage counts, multiple NTU sizes, both surplus destinations, both
-# modes, and the pressure-drop-free limit.
+# lopsided stage counts, multiple NTU sizes, a duty cycle with tank standing
+# loss, and the pressure-drop-free limit.
 CONFIGURATIONS = [
-    pytest.param(PlantConfig(), id="adiabatic-ntu-default"),
-    pytest.param(PlantConfig(mode=PlantMode.DIABATIC), id="diabatic"),
+    pytest.param(PlantConfig(), id="default-ntu"),
     pytest.param(
         PlantConfig(
             compressor_stages=1,
@@ -37,7 +33,7 @@ CONFIGURATIONS = [
     ),
     pytest.param(PlantConfig(compressor_stages=6, expander_stages=3), id="lopsided-stages"),
     pytest.param(
-        LTHP,
+        LTAHP,
         id="heat-user",
     ),
     pytest.param(
@@ -133,35 +129,13 @@ def test_cold_tank_temperature_is_an_optimized_result():
     assert result.thermal_store.cold_temperature_k > result.discharging.inlet.temperature_k
 
 
-def test_diabatic_aftercooler_is_finite_ntu_and_never_reaches_ambient():
-    """D-CAES coolers used to be idealised to "hit ambient + approach exactly",
-    a free infinite-area exchanger the water-side exchangers never got. They are
-    now finite counter-flow exchangers against the atmosphere (Cr = 0), so the
-    outlet approaches ambient by 1 - exp(-NTU) of the span - and the cavern
-    equilibration step always has the last kelvin or two to do."""
-    config = PlantConfig(mode=PlantMode.DIABATIC, ambient_heat_exchanger_ntu=3.0)
-    result = CAESPlant(config).run()
-    coolers = [p for p in result.charging.processes if p.kind == "intercooling"]
-    assert coolers, "diabatic charging must cool between stages"
-    for cooler in coolers:
-        span = cooler.inlet.temperature_k - config.ambient_temperature_k
-        gap = cooler.outlet.temperature_k - config.ambient_temperature_k
-        assert 0.0 < gap < span
-        # Cr = 0 effectiveness, up to the small variable-cp correction.
-        assert gap / span == pytest.approx(exp(-3.0), rel=0.1)
-
-    # ...and the explicit final aftercooler does the last kelvins and is followed
-    # by the ideal separator used by the moisture controller.
-    assert any(p.kind == "aftercooling" for p in result.charging.processes)
-
-
 def _ambient_heat_split(result):
     """(into the air, out of the air) ambient heat crossing the boundary [J/kg-air].
 
     A process carrying a ``heat_exchanger`` is water-coupled: its duty stays
     inside the plant and is booked by the two-tank balance instead. Everything
-    else that moves heat - the AD coolers, the ambient reheaters, the anti-icing
-    trim, the cavern equilibration - exchanges with the atmosphere.
+    else that moves heat - the cavern equilibration and any residual air/ambient
+    trim left in the train - exchanges with the atmosphere.
     """
     into_air = out_of_air = 0.0
     for cycle in (result.charging, result.discharging):
@@ -270,9 +244,6 @@ def test_water_energy_balance_closes(config):
     then clamped back up on the way into the tank - quietly manufacturing ~10 kJ/kg-air.
     """
     store = CAESPlant(config).run().thermal_store
-    if store is None:
-        return   # diabatic: no water loop to balance
-
     doors = (
         store.delivered_heat_j_per_kg_air
         + store.offtake_heat_j_per_kg_air
@@ -286,7 +257,7 @@ def test_water_energy_balance_closes(config):
         f"water energy balance is short by {gap / 1000:.3f} kJ/kg-air. "
         f"recovered={store.recovered_heat_j_per_kg_air / 1000:.2f} vs "
         f"air={store.delivered_heat_j_per_kg_air / 1000:.2f} + "
-        f"district={store.offtake_heat_j_per_kg_air / 1000:.2f} + "
+        f"heat_user={store.offtake_heat_j_per_kg_air / 1000:.2f} + "
         f"cold_return_rejected={store.cold_return_heat_rejected_to_ambient_j_per_kg_air / 1000:.2f} + "
         f"hot_tank_loss={store.storage_loss_j_per_kg_air / 1000:.2f} + "
         f"cold_tank_loss={store.cold_storage_loss_j_per_kg_air / 1000:.2f}"

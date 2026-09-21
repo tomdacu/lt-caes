@@ -4,7 +4,7 @@
 > **Children:** [Algorithm index](algorithms/README.md) · [Performance registry](09_PERFORMANCE_AND_OPTIMIZATION.md)  
 > **Architecture:** [Single-store extraction architecture](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
 
-The LTA/LTHP solver compares candidate plants on a one-kilogram-air basis. It
+The LTA/LTAHP solver compares candidate plants on a one-kilogram-air basis. It
 does not time-step one fixed exchanger: constant NTU denotes a performance
 class and each candidate implicitly resizes `UA = NTU C_min`.
 
@@ -27,9 +27,6 @@ flowchart LR
     K -->|yes| L[Energy, exergy and feasibility books]
     L --> M[Rank inventory by selected objective]
 ```
-
-AD-CAES does not enter this loop. It always uses finite ambient reheat and a
-turbine/throttle split that respects the icing envelope.
 
 ## Charge block
 

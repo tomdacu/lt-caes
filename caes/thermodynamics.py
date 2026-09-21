@@ -325,23 +325,12 @@ def throttle(
     return Process(kind, inlet, outlet)
 
 
-# Which way an ambient-coupled exchanger is allowed to move the air temperature.
-# This matters because a real exchanger is a one-way device: a fin-fan cooler
-# cannot heat the air back up if the air happens to arrive cold, and an ambient
-# reheater cannot chill it. A *cavern*, by contrast, is a huge isothermal rock
-# mass and will drive the air to its own temperature from either side.
-COOL_ONLY = "cool"
-HEAT_ONLY = "heat"
-BOTH_WAYS = "both"
-
-
 def exchange_with_environment(
     inlet: State,
     target_temperature_k: float,
     pressure_drop: float,
     fluid: str,
     kind: str,
-    direction: str = BOTH_WAYS,
 ) -> Process:
     """Equilibrate the stored air with the cavern rock at constant pressure.
 
@@ -351,25 +340,18 @@ def exchange_with_environment(
     large that treating it as an infinite isothermal boundary is exact for our
     purposes, so no UA or effectiveness is needed.
 
-    The D-CAES ambient coolers and reheaters are NOT modelled here any more:
-    they are finite-NTU exchangers living in
-    :func:`caes.heat_exchangers.exchange_air_with_ambient_ntu`, so that both
-    plant concepts are sized by the same NTU discipline.
+    The coolant/ambient recovery body is NOT modelled here: E-303 lives in
+    :class:`caes.heat_exchangers.CoolantAmbientExchanger`, sized by the same
+    NTU discipline as every air/coolant exchanger.
 
-    The cavern must be free to heat the air as well as cool it, which is what
-    ``BOTH_WAYS`` is for.  ``direction`` guards against one-way behaviour: if
-    the air is already past the target in the allowed direction, the component
-    degenerates into a plain pressure drop, which is isenthalpic (a throttle:
-    q = w = 0, so h_out = h_in by (1)).
+    The cavern is free to heat the air as well as cool it: it is a huge
+    isothermal rock mass, and the component degenerates into a plain pressure
+    drop when the air already sits at the target, which is isenthalpic (a
+    throttle: q = w = 0, so h_out = h_in by (1)).
     """
     p_out = inlet.pressure_pa * (1.0 - pressure_drop)
 
-    if direction == COOL_ONLY:
-        active = target_temperature_k < inlet.temperature_k
-    elif direction == HEAT_ONLY:
-        active = target_temperature_k > inlet.temperature_k
-    else:  # BOTH_WAYS - the exchanger drags the air to the target from either side.
-        active = abs(target_temperature_k - inlet.temperature_k) > 1e-9
+    active = abs(target_temperature_k - inlet.temperature_k) > 1e-9
 
     outlet = state_pt(p_out, target_temperature_k, fluid) if active else state_ph(p_out, inlet.enthalpy_j_per_kg, fluid)
     return Process(

@@ -55,7 +55,7 @@ class Process:
     positive means "into the air".
     """
 
-    kind: str                            # compression | intercooling | aftercooling | interheating | expansion | throttling | ambient_reheat | ambient_anti_icing_reheat | interheater_pressure_drop
+    kind: str                            # compression | intercooling | aftercooling | interheating | expansion | throttling | interheater_pressure_drop
     inlet: State
     outlet: State
     work_j_per_kg: float = 0.0
@@ -376,18 +376,17 @@ class MoistureSummary:
 
 @dataclass
 class PlantResult:
-    mode: str
     charging: Cycle
     discharging: Cycle
-    thermal_store: TwoTankSummary | None       # None in diabatic mode: there is no coolant loop
+    thermal_store: TwoTankSummary
     exergy: ExergySummary
-    heat_offtake: HeatOfftakeSummary | None = None   # None unless an offtake is configured
+    heat_offtake: HeatOfftakeSummary | None = None   # None for LTA: no heat user is installed
     # E-304. Present exactly when a heat user is dispatched: without one there
     # is no trunk to stage, because the only sink for the descent would be the
     # plant's own cold return and warming it buys nothing.
     extraction_exchanger: ExtractionExchangerSummary | None = None
     optimization: OptimizationSummary | None = None
-    external_heat_input_j_per_kg: float = 0.0  # ambient energy; zero-exergy at the selected dead state
+    external_heat_input_j_per_kg: float = 0.0  # E-303 ambient recovery; zero-exergy at the selected dead state
     moisture: MoistureSummary | None = None        # diagnostic only; dry-air energy balance is unchanged
 
     @property
@@ -420,9 +419,8 @@ class PlantResult:
         energy stream the plant harvests is free, so none of it is a cost and
         none of it belongs here:
 
-          * the AD-CAES ambient reheat duty or the adiabatic concept's
-            heat-only E-303 coolant recovery
-            (both reported as ``external_heat_input_j_per_kg``), and
+          * the heat-only E-303 coolant recovery into the returning coolant
+            (reported as ``external_heat_input_j_per_kg``), and
           * the energy the air stream itself hands over when the exhaust leaves
             below intake enthalpy - intake and exhaust are both at p0 and the
             intake is at T0, so that is ``h(T0, p0) - h_exhaust``, worth up to

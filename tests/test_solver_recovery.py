@@ -105,7 +105,7 @@ def test_lta_feasible_allocation_between_original_n_plus_one_candidates():
     config = replace(PlantConfig(), heat_offtake=HeatOfftake.NONE,
                      coolant_minimum_temperature_c=40., coolant_maximum_temperature_c=300.)
     plant = CAESPlant(config)
-    _, store = plant._charge_adiabatic(333.15, 1.)
+    _, store = plant._charge(333.15, 1.)
     design = plant._discharge_absorbing(store)
     assert sum(ratio for ratio, _, _ in design.returns) == pytest.approx(1., abs=2e-6)
     assert min(temperature for _, temperature, _ in design.returns) >= 313.15-1e-4

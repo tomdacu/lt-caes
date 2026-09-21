@@ -1,21 +1,24 @@
-from caes.config import PlantMode
+from caes import HeatOfftake
 from caes.nomenclature import (
-    LTHP_LABEL,
+    HEAT_OFFTAKE_LABELS,
+    LTAHP_LABEL,
     LTA_LABEL,
     plant_concept_label,
-    plant_mode_label,
 )
 
 
-def test_concept_labels_separate_machine_values_from_user_text():
-    """The machine value is stable; the label is the only thing users read."""
-    assert plant_mode_label(PlantMode.DIABATIC) == "AD-CAES (ambient diabatic)"
-    assert plant_mode_label(PlantMode.ADIABATIC).startswith("LTA/LTHP-CAES")
+def test_the_heat_user_flag_names_the_concept():
+    """One plant, two products: the off-take flag is the only thing that changes
+    the name a reader sees, because it is the only thing that changes the plant."""
+    assert plant_concept_label(exports_heat=False) == LTA_LABEL
+    assert plant_concept_label(exports_heat=True) == LTAHP_LABEL
+    assert HEAT_OFFTAKE_LABELS[HeatOfftake.NONE].endswith(LTA_LABEL)
+    assert HEAT_OFFTAKE_LABELS[HeatOfftake.HEAT_USER].endswith(LTAHP_LABEL)
 
-    # The heat flag, not the mode value, is what names the concept.
-    assert plant_concept_label("adiabatic") == LTA_LABEL
-    assert plant_concept_label("adiabatic", exports_heat=True) == LTHP_LABEL
-    assert (
-        plant_concept_label("diabatic", exports_heat=True)
-        == plant_mode_label(PlantMode.DIABATIC)
-    )
+
+def test_every_label_keeps_the_low_temperature_adiabatic_stem():
+    """LTA and LTAHP differ by what the stored heat does, never by how it is
+    stored, so no label may drop the stem that says what the family is."""
+    labels = (LTA_LABEL, LTAHP_LABEL, *HEAT_OFFTAKE_LABELS.values())
+    for label in labels:
+        assert "low-temperature adiabatic" in label

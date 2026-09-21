@@ -16,7 +16,6 @@ python -m caes
 
 ```powershell
 python -m caes.cli
-python -m caes.cli --mode diabatic
 python -m caes.cli --config counterflow_example_config.json
 python -m caes.cli --config heat_and_power_example_config.json
 python -m caes.cli --plot artifacts/cycle.png
@@ -31,12 +30,15 @@ title block.
 `--sankey` writes the energy Sankey and exergy Grassmann diagrams side by side
 in one PNG.
 
-Add `--explain-config` to print which fields are active and dormant under the
-selected model. Generate a clean starting file with:
+Generate a clean starting file with:
 
 ```powershell
 python -m caes.cli --write-default-config my_config.json
 ```
+
+`--explain-config` prints every configuration field with its group and whether
+it is active for the selected off-take: with `heat_offtake = "none"` the
+E-302/E-304 group is dormant, with `"heat_user"` it is active.
 
 Configuration files saved by the GUI and files passed to `--config` use one
 shared JSON format and are fully interchangeable.
@@ -59,8 +61,7 @@ The application provides:
 - separate **Energy Sankey** and **Exergy Sankey (Grassmann)** tabs, each with
   an explicit boundary-closure residual;
 - stage tables with air/coolant states and exergy destruction;
-- normalized efficiency, exergy, coolant-limit, E-303 recovery and AD-CAES
-  throttling results;
+- normalized efficiency, exergy, coolant-limit and E-303 recovery results;
 - ambient-energy input, useful-energy delivery ratio and coolant freezing
   margin.
 
@@ -83,7 +84,7 @@ applied.
 
 After a run, check that every expansion process reaches the wet-rated lower
 envelope (+10 degC in the permitted liquid region or local frost point plus
-10 K), every throttle remains above the unmargined freezing/frost hard floor,
+10 K),
 the mixed return reaches the optimized cold tank after `E-303` and tank
 standing, every coolant state remains between `coolant_minimum_temperature_c`
 and `coolant_maximum_temperature_c`, and the sum of charging ratios
@@ -99,18 +100,26 @@ intermediate knock-out/drain cannot be removed unless the compressor OEM
 explicitly guarantees wet ingestion. The final unit is the only special
 deep-cooling/drying duty; intermediate separators are bulk-liquid devices.
 
-### Compare AD-CAES and LTA-CAES
+### Study LTA-CAES
 
-Keep machinery, pressure, and stage inputs unchanged and switch only `mode`.
-The same compressor/storage/expander backbone is retained. Both concepts use
-the same wet-expander anti-icing envelope. AD-CAES is fuel-free and combines
-ambient reheat, maximum safe turbine work and isenthalpic throttling; LTA-CAES
-routes compression heat through the pressurized two-tank coolant loop. E-303
-can only warm the coldest sub-ambient returns; it never rejects heat. Neither
-concept carries E-304: without a heat user there is nothing to sell off the top
-of the trunk, so there is no reason to stage it.
+Start from `counterflow_example_config.json`. With `heat_offtake = "none"` the
+plant carries no user side: the complete hot-store inventory reaches the
+interheaters at the one stored temperature, and both E-302 and E-304 are absent.
+E-303 can only warm the coldest sub-ambient returns; it never rejects heat.
 
-### Study LTHP-CAES
+The no-user form is its own point, not a flag flipped on the LTAHP defaults:
+switching `heat_offtake` to `"none"` on those parameters is refused with
+`no closed two-tank design`, because nothing in that plant can absorb the stored
+heat once the turbines have taken their share. `heat_exchanger_ntu`,
+`cold_return_cooler_ntu`, the stage counts, the storage pressure and the tank
+losses all move that feasibility boundary.
+
+`max_electric_efficiency` is the form's normal objective. Read the electrical
+RTE together with the exergy books, the coolant-limit margins and the E-303
+ambient absorption; useful-exergy efficiency stays reported as the bounded
+guard metric.
+
+### Study LTAHP-CAES
 
 Start from `heat_and_power_example_config.json`. Its process order is:
 
@@ -124,8 +133,7 @@ hot TES -> E-302 heat-user HX (whole trunk, sells the top band)
 cavern air -> coolant interheater -> turbine
 ```
 
-There is no ambient exchanger on the air side: AD-CAES ambient reheat is
-mandatory and applies only to the diabatic concept. Select
+There is no ambient exchanger on the air side in either form. Select
 `max_combined_energy_delivery` to
 maximize electricity plus district heat per unit of charging work. Compare the
 off-take duty, electrical RTE, useful exergy efficiency, E-303 ambient absorption and coldest
@@ -138,10 +146,10 @@ stream.
 - Total useful exergy efficiency is useful exergy out (expansion + district
   heat) over compression-work exergy in.
 - Useful-energy delivery ratio is `(W_exp + Q_DH) / W_comp`, and it is the only
-  energy metric. Its denominator is purchased electricity alone: the AH-20x
-  ambient duty and the energy an exhaust below intake enthalpy carries in are
-  both free, so neither is charged to it. It may therefore exceed one, and it
-  is not a thermodynamic
+  energy metric. Its denominator is purchased electricity alone: the ambient
+  heat E-303 absorbs and the energy an exhaust below intake enthalpy carries in
+  are both free, so neither is charged to it. It may therefore exceed one, and
+  it is not a thermodynamic
   efficiency. Read the closed boundary balance off the Energy Sankey tab
   instead, and the bounded figure off the exergy efficiency.
 - Heat at ambient temperature is positive energy but approximately zero exergy

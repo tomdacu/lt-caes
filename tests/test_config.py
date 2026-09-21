@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from caes import PlantConfig, PlantMode, load_config, save_config
+from caes import HeatOfftake, PlantConfig, load_config, save_config
 from caes.logic import active_fields
 
 
@@ -54,12 +54,6 @@ def test_physical_storage_loss_inputs_must_be_nonnegative(field, value):
         PlantConfig(**{field: value})
 
 
-@pytest.mark.parametrize("field", ("ambient_heat_exchanger_ntu",))
-def test_diabatic_inputs_must_be_positive(field):
-    with pytest.raises(ValueError, match=field):
-        PlantConfig(**{field: 0.0})
-
-
 @pytest.mark.parametrize(
     ("field", "value"),
     (("coolant_maximum_temperature_c", -90.0), ("coolant_minimum_temperature_c", -300.0)),
@@ -69,21 +63,33 @@ def test_direct_coolant_limits_are_validated(field, value):
         PlantConfig(**{field: value})
 
 
-def test_coolant_limits_are_active_only_for_the_coolant_tes():
-    assert "coolant_maximum_temperature_c" in active_fields(PlantConfig())
-    assert "cold_return_cooler_ntu" in active_fields(PlantConfig())
-    assert "coolant_maximum_temperature_c" not in active_fields(
-        PlantConfig(mode=PlantMode.DIABATIC)
-    )
+def test_the_heat_user_is_the_only_axis_that_dormants_fields():
+    """LTA and LTAHP are one plant: installing a user cannot silence the coolant
+    inputs, and removing it must silence exactly the E-302/E-304 group."""
+    lta = active_fields(PlantConfig(heat_offtake=HeatOfftake.NONE))
+    for field in ("coolant_maximum_temperature_c", "cold_return_cooler_ntu",
+                  "heat_exchanger_ntu", "optimization_objective"):
+        assert field in lta
+    for field in ("heat_user_supply_temperature_c", "heat_user_return_temperature_c",
+                  "heat_user_exchanger_ntu", "extraction_exchanger_ntu"):
+        assert field not in lta
+
+    ltahp = active_fields(PlantConfig(heat_offtake=HeatOfftake.HEAT_USER))
+    for field in ("heat_user_supply_temperature_c", "extraction_exchanger_ntu"):
+        assert field in ltahp
 
 
-@pytest.mark.parametrize("retired", ("coolant_cascade_groups", "thermal_storage_levels"))
-def test_retired_cascade_group_counts_load_with_a_warning(retired):
-    """Old cascade files keep loading: the count is ignored, not remapped.
+@pytest.mark.parametrize(
+    "retired",
+    ("coolant_cascade_groups", "thermal_storage_levels", "ambient_heat_exchanger_ntu"),
+)
+def test_retired_fields_load_with_a_warning(retired):
+    """Old files keep loading: a retired key is ignored, never remapped.
 
-    The hot store is one mixed state and the user side is one exchanger plus
-    one extraction per stage, so a grouping count has nothing left to control;
-    silently copying it into another field would alter the experiment.
+    The hot store is one mixed state, the user side is one exchanger plus one
+    extraction per stage, and the adiabatic train has no air/ambient exchanger
+    at all; each key therefore has nothing left to control, and silently
+    copying its value into another field would alter the experiment.
     """
     from caes import config_from_dict
 
@@ -91,6 +97,23 @@ def test_retired_cascade_group_counts_load_with_a_warning(retired):
         config = config_from_dict({retired: 3})
 
     assert config == PlantConfig()
+
+
+def test_a_retired_mode_key_selects_nothing_or_stops_the_load(tmp_path):
+    """A record of an adiabatic experiment still loads; a diabatic record must
+    NOT be answered with a different plant while pretending to read it."""
+    path = tmp_path / "old.json"
+    path.write_text(
+        json.dumps({**PlantConfig().to_dict(), "mode": "adiabatic"}), encoding="utf-8"
+    )
+    with pytest.warns(DeprecationWarning, match="mode"):
+        assert load_config(path) == PlantConfig()
+
+    path.write_text(
+        json.dumps({**PlantConfig().to_dict(), "mode": "diabatic"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="diabatic"):
+        load_config(path)
 
 
 @pytest.mark.parametrize(

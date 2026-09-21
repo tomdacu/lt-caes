@@ -15,22 +15,15 @@ from .constants import (
 )
 
 
-class PlantMode(str, Enum):
-    """Thermal architecture of the plant."""
-
-    ADIABATIC = "adiabatic"
-    DIABATIC = "diabatic"
-
-
 class OptimizationObjective(str, Enum):
     """Objective used to optimize the normalized water/air mass ratio.
 
-    AD-CAES and LTA-CAES maximize electrical round-trip efficiency (with no
-    heat user, maximum electrical work and maximum useful exergy are the same
-    dispatch).  LTHP-CAES maximizes the combined electricity-plus-heat
-    delivery ratio.  Total useful exergy efficiency remains a reported
-    metric, but is no longer a selectable objective: it either coincides with
-    one of these two or misclassifies the free ambient heat input.
+    LTA-CAES (no heat user) maximizes electrical round-trip efficiency: with no
+    external demand, maximum electrical work and maximum useful exergy are the
+    same dispatch.  LTAHP-CAES maximizes the combined electricity-plus-heat
+    delivery ratio.  Total useful exergy efficiency remains a reported metric,
+    but is not a selectable objective: it either coincides with one of these two
+    or misclassifies the free ambient heat input.
     """
 
     MAX_ELECTRIC_EFFICIENCY = "max_electric_efficiency"
@@ -81,7 +74,6 @@ class PlantConfig:
     """
 
     # Plant and boundary conditions.
-    mode: PlantMode = PlantMode.ADIABATIC
     ambient_temperature_c: float = 15.0
     ambient_pressure_bar: float = 1.01325
     ambient_relative_humidity: float = 0.60
@@ -95,20 +87,9 @@ class PlantConfig:
     expander_efficiency: float = 0.85
     intercooler_pressure_drop: float = 0.02
     interheater_pressure_drop: float = 0.02
-    # Ambient heat exchange. AD-CAES ONLY: it rejects compression heat through
-    # fin-fans and scavenges ambient heat before each fuel-free expansion, and
-    # that is the whole of its discharge heat supply. The adiabatic concepts
-    # take every joule of reheat from the coolant loop; they used to carry
-    # optional AH-20x preheaters ahead of each interheater, and those are gone.
-    # Every ambient exchanger is a finite counter-current HX against the
-    # atmosphere (infinite capacity rate), sized by its own NTU - the same
-    # discipline as the coolant-side exchangers, no idealized approach target.
-    ambient_heat_exchanger_ntu: float = 5.0
-    # A-CAES two-tank coolant loop.  AD-CAES always uses the ambient reheat
-    # path; it is not a selectable operating mode because disabling it drives
-    # the expansion train below the icing-safe temperature envelope.
-
-    # A-CAES two-tank coolant loop.
+    # A-CAES two-tank coolant loop.  Every joule of turbine reheat comes from
+    # stored compression heat; there is no air/ambient exchanger anywhere in
+    # this train, and the AH-20x preheaters it used to carry are gone.
     heat_exchanger_ntu: float = 5.0
     # One finite coolant-to-ambient recovery exchanger (E-303). The solver
     # places it on the best contiguous suffix of interheater returns, before
@@ -146,7 +127,6 @@ class PlantConfig:
     extraction_exchanger_ntu: float = 5.0
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "mode", PlantMode(self.mode))
         object.__setattr__(self, "heat_offtake", HeatOfftake(self.heat_offtake))
         objective = self.optimization_objective
         if isinstance(objective, str) and objective == _LEGACY_EXERGY_OBJECTIVE:
@@ -184,7 +164,6 @@ class PlantConfig:
             "ambient_pressure_bar",
             "storage_pressure_bar",
             "heat_exchanger_ntu",
-            "ambient_heat_exchanger_ntu",
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -251,7 +230,7 @@ class PlantConfig:
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        for name in ("mode", "optimization_objective", "heat_offtake"):
+        for name in ("optimization_objective", "heat_offtake"):
             data[name] = getattr(self, name).value
         return data
 
@@ -289,17 +268,55 @@ _REMOVED_LEGACY_FIELDS = {
         "the hot store is always one mixed state, so no level count is "
         "configurable"
     ),
+    "ambient_heat_exchanger_ntu": (
+        "the adiabatic train has no air/ambient exchanger at all: every joule "
+        "of turbine reheat comes from the stored coolant, and E-303 is the only "
+        "coolant/ambient body"
+    ),
 }
 
 _LEGACY_FIELD_NAMES.update({
     "coolant_freezing_temperature_c": "coolant_minimum_temperature_c",
 })
 
+# The thermal architecture is no longer a configuration axis: this package
+# simulates the low-temperature ADIABATIC family only.  A record of an adiabatic
+# experiment still loads, because the key no longer selects anything.  A
+# diabatic record must NOT be migrated into this plant while pretending to read
+# it - that concept has no thermal store at all, so the solver would answer a
+# different question than the file asks.
+_LEGACY_MODE_KEY = "mode"
+_LEGACY_ADIABATIC_MODE = "adiabatic"
+
+
+def _translate_legacy_plant_mode(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop the retired ``mode`` key, refusing a non-adiabatic record."""
+
+    if _LEGACY_MODE_KEY not in data:
+        return data
+    requested = str(data[_LEGACY_MODE_KEY])
+    if requested != _LEGACY_ADIABATIC_MODE:
+        raise ValueError(
+            f"configuration selects mode '{requested}', which this package does "
+            "not simulate: it contains the low-temperature adiabatic family "
+            "only (LTA without a heat user, LTAHP with one). The diabatic "
+            "concept is kept in the frozen no-combustion-caes archive"
+        )
+    warnings.warn(
+        "configuration field 'mode' was removed: the low-temperature adiabatic "
+        "family is the only architecture here, so the key has nothing left to "
+        "select",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return {key: value for key, value in data.items() if key != _LEGACY_MODE_KEY}
+
 
 def config_from_dict(data: dict[str, Any]) -> PlantConfig:
     """Build a configuration from the JSON-compatible public schema."""
     if not isinstance(data, dict):
         raise ValueError("configuration root must be a JSON object")
+    data = _translate_legacy_plant_mode(data)
     translated: dict[str, Any] = {}
     for key, value in data.items():
         if key in _REMOVED_LEGACY_FIELDS:

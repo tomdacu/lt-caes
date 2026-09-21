@@ -8,21 +8,27 @@
 
 The interface, reports and P&ID use the same names everywhere:
 
-- **AD-CAES (ambient diabatic)**;
 - **LTA-CAES (low-temperature adiabatic CAES)**;
-- **LTHP-CAES (low-temperature heat and power CAES)**.
+- **LTAHP-CAES (low-temperature adiabatic heat and power CAES)**.
 
-The JSON and Python values remain the stable compatibility values shown in the
-table below (`diabatic`, `adiabatic`, `none`, and `heat_user`). The labels are
-presentation text only; changing them does not invalidate existing studies.
+The two names are labels for one plant selected by `heat_offtake`, whose JSON
+and Python values are the stable compatibility values `none` and `heat_user`.
+The labels are presentation text only; changing them does not invalidate
+existing studies. There is no `mode` field and no `PlantMode` enum in the
+schema: the off-take is the only architectural switch.
+
+A legacy `"mode": "adiabatic"` key in an old JSON file is **ignored with a
+deprecation warning**, so records written before the split still load.
+`"mode": "diabatic"` is **rejected** with a clear error, because the ambient
+diabatic concept is not part of this line.
 
 `caes.logic` is shared by the GUI and CLI and is the source of truth for active
-and dormant inputs. JSON keeps the stable low-level enum values; concept names
-are derived from their combination.
+and dormant inputs. JSON keeps the stable low-level enum value; the concept
+name is derived from it.
 
 ## Current brainstorming defaults
 
-Reset Defaults opens the LTHP reference point requested for configuration
+Reset Defaults opens the LTAHP reference point requested for configuration
 screening: six compressor and six expander stages, 85.8 bar storage pressure
 (`2.1^6` rounded to one decimal), all active exchanger NTUs equal to 5, direct
 coolant limits -80/200 degC, 80/45 degC heat user, zero
@@ -32,11 +38,14 @@ real candidate fluids must replace them with characterized limits/properties.
 
 ## Concept mapping
 
-| Concept | `mode` | `heat_offtake` | Ambient reheat | Example file |
-|---|---|---|---|---|
-| AD-CAES | `diabatic` | dormant / `none` | always enabled; otherwise expansion temperatures violate the icing envelope | `--mode diabatic` |
-| LTA-CAES | `adiabatic` | `none` | dormant | concept option; each point must prove a heat-only closed loop |
-| LTHP-CAES | `adiabatic` | `heat_user` | dormant | `heat_and_power_example_config.json` |
+| Concept | `heat_offtake` | Ambient reheat | Example file |
+|---|---|---|---|
+| LTA-CAES | `none` | none; the plant must close on the coolant loop alone | `counterflow_example_config.json` |
+| LTAHP-CAES | `heat_user` | none; the heat user is the off-take sink | `heat_and_power_example_config.json` |
+
+Neither form has an air-side ambient exchanger; the one ambient exchanger in
+the model is the heat-only E-303 on the coolant return, sized by
+`cold_return_cooler_ntu` and active in both forms.
 
 The off-take enum value is `heat_user`. The older `district_heating` still
 loads and maps to it, as do the older `district_heating_supply_temperature_c`,
@@ -61,25 +70,23 @@ effectiveness would be invalid. See
 [document 08](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md) and the
 [architecture specification](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md).
 
-`ambient_heat_exchanger_ntu` is the only AD-CAES recovery input. Ambient
-reheat is mandatory: a no-reheat expansion would drive the air below the
-icing-safe temperature envelope. There is no switch or alternate no-reheat
-branch in the public schema or solver.
+`ambient_heat_exchanger_ntu` belongs to the ambient diabatic concept and no
+longer exists in the schema. An old JSON file carrying it still loads: the key
+is ignored with a deprecation warning, because this line has no air-side
+ambient exchanger for it to size.
 
-Equipment tags follow: `AH-20x` is an ambient reheater and exists only in
-AD-CAES, `E-20x` is a coolant interheater and exists only in the adiabatic
-concepts. The two used to share the `E-20x` band, which made "the reheater"
-mean two different devices depending on which concept was being drawn.
+Equipment tags follow: `E-20x` is a coolant interheater. It once shared a tag
+band with the ambient reheaters an earlier revision carried, which made "the
+reheater" mean two different devices depending on which concept was being
+drawn.
 
-Machinery, boundary pressure/temperature, and ambient humidity are active for
-all concepts. AD-CAES activates ambient-HX NTU and its turbine/throttle
-controls; coolant-loop, tank, objective, and heat-off-take fields are dormant.
-LTA activates the coolant HX, E-303, circuit limits, tanks, and objective.
-LTHP additionally activates the E-302 heat-user temperatures and exchanger NTU
-fields; it does not activate air-side ambient recovery.
+Machinery, boundary pressure/temperature, ambient humidity, the coolant loop,
+E-303, circuit limits, tanks and the objective are active in both forms.
+LTA leaves the heat-user fields dormant; LTAHP additionally activates the E-302
+heat-user temperatures, `heat_user_exchanger_ntu` and `extraction_exchanger_ntu`.
 
-`heat_exchanger_ntu`, `ambient_heat_exchanger_ntu`,
-`cold_return_cooler_ntu`, and `heat_user_exchanger_ntu` select exchanger performance classes at the plant
+`heat_exchanger_ntu`, `cold_return_cooler_ntu`, `heat_user_exchanger_ntu` and
+`extraction_exchanger_ntu` select exchanger performance classes at the plant
 design point. For every different candidate plant the corresponding exchanger
 is implicitly resized so that `UA_design = NTU * C_min,design`. These fields do
 not describe one fixed core operated off-design while the optimizer changes
@@ -98,9 +105,9 @@ T_hard(p) = 0 degC       when the local phase boundary permits liquid
 T_out,min(p) = T_hard(p) + 10 K
 ```
 
-AD-CAES takes the maximum safe turbine pressure drop and throttles the
-remainder. LTA/LTHP supplies stage-specific coolant duty; LTHP sells the top of
-the trunk through E-302 and then stages the rest to the interheaters in E-304. The 0.1 wt% possible-condensate
+LTA/LTAHP supplies stage-specific coolant duty: LTAHP sells the top of the
+trunk through E-302 and then stages the rest to the interheaters in E-304. The
+0.1 wt% possible-condensate
 screen protects only the discharge-side dry-air approximation. See
 [Moisture, dew point, and wet expansion](06_MOISTURE_DEW_POINT_AND_WET_EXPANSION.md).
 
@@ -142,18 +149,18 @@ as an independent knob would over-constrain the model.
 
 The active objectives are:
 
-- `max_electric_efficiency` - normal AD/LTA policy;
-- `max_combined_energy_delivery` - normal LTHP policy, maximizing
+- `max_electric_efficiency` - normal LTA policy;
+- `max_combined_energy_delivery` - normal LTAHP policy, maximizing
   `(W_exp + Q_DH)/W_comp`.
 
-For LTHP the objective is also a dispatch instruction. With
+For LTAHP the objective is also a dispatch instruction. With
 `max_electric_efficiency` both E-302 and E-304 are bypassed (`Q_user = 0`) and
 the full hot-coolant inventory is available to the interheaters at the one
 stored temperature. With `max_combined_energy_delivery` both bodies are active:
 the user receives everything above the first extraction, and E-304 recuperates
 the descent below it into the coolant return.
 Because E-303 is heat-only, bypass operation is feasible only if the turbine
-train itself leaves a periodic coolant loop; the default LTHP point needs the
+train itself leaves a periodic coolant loop; the default LTAHP point needs the
 user as a real heat sink and correctly rejects electricity-only dispatch.
 
 The delivery ratio is the single energy metric. It may exceed one when ambient

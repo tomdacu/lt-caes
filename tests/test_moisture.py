@@ -2,7 +2,7 @@
 
 import pytest
 
-from caes import CAESPlant, HeatOfftake, PlantConfig, PlantMode
+from caes import CAESPlant, HeatOfftake, PlantConfig
 from caes.moisture import (
     compressor_moisture_inventory,
     expander_moisture_inventory,
@@ -119,9 +119,8 @@ def test_default_ambient_humidity_has_expected_dew_point():
     assert dew_point_c == pytest.approx(7.31, abs=0.05)
 
 
-@pytest.mark.parametrize("mode", [PlantMode.ADIABATIC, PlantMode.DIABATIC])
-def test_charge_moisture_balance_closes_and_storage_boundary_varies_with_pressure(mode):
-    result = CAESPlant(PlantConfig(mode=mode)).run()
+def test_charge_moisture_balance_closes_and_storage_boundary_varies_with_pressure():
+    result = CAESPlant(PlantConfig()).run()
     moisture = result.moisture
     assert moisture is not None
     assert moisture.inlet_water_vapor_kg_per_kg_dry_air == pytest.approx(
@@ -162,84 +161,68 @@ def test_final_aftercooler_and_separator_remove_cavern_liquid_risk():
     cooler that actually condenses, and the local saturation ratio at its own
     outlet state.
     """
-    adiabatic = CAESPlant(PlantConfig(mode=PlantMode.ADIABATIC)).run()
-    diabatic = CAESPlant(PlantConfig(mode=PlantMode.DIABATIC)).run()
-
-    for result in (adiabatic, diabatic):
-        moisture = result.moisture
-        assert moisture is not None
-        assert moisture.surface_separator_water_kg_per_kg_dry_air > 0.0
-        condensers = [
-            process
-            for process in result.charging.processes
-            if process.kind in {"intercooling", "aftercooling"}
-            and process.outlet.temperature_k < process.inlet.temperature_k - 1e-9
-        ]
-        assert condensers, "the default trains must condense somewhere"
-        final = condensers[-1]
-        assert moisture.stored_air_water_vapor_kg_per_kg_dry_air == pytest.approx(
-            saturation_humidity_ratio(
-                final.outlet.pressure_pa, final.outlet.temperature_k
-            ),
-            rel=1e-12,
-        )
-        assert (
-            moisture.stored_air_water_vapor_kg_per_kg_dry_air
-            < moisture.inlet_water_vapor_kg_per_kg_dry_air
-        )
+    result = CAESPlant(PlantConfig()).run()
+    moisture = result.moisture
+    assert moisture is not None
+    assert moisture.surface_separator_water_kg_per_kg_dry_air > 0.0
+    condensers = [
+        process
+        for process in result.charging.processes
+        if process.kind in {"intercooling", "aftercooling"}
+        and process.outlet.temperature_k < process.inlet.temperature_k - 1e-9
+    ]
+    assert condensers, "the default train must condense somewhere"
+    final = condensers[-1]
+    assert moisture.stored_air_water_vapor_kg_per_kg_dry_air == pytest.approx(
+        saturation_humidity_ratio(
+            final.outlet.pressure_pa, final.outlet.temperature_k
+        ),
+        rel=1e-12,
+    )
+    assert (
+        moisture.stored_air_water_vapor_kg_per_kg_dry_air
+        < moisture.inlet_water_vapor_kg_per_kg_dry_air
+    )
 
 
 def test_single_final_separator_would_feed_liquid_to_intermediate_compressors():
-    adiabatic = CAESPlant(PlantConfig(mode=PlantMode.ADIABATIC)).run()
-    diabatic = CAESPlant(PlantConfig(mode=PlantMode.DIABATIC)).run()
+    # The heat-user form is the one whose intermediate coolers see genuinely
+    # cold water: E-302 and E-304 take the top of the trunk, so the returns that
+    # reach the charging train are colder than the final separator's basis.
+    result = CAESPlant(PlantConfig()).run()
 
-    a_final_only = compressor_moisture_inventory(
-        adiabatic,
+    final_only = compressor_moisture_inventory(
+        result,
         separate_after_each_cooler=False,
     )
-    d_final_only = compressor_moisture_inventory(
-        diabatic,
-        separate_after_each_cooler=False,
-    )
-    d_every_cooler = compressor_moisture_inventory(
-        diabatic,
+    every_cooler = compressor_moisture_inventory(
+        result,
         separate_after_each_cooler=True,
     )
 
-    a_suction_liquid = {
-        point.equipment_tag: point.condensed_water_mass_fraction
-        for point in a_final_only
-        if point.position == "suction"
-    }
-    d_suction_liquid = {
-        point.equipment_tag: point.condensed_water_mass_fraction
-        for point in d_final_only
-        if point.position == "suction"
-    }
-    d_protected_suction_liquid = [
+    suction_liquid_in_order = [
         point.condensed_water_mass_fraction
-        for point in d_every_cooler
+        for point in final_only
+        if point.position == "suction"
+    ]
+    protected_suction_liquid = [
+        point.condensed_water_mass_fraction
+        for point in every_cooler
         if point.position == "suction"
     ]
 
     # These bounds state the CLAIM - that a single final separator leaves a
-    # materially wet suction on the last adiabatic bodies and on every diabatic
-    # one - rather than pinning the solver's exact numbers.  The adiabatic
-    # values move with the optimized water inventory, so a tight pin here fails
-    # for reasons that have nothing to do with moisture.
-    a_suction_liquid_in_order = list(a_suction_liquid.values())
-    assert max(a_suction_liquid_in_order[:-2]) == pytest.approx(0.0)
-    assert min(a_suction_liquid_in_order[-2:]) > 2e-4  # >0.02 wt%
-    d_suction_liquid_in_order = list(d_suction_liquid.values())
-    assert d_suction_liquid_in_order[0] == pytest.approx(0.0)
-    assert min(d_suction_liquid_in_order[1:]) > 1e-3  # every later body >0.1 wt%
-    assert d_suction_liquid_in_order[-1] > 5e-3  # final body >0.5 wt%
-    assert max(d_protected_suction_liquid) == pytest.approx(0.0)
+    # materially wet suction on the last bodies - rather than pinning the
+    # solver's exact numbers.  The values move with the optimized water
+    # inventory, so a tight pin here fails for reasons that have nothing to do
+    # with moisture.
+    assert max(suction_liquid_in_order[:-2]) == pytest.approx(0.0)
+    assert min(suction_liquid_in_order[-2:]) > 2e-4  # >0.02 wt%
+    assert max(protected_suction_liquid) == pytest.approx(0.0)
 
 
-@pytest.mark.parametrize("mode", [PlantMode.ADIABATIC, PlantMode.DIABATIC])
-def test_default_expander_inventory_stays_inside_reference_inlet_liquid_cap(mode):
-    result = CAESPlant(PlantConfig(mode=mode)).run()
+def test_default_expander_inventory_stays_inside_reference_inlet_liquid_cap():
+    result = CAESPlant(PlantConfig()).run()
     points = expander_moisture_inventory(result)
     assert points
 

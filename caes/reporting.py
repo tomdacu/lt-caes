@@ -271,7 +271,7 @@ def summary_rows(result: PlantResult) -> list[tuple[str, str]]:
         (
             "Plant concept",
             plant_concept_label(
-                result.mode, exports_heat=result.heat_offtake is not None
+                exports_heat=result.heat_offtake is not None
             ),
         ),
         ("Analysis basis", "1 kg of charged/discharged air"),

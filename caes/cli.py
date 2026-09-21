@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .config import PlantConfig, PlantMode, load_config, save_config
+from .config import PlantConfig, load_config, save_config
 from .logic import FIELD_RULES, active_fields
 from .plant import CAESPlant
 from .reporting import save_sankey_plots, save_thermodynamic_plots, summary
@@ -14,7 +14,6 @@ from .thermodynamics import PropertyAPI
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run normalized CAES efficiency and exergy analysis.")
     parser.add_argument("--config", type=Path, help="JSON configuration file")
-    parser.add_argument("--mode", choices=[mode.value for mode in PlantMode], help="override plant mode")
     parser.add_argument(
         "--property-api",
         choices=[api.value for api in PropertyAPI],
@@ -33,10 +32,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     config = load_config(args.config) if args.config else PlantConfig()
-    if args.mode:
-        data = config.to_dict()
-        data["mode"] = args.mode
-        config = PlantConfig(**data)
     if args.explain_config:
         active = active_fields(config)
         for name, rule in FIELD_RULES.items():

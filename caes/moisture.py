@@ -619,12 +619,10 @@ def expander_moisture_inventory(
     """Water wt-fractions at each identifiable expander suction and discharge.
 
     The generated P&ID removes equilibrium condensate after the final pressure
-    reduction of each stage. A-CAES stages are identified by their water
-    ``interheating`` process, including DH trains that have an
-    ``ambient_reheat`` immediately before it. D-CAES stages are identified by
-    ``ambient_reheat`` only when no coolant interheaters exist. If every reheater
-    is disabled, the reduced process list does not retain enough stage-boundary
-    metadata and this diagnostic safely returns an empty tuple.
+    reduction of each stage. Every stage is identified by its water
+    ``interheating`` process. If every reheater is disabled, the reduced process
+    list does not retain enough stage-boundary metadata and this diagnostic
+    safely returns an empty tuple.
     """
 
     moisture = result.moisture
@@ -637,11 +635,7 @@ def expander_moisture_inventory(
         for index, process in enumerate(processes)
         if process.kind == "interheating"
     ]
-    stage_starts = water_stage_starts or [
-        index
-        for index, process in enumerate(processes)
-        if process.kind == "ambient_reheat"
-    ]
+    stage_starts = water_stage_starts
     if not stage_starts:
         return ()
 

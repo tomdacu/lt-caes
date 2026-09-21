@@ -6,13 +6,13 @@ import tkinter as tk
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import fields
 from multiprocessing import freeze_support, get_context
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from .config import (
     OptimizationObjective,
     PlantConfig,
-    PlantMode,
     HeatOfftake,
     load_config,
     save_config,
@@ -22,23 +22,18 @@ from .logic import FIELD_RULES, active_fields, grouped_fields
 from .models import PlantResult, Process
 from .nomenclature import (
     HEAT_OFFTAKE_LABELS,
-    LTHP_LABEL,
+    LTAHP_LABEL,
     LTA_LABEL,
-    PLANT_MODE_LABELS,
     plant_concept_label,
 )
 from .plant import CAESPlant
 from .reporting import summary_rows
 
 ENUM_TYPES = {
-    "mode": PlantMode,
     "optimization_objective": OptimizationObjective,
     "heat_offtake": HeatOfftake,
 }
 ENUM_DISPLAY = {
-    "mode": {
-        mode.value: label for mode, label in PLANT_MODE_LABELS.items()
-    },
     "optimization_objective": {
         OptimizationObjective.MAX_ELECTRIC_EFFICIENCY.value: "Maximum electrical RTE",
         OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY.value: "Maximum electricity + DH heat",
@@ -55,6 +50,30 @@ INTEGER_FIELDS = {
     "compressor_stages",
     "expander_stages",
 }
+
+
+# Artwork lives at the repository root rather than inside the package: it
+# ships with the source tree and with the GitHub release, not with the wheel.
+_WINDOW_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "lt-caes-icon.png"
+# Tk drops an image that nothing references, so the window keeps this one alive.
+_WINDOW_ICON: "tk.PhotoImage | None" = None
+
+
+def _apply_window_icon(window: tk.Tk) -> None:
+    """Show the project mark on the window when the artwork is available.
+
+    Purely cosmetic: missing artwork, or a Tk built without PNG support, must
+    leave a usable window rather than stop the application from starting.
+    """
+    global _WINDOW_ICON
+
+    if not _WINDOW_ICON_PATH.is_file():
+        return
+    try:
+        _WINDOW_ICON = tk.PhotoImage(file=str(_WINDOW_ICON_PATH))
+    except tk.TclError:
+        return
+    window.iconphoto(True, _WINDOW_ICON)
 
 
 def _is_bool_field(field: Any) -> bool:
@@ -74,9 +93,10 @@ def _solve_config(config: PlantConfig) -> PlantResult:
 class CAESGUI(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Normalized CAES Simulator - AD / LTA / LTHP")
+        self.title("LT-CAES simulator - low-temperature adiabatic CAES (LTA / LTAHP)")
         self.geometry("1420x900")
         self.minsize(1120, 700)
+        _apply_window_icon(self)
         self._values = PlantConfig().to_dict()
         self._widgets: dict[str, ttk.Widget] = {}
         self._variables: dict[str, tk.Variable] = {}
@@ -547,7 +567,7 @@ class CAESGUI(tk.Tk):
                     self._draw_thermodynamic_diagrams(result)
                     self._populate_tables(result)
                     self._status.set(
-                        f"Complete: {plant_concept_label(result.mode, exports_heat=result.heat_offtake is not None)}, "
+                        f"Complete: {plant_concept_label(exports_heat=result.heat_offtake is not None)}, "
                         f"RTE={result.round_trip_efficiency:.2%}"
                     )
 
@@ -738,13 +758,13 @@ class CAESGUI(tk.Tk):
     def _about(self) -> None:
         messagebox.showinfo(
             "About",
-            "Normalized simulator for three CAES plant concepts:\n\n"
-            "- AD-CAES (ambient diabatic): fuel-free; discharge heat comes "
-            "only from the atmosphere.\n"
-            f"- {LTA_LABEL}: compression heat is "
-            "stored in a two-tank coolant loop and returned to the turbines.\n"
-            f"- {LTHP_LABEL}: the LTA store "
-            "additionally exports heat to a district network through E-302.\n\n"
+            "Normalized simulator for the low-temperature adiabatic CAES "
+            "family, in two forms that differ only by the heat user:\n\n"
+            f"- {LTA_LABEL}: compression heat is stored in a two-tank coolant "
+            "loop and returned to the turbines.\n"
+            f"- {LTAHP_LABEL}: E-302 additionally exports the top of the store "
+            "to an external heat user, and E-304 stages what is left down to "
+            "the interheaters.\n\n"
             "The study builds on published LTA-CAES research (Wolf & Budt and "
             "successors). All results are normalized per kilogram of air; no "
             "economic or time-domain model is included.",

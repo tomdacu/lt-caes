@@ -5,13 +5,12 @@ import pytest
 from caes import (
     CAESPlant,
     PlantConfig,
-    PlantMode,
     HeatOfftake,
     OptimizationObjective,
 )
 from caes.heat_exchangers import WATER_CP_J_PER_KGK
 from caes.logic import active_fields
-from conftest import LTHP, assert_expander_envelope
+from conftest import LTAHP
 
 
 def test_normalized_two_tank_cycle_closes_energy_and_pressure():
@@ -63,31 +62,36 @@ def test_tes_header_temperatures_are_mass_weighted_branch_mixtures():
     )
 
 
-def test_diabatic_and_adiabatic_share_machinery_but_not_thermal_store():
-    common = dict(compressor_stages=3, expander_stages=3, storage_pressure_bar=60.0)
-    adiabatic = CAESPlant(PlantConfig(mode=PlantMode.ADIABATIC, **common)).run()
-    diabatic = CAESPlant(PlantConfig(mode=PlantMode.DIABATIC, **common)).run()
-    assert adiabatic.thermal_store is not None
-    assert diabatic.thermal_store is None
-    assert diabatic.round_trip_efficiency > 0.0
-    assert (
-        adiabatic.round_trip_efficiency
-        > diabatic.exergy.total_useful_exergy_efficiency
+def test_heat_offtake_hardware_is_bypassed_under_the_electrical_objective():
+    """With electricity as the objective, the two forms are ONE plant.
+
+    Same stage counts, same storage pressure, same objective: the heat-user form
+    must give the same round-trip efficiency as the no-user form, because
+    electricity-first operation bypasses E-302 and E-304 rather than selling a
+    small, unwanted heat stream. The only surviving difference is the product the
+    result carries: LTAHP reports a heat of-take with nothing sold through it,
+    LTA reports none.
+
+    The train is the suite's cheap single-stage recipe: one stage only closes at
+    a gentle pressure ratio, and the higher material cap is what lets the
+    intercooler reach it.
+    """
+    common = dict(
+        compressor_stages=1,
+        expander_stages=1,
+        storage_pressure_bar=30.0,
+        coolant_maximum_temperature_c=450.0,
+        optimization_objective=OptimizationObjective.MAX_ELECTRIC_EFFICIENCY,
     )
+    lta = CAESPlant(PlantConfig(heat_offtake=HeatOfftake.NONE, **common)).run()
+    lta_hp = CAESPlant(PlantConfig(heat_offtake=HeatOfftake.HEAT_USER, **common)).run()
 
-
-def test_fuel_free_diabatic_cycle_uses_maximum_safe_expansion_then_throttling():
-    with_reheat = CAESPlant(PlantConfig(mode=PlantMode.DIABATIC)).run()
-    result = with_reheat
-    assert not any(p.kind == "gas_topping" for p in result.discharging.processes)
-    assert any(p.kind == "throttling" for p in result.discharging.processes)
-    assert any(p.kind == "ambient_reheat" for p in result.discharging.processes)
-    assert abs(result.exergy.balance_residual_j_per_kg_air) < 1.0
-    # A valve may consume the 10 K margin before downstream ambient trim, but it
-    # may never cross the freezing/frost hard floor.
-    assert_expander_envelope(result, include_throttling=True)
-
-    assert result.external_heat_input_j_per_kg > 0.0
+    assert lta.heat_offtake is None
+    assert lta_hp.heat_offtake is not None
+    assert lta_hp.heat_offtake.heat_j_per_kg_air == pytest.approx(0.0, abs=1e-9)
+    assert lta_hp.round_trip_efficiency == pytest.approx(
+        lta.round_trip_efficiency, rel=1e-9
+    )
 
 
 def test_cold_tank_standing_loss_follows_the_same_decay_law_as_the_hot_tank():
@@ -129,9 +133,9 @@ def test_cold_tank_standing_loss_follows_the_same_decay_law_as_the_hot_tank():
 def test_heat_only_e303_does_not_rescue_a_default_plant_without_heat_sink():
     with pytest.raises(ValueError, match="no closed two-tank design"):
         CAESPlant(PlantConfig(heat_offtake=HeatOfftake.NONE)).run()
-    selling = CAESPlant(LTHP).run()
+    selling = CAESPlant(LTAHP).run()
 
-    # The LTHP topology supplies the real high-grade sink instead of silently
+    # The LTAHP topology supplies the real high-grade sink instead of silently
     # turning E-303 back into a rejection cooler.
     assert selling.thermal_store.offtake_heat_j_per_kg_air > 0.0
     assert selling.exergy.total_useful_exergy_efficiency > selling.round_trip_efficiency
@@ -194,17 +198,16 @@ def test_coolant_minimum_limit_and_low_freezing_screening_input():
 
 
 def test_adiabatic_air_train_has_no_direct_ambient_reheater():
-    """LTHP takes every joule of direct air reheat from the coolant loop.
+    """LTAHP takes every joule of direct air reheat from the coolant loop.
 
-    The AH-20x ambient preheaters are gone. They were up to eight extra
-    high-pressure gas/ambient exchangers ahead of the water interheaters, and
-    they were the only exchangers in the model that moved heat into the air
-    without paying an air-side pressure drop - which quietly flattered the
-    district-heating concept against AD-CAES, where the same device does pay
-    AD-CAES ambient reheat is mandatory, but has no effect on these adiabatic
-    concepts.
+    The direct ambient preheaters are gone from the family. They were up to
+    eight extra high-pressure gas/ambient exchangers ahead of the water
+    interheaters, and they were the only exchangers in the model that moved heat
+    into the air without paying an air-side pressure drop - which quietly
+    flattered whichever concept carried them. Both surviving forms reheat from
+    the coolant loop alone.
     """
-    result = CAESPlant(LTHP).run()
+    result = CAESPlant(LTAHP).run()
 
     assert result.external_heat_input_j_per_kg == pytest.approx(
         result.thermal_store.cold_return_heat_absorbed_from_ambient_j_per_kg_air

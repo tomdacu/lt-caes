@@ -161,7 +161,7 @@ withdrawal: [Applied Energy cavern-moisture study](https://www.sciencedirect.com
 
 ## 4. The wet-expander operating envelope
 
-All three concepts use one water-tolerant radial-expander screening basis.
+Both forms use one water-tolerant radial-expander screening basis.
 Liquid condensation may occur in a wet-rated body; ice may not. For protected
 vapour ratio `w` and local pressure `p`:
 
@@ -223,9 +223,9 @@ to the OEM.
 The following tables were regenerated with the current code for 15 degC,
 60% RH, 1.01325 to 100 bar, four compression stages, four expansion stages,
 and the 15 degC final aftercooler. Wet-stream mass is the denominator for wt%.
-The inlet is 0.630630 wt% water; both concepts finish with
+The inlet is 0.630630 wt% water; the train finishes with
 `w = 0.000106109038 kg/kg-dry-air`, or **0.010609778 wt%** stored vapour, and
-remove 6.240212 g/kg-dry-air.
+removes 6.240212 g/kg-dry-air.
 
 ### LTA-CAES charge train
 
@@ -251,33 +251,6 @@ E-103, E-104, and AC-101 require liquid removal. With only a final separator,
 K-104 would ingest 0.089206 wt% liquid; predicted re-evaporation in the hot
 body is not an acceptable design credit.
 
-### AD-CAES charge train
-
-| Connection | Pressure | Temperature | Vapour | Liquid before separator |
-|---|---:|---:|---:|---:|
-| K-101 suction | 1.013 bar | 15.00 degC | 0.630630 wt% | 0 |
-| K-101 discharge | 3.259 bar | 148.78 degC | 0.630630 wt% | 0 |
-| E-101 outlet | 3.194 bar | 21.73 degC | 0.507805 wt% | 0.122824 wt% |
-| K-102 suction, after separation | 3.194 bar | 21.73 degC | 0.508430 wt% | 0 |
-| K-102 discharge | 10.271 bar | 158.70 degC | 0.508430 wt% | 0 |
-| E-102 outlet | 10.066 bar | 22.27 degC | 0.165782 wt% | 0.342648 wt% |
-| K-103 suction, after separation | 10.066 bar | 22.27 degC | 0.166352 wt% | 0 |
-| K-103 discharge | 32.375 bar | 160.00 degC | 0.166352 wt% | 0 |
-| E-103 outlet | 31.727 bar | 22.44 degC | 0.053218 wt% | 0.113134 wt% |
-| K-104 suction, after separation | 31.727 bar | 22.44 degC | 0.053278 wt% | 0 |
-| K-104 discharge | 102.041 bar | 161.39 degC | 0.053278 wt% | 0 |
-| E-104 outlet | 100.000 bar | 22.89 degC | 0.017358 wt% | 0.035920 wt% |
-| AC-101 outlet | 100.000 bar | 15.00 degC | 0.010609 wt% | 0.006756 wt% |
-
-Every ambient intercooler condenses water. Retain a knock-out/demister and
-automatic drain after each. In the single-final-separator counterfactual,
-K-102, K-103, and K-104 would ingest 0.122824, 0.465052, and 0.577659 wt%
-liquid respectively, while AC-101 would finally receive 0.620086 wt% liquid.
-That scenario is only an equilibrium screen and is invalid for the dry
-compressor model. Atlas Copco's ZR/ZT package similarly places moisture
-separation and drains between stages
-([flow description](https://www.atlascopco.com/content/dam/atlas-copco/compressor-technique/oil-free-air/documents/zrzt-200-355-vsd-plus.pdf)).
-
 ### Expansion inventory
 
 The envelope enforcement holds the final charge-side humidity ratio fixed for
@@ -287,43 +260,24 @@ the next stage. Reported downstream liquid fractions are therefore
 systematically lower than the conservative enforcement basis; the current UI
 does not flag that distinction at each row.
 
-| Concept / expander | Suction P / T | Discharge P / T | Vapour suction / discharge | Liquid suction / discharge |
+| Expander | Suction P / T | Discharge P / T | Vapour suction / discharge | Liquid suction / discharge |
 |---|---:|---:|---:|---:|
 | LTA T-201 | 98.000 bar / 122.63 degC | 31.727 bar / 27.30 degC | 0.010610 / 0.010610 wt% | 0 / 0 |
 | LTA T-202 | 31.092 bar / 121.39 degC | 10.066 bar / 28.14 degC | 0.010610 / 0.010610 wt% | 0 / 0 |
 | LTA T-203 | 9.865 bar / 117.21 degC | 3.194 bar / 25.66 degC | 0.010610 / 0.010610 wt% | 0 / 0 |
 | LTA T-204 | 3.130 bar / 112.78 degC | 1.013 bar / 22.50 degC | 0.010610 / 0.010610 wt% | 0 / 0 |
-| AD T-201, bypassed | 98.000 bar / 14.67 degC | no turbine drop | 0.010597 / 0.010597 wt% | 0.000013 / 0.000013 wt% |
-| AD T-202 | 31.092 bar / 14.83 degC | 27.851 bar / 6.98 degC | 0.010610 / 0.010610 wt% | 0 / 0 |
-| AD T-203 | 9.865 bar / 14.33 degC | 7.039 bar / -8.42 degC | 0.010610 / 0.010610 wt% | 0 / 0 |
-| AD T-204 | 3.130 bar / 13.76 degC | 1.801 bar / -22.03 degC | 0.010610 / 0.010610 wt% | 0 / 0 |
 
-The tiny AD T-201 suction liquid follows the 100-to-98 bar reheater pressure
-drop and remains far below the 1 wt% reference suction cap. MS-201 through
-MS-204 provide off-design protection against cavern carryover, transients, and
-non-equilibrium droplets. One dedicated final deep-cooling/drying duty suffices
+MS-201 through MS-204 provide off-design protection against cavern carryover,
+transients, and non-equilibrium droplets. One dedicated final deep-cooling/drying duty suffices
 to guarantee cavern PDP; E-104 and AC-101 may share a casing if the vendor
 preserves their separate thermal duties. Dryers and separators are deliberately
 omitted from the simplified generated P&ID.
 
-## 6. AD-CAES throttle/valve moisture rules
-
-AD-CAES takes the maximum pressure drop that a wet-rated turbine can accept at
-each stage. If full expansion would cross the margined line, it expands only
-to the safe intermediate pressure and throttles the rest isenthalpically. A
-downstream ambient trim reheater restores the 10 K margin where possible. A
-bypassed turbine means its scheduled pressure drop is assigned to the throttle.
-
-The bulk throttle outlet may consume the engineering margin but may never
-cross the unmargined liquid/frost hard floor. Detailed valve sizing must also
-verify local throat and wall temperatures during steady operation, start-up,
-and transients; a safe bulk outlet alone does not prove local ice immunity.
-
-## 7. Real-plant drying arrangement
+## 6. Real-plant drying arrangement
 
 The 93-151 kg/s range in compressed-air drying guidance is a generic CAES
 equipment-sizing reference. The separate **169.7 kg/s** value is the dry-air
-flow obtained by scaling the supplied LTHP example to a 70 MW compressor shaft
+flow obtained by scaling the supplied LTAHP example to a 70 MW compressor shaft
 input (`70 MW / 412.58 kJ/kg-air`). They are not two estimates for one plant.
 
 A defensible low-cost baseline is staged cooling and bulk separation:
@@ -339,7 +293,7 @@ A defensible low-cost baseline is staged cooling and bulk separation:
 5. Use a refrigerated dryer near +3 degC PDP when surface cooling cannot meet
    the guarantee. Use heat-of-compression adsorption at -20 or -40 degC PDP
    only when a quantified icing, corrosion, or cavern requirement justifies
-   its cost and loss of heat otherwise available to LTA/LTHP TES.
+   its cost and loss of heat otherwise available to LTA/LTAHP TES.
 
 Conventional separators collect about 80-90% of precipitated water, so the
 ideal 100% diagnostic requires a real high-efficiency demister/coalescer and a
@@ -360,7 +314,7 @@ class 2 is -40 degC, and class 1 is -70 degC. These are pressure dew points,
 not atmospheric equivalents
 ([ISO air-quality guide](https://www.atlascopco.com/content/dam/atlas-copco/compressor-technique/oil-free-air/documents/ISO_regulations_%20best_practices_%20guide_air_quality.pdf)).
 
-## 8. Reading the graph overlays
+## 7. Reading the graph overlays
 
 The T-s, h-s, and p-h plots use:
 

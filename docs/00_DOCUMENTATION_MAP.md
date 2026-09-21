@@ -3,7 +3,9 @@
 > **Parent:** [project README](../README.md)  
 > **Purpose:** start here and follow links toward implementation detail
 
-This repository is a configuration brainstorming and screening tool. A fixed
+This repository is a configuration brainstorming and screening tool for the two
+forms of low-temperature adiabatic CAES, LTA (`heat_offtake = "none"`) and
+LTAHP (`heat_offtake = "heat_user"`). A fixed
 NTU selects an exchanger performance class; each candidate implicitly resizes
 the exchanger as `UA_design = NTU_selected C_min,design`.
 
@@ -46,5 +48,5 @@ the exchanger as `UA_design = NTU_selected C_min,design`.
 - [Research map](research/README.md)
 - [LTA-CAES literature](research/LITERATURE.md)
 - [People, groups and related software](research/PEOPLE_AND_GROUPS.md)
-- [LTHP-CAES and Denmark](research/LTHP_CAES_AND_DENMARK.md)
-- [LTHP heat rejection and cogeneration](research/LTHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
+- [LTAHP-CAES and Denmark](research/LTAHP_CAES_AND_DENMARK.md)
+- [LTAHP heat rejection and cogeneration](research/LTAHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)

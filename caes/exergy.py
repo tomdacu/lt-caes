@@ -37,7 +37,7 @@ DEAD STATE
 ----------
 (T0, p0) = ambient temperature and pressure from the config. Note that we use
 *physical* (thermo-mechanical) exergy for the air and water streams. The
-fuel-free D-CAES working stream remains dry ``Air`` with unchanged composition.
+working stream remains dry ``Air`` with unchanged composition.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def air_exergy(state: State, ambient_temperature_k: float, ambient_pressure_pa: 
     is squeezed, (7) prices both.
 
     e >= 0 always, and e = 0 only at the dead state. In particular COLD air has
-    positive exergy: the exhaust leaving a D-CAES expander at -57 C is a genuine
+    positive exergy: an expander exhaust leaving at -57 C is a genuine
     (if awkward) asset that this plant throws away, and (7) counts it.
     """
     h0, s0 = _dead_state(ambient_temperature_k, ambient_pressure_pa, fluid)

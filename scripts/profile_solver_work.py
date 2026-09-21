@@ -79,7 +79,6 @@ def profile(config: PlantConfig, property_api: PropertyAPI) -> dict[str, Any]:
     processes = result.charging.processes + result.discharging.processes
     return {
         "property_api": property_api.value,
-        "mode": result.mode,
         "expander_stages": config.expander_stages,
         "heat_offtake": config.heat_offtake.value,
         "diagnostic_seconds": elapsed,

@@ -4,12 +4,14 @@
 > **Children:** [Physics boundary](02_PHYSICS_AND_MODEL_BOUNDARY.md) · [Theory and objectives](11_THEORY_AND_DESIGN_OBJECTIVES.md)  
 > **Related:** [Configuration logic](05_CONFIGURATION_LOGIC.md)
 
-This is the plant-level reference for the three architectures implemented in
-this repository:
+This is the plant-level reference for the two forms of the low-temperature
+adiabatic family implemented in this repository:
 
-1. **AD-CAES (ambient diabatic)**;
-2. **LTA-CAES (low-temperature adiabatic CAES)**;
-3. **LTHP-CAES (low-temperature heat and power CAES)**.
+1. **LTA-CAES (low-temperature adiabatic CAES)**, `heat_offtake = "none"`;
+2. **LTAHP-CAES (low-temperature adiabatic heat and power CAES)**,
+   `heat_offtake = "heat_user"`.
+
+Both forms run the same plant; the off-take is the only structural difference.
 
 The program is a configuration-brainstorming and thermodynamic-screening tool.
 Every run is one independently sized candidate plant, not another operating
@@ -17,22 +19,21 @@ point of a single fixed plant. Its comparisons are meant to select concepts,
 expose coupled parameters and delimit feasible regions before component
 geometry, cost, controls and off-design operation are introduced.
 
-LTHP-CAES always has an external HEAT USER, and that user is deliberately
+LTAHP-CAES always has an external HEAT USER, and that user is deliberately
 generic. It is specified by the temperature it wants, the temperature it
 returns, and the exchanger NTU class, which describe a
 district-heating network, an industrial process loop, an absorption chiller, a
 greenhouse or a dryer equally well. District heating is the most likely
 application, not the model's subject, and nothing in the solver assumes it.
-The name says so: low-temperature HEAT AND POWER CAES.
+The name says so: low-temperature ADIABATIC heat and power CAES.
 
-LTHP-CAES always has an off-take. Direct process-air ambient reheat belongs to
-AD-CAES alone: the adiabatic concepts take every joule of turbine reheat from
-the coolant loop, while heat-only E-303 may warm selected cold coolant returns.
-The AH-20x ambient preheaters LTHP used to carry were removed
-because they were up to eight extra high-pressure gas/ambient exchangers with
-their fans and controls, and because they were modelled with zero air-side
-pressure drop while every other exchanger in the train paid one - which
-flattered LTHP against AD-CAES, where the same device does pay it.
+LTA-CAES and LTAHP-CAES share one adiabatic plant: every joule of turbine
+reheat comes from the coolant loop, and heat-only E-303 may warm selected cold
+coolant returns. Neither form has an air-side ambient exchanger, so the ambient
+reheaters an earlier revision of LTAHP carried are gone - they were up to eight
+extra high-pressure gas/ambient exchangers with their fans and controls, and
+they were modelled with zero air-side pressure drop while every other exchanger
+in the train paid one.
 
 The analysis basis is one kilogram of dry process air. Mass-flow and plant-power
 results are obtained by multiplying specific quantities by dry-air mass flow.
@@ -65,8 +66,8 @@ eta_exergy = (W_exp + B_DH) / W_comp
 ```
 
 `R_delivery` prices only the electricity the plant buys. Every ambient stream it
-harvests is free and therefore stays out of the denominator: the AD-CAES
-ambient reheat duty (structurally zero in the adiabatic concepts) and the energy
+harvests is free and therefore stays out of the denominator: the ambient heat
+E-303 absorbs into the returning coolant and the energy
 the air itself hands over when the exhaust leaves below intake enthalpy, a
 heat-pump-like effect worth up to about 49 kJ/kg-air in the supplied
 configurations. So `R_delivery` **may exceed 100%**, exactly as a
@@ -81,7 +82,7 @@ See
 
 ## Common thermodynamic boundary
 
-All three plants include:
+Both forms include:
 
 - ambient inlet air;
 - staged real-gas compression;
@@ -120,14 +121,12 @@ as a positive product.
 | M-101 / W-101 | compressor motor / grid import tie |
 | V-401 | compressed-air cavern |
 | XV-401 / XV-402 | charge and discharge wellhead block valves |
-| AH-20x | ambient reheaters (AD-CAES only; its sole discharge heat source) |
 | TK-301 | one mixed hot coolant store |
 | E-302 | the single heat-user exchanger, crossed by the whole trunk |
 | E-304 | the extraction exchanger: one counter-current body, one bleed per expansion stage |
 | H-301 | the external heat user, whatever it is |
-| E-20x | coolant interheaters (adiabatic concepts only) |
+| E-20x | coolant interheaters |
 | T-20x | expander bodies |
-| TV-20x | isenthalpic throttle valves (AD-CAES) |
 | MS-20x | moisture separators/demisters |
 | G-201 / W-201 | generator / grid export tie |
 | S-201 | exhaust stack to atmosphere |
@@ -149,64 +148,7 @@ P&ID, which shows thermodynamic process equipment exclusively:
 
 Every other tag above is drawn.
 
-## 1. AD-CAES (ambient diabatic)
-
-### Physical cycle
-
-During charging, every intercooler rejects compression heat to atmosphere.
-There is no thermal store. During discharge, a finite ambient-air exchanger
-warms process air that is colder than ambient. The turbine takes the maximum
-pressure drop compatible with the wet-expander anti-icing envelope. If the
-complete scheduled pressure ratio is unsafe, an isenthalpic valve completes
-the remaining pressure reduction. No fuel or combustion is used.
-
-```mermaid
-flowchart LR
-    E0[Grid electricity] --> C[Staged compressors]
-    A0[Ambient air] --> C
-    C --> IC[Ambient intercoolers]
-    IC --> FC[Final cooler]
-    FC --> CAS[Compressed-air cavern]
-    CAS --> AH[Finite ambient reheaters]
-    ENV[Ambient thermal reservoir] -. "Q ambient > 0; B_Q approximately 0" .-> AH
-    AH --> TURB[Wet-rated turbines]
-    TURB --> VALVE[Anti-icing throttles when required]
-    VALVE --> EXH[Exhaust to atmosphere]
-    TURB --> G[Generator electricity]
-```
-
-### Left-to-right exergy flow
-
-```mermaid
-flowchart LR
-    WIN["Input exergy: W_comp"] --> COMP["Compression"]
-    COMP -->|"compressed-air exergy"| COOL["Intercooling and final cooling"]
-    COMP -->|"I_comp"| DEST["Exergy destruction"]
-    COOL -->|"remaining air exergy"| CAV["Cavern air"]
-    COOL -->|"I_cool; rejected heat reaches T0"| DEST
-    AMB["Ambient heat energy Q_amb"] -. "heat exergy B_Q approximately 0" .-> REH["Ambient reheat"]
-    CAV --> REH
-    REH -->|"air physical exergy"| EXP["Expansion and throttling"]
-    REH -->|"I_ambient-HX"| DEST
-    EXP -->|"W_exp"| WOUT["Electricity product"]
-    EXP -->|"I_turb + I_throttle"| DEST
-    EXP -->|"B_exhaust"| LOSS["Unused exhaust exergy"]
-```
-
-The ambient arrow is deliberately dotted: ambient heat changes the energy
-balance but does not provide positive exergy at the chosen dead state. Heating
-a below-ambient stream can actually destroy part of its cold physical exergy.
-
-### Main performance limitations
-
-- all compression heat is rejected;
-- finite ambient-HX NTU prevents exact return to ambient temperature;
-- pressure losses reduce both stored-air exergy and expansion work;
-- throttling preserves anti-icing safety but produces no shaft work;
-- moisture and frost limits can prevent the full turbine pressure ratio;
-- exhaust air may leave with unused physical exergy.
-
-## 2. LTA-CAES (low-temperature adiabatic CAES)
+## 1. LTA-CAES (low-temperature adiabatic CAES)
 
 ### Physical cycle
 
@@ -331,7 +273,7 @@ validated glycol model. A real blend changes:
 
 Vendor property tables must replace the reference constants before detailed design.
 
-## 3. LTHP-CAES (low-temperature heat and power CAES)
+## 2. LTAHP-CAES (low-temperature adiabatic heat and power CAES)
 
 ### Why the component order matters
 
@@ -384,8 +326,8 @@ On the air side, each expansion stage uses:
 previous turbine outlet -> coolant interheater E-20x -> turbine T-20x
 ```
 
-There is no ambient exchanger in this train. The low-grade duty that AH-20x used
-to supply was a genuine demand, and E-304 is the WATER side answering it.
+There is no ambient exchanger in this train. The low-grade duty each interheater
+must supply is a genuine demand, and E-304 is the WATER side answering it.
 
 ```mermaid
 flowchart LR
@@ -505,7 +447,7 @@ R_delivery = (W_exp + Q_DH) / W_comp
 instead of making HX profile parallelism the primary ranking criterion.
 Profile spread remains reported for equipment sizing.
 
-An LTHP plant at 200 bar with eight stages, `heat_exchanger_ntu = 100`,
+An LTAHP plant at 200 bar with eight stages, `heat_exchanger_ntu = 100`,
 an 80/45 degC heat user and a -30 degC antifreeze demonstrates:
 
 - `R_delivery = 121.9%`, well above unity;
@@ -649,10 +591,9 @@ For each normalized total coolant inventory, the solver:
    coolant-loop root from the previous inventory rather than rescanning.
 
 The selected objective always ranks feasible designs. LTA-CAES normally
-maximizes electrical work. LTHP-CAES normally maximizes useful-energy delivery.
+maximizes electrical work. LTAHP-CAES normally maximizes useful-energy delivery.
 Useful-exergy efficiency and HX-profile spread are reported guard and design
-metrics, not alternative hidden ranking criteria. AD-CAES has no coolant-loop
-search: its turbine/throttle dispatch is solved directly.
+metrics, not alternative hidden ranking criteria.
 
 ## Scaling to a 70 MW plant
 
@@ -679,7 +620,7 @@ grid-to-grid result:
 - cavern wells and control valves;
 - district-network pumps.
 
-For the above-unity LTHP example, the normalized result is
+For the above-unity LTAHP example, the normalized result is
 `w_comp = 627.83 kJ/kg-air`. A 70 MW compressor shaft input therefore
 corresponds to approximately `111.5 kg/s` dry air and, on the present
 shaft-only boundary:

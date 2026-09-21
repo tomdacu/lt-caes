@@ -1,4 +1,4 @@
-"""Normalized AD-CAES and two-tank coolant LTA/LTHP-CAES cycle solver.
+"""Normalized low-temperature adiabatic CAES (LTA / LTAHP) cycle solver.
 
 The adiabatic model is a *closed coolant cycle*. It solves these physical
 constraints together:
@@ -54,9 +54,8 @@ coolant loop.  The AH-20x ambient preheaters that used to sit ahead of each cool
 interheater in the district-heating concept have been removed: they were up to
 eight extra high-pressure gas/ambient exchangers with their fans and controls,
 and they were modelled with zero air-side pressure drop while every other
-exchanger in the train paid one.  Ambient reheat remains in AD-CAES
-(:meth:`CAESPlant._simulate_diabatic`), where it is the only heat source there
-is.
+exchanger in the train paid one.  Nothing here takes process heat from the
+atmosphere: the only coolant/ambient body left is E-303, and it is heat-only.
 """
 
 from __future__ import annotations
@@ -67,14 +66,13 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from math import exp
 
-from .config import HeatOfftake, OptimizationObjective, PlantConfig, PlantMode
+from .config import HeatOfftake, OptimizationObjective, PlantConfig
 from .constants import MINIMUM_FROST_CORRELATION_TEMPERATURE_K
 from .exergy import air_exergy, process_exergy_destruction, water_exergy
 from .heat_exchangers import (
     WATER_CP_J_PER_KGK,
     counterflow_effectiveness,
     cool_air_with_water,
-    exchange_air_with_ambient_ntu,
     heat_air_with_water,
     water_ratio_for_duty,
 )
@@ -104,9 +102,6 @@ from .thermal_limits import (
     wet_expander_hard_floor_temperature_k,
 )
 from .thermodynamics import (
-    BOTH_WAYS,
-    COOL_ONLY,
-    HEAT_ONLY,
     PropertyAPI,
     compress,
     exchange_with_environment,
@@ -257,7 +252,7 @@ class _DischargeDesign:
 
 @dataclass(frozen=True)
 class _DischargeRequirement:
-    """Invariant minimum-duty air trajectory for one LTHP expansion stage.
+    """Invariant minimum-duty air trajectory for one LTAHP expansion stage.
 
     ``heater_outlet_temperature_k`` is the air temperature this stage's
     interheater must produce for the following expander to land exactly on its
@@ -337,7 +332,7 @@ class CAESPlant:
         """Electricity-first dispatch: use all high-grade heat in the turbines.
 
         Both E-302 and E-304 are absent in LTA-CAES and bypassed in
-        electricity-first LTHP-CAES. In both cases every kilogram from the hot
+        electricity-first LTAHP-CAES. In both cases every kilogram from the hot
         tank goes directly to an interheater branch, at the one stored
         temperature.
 
@@ -346,15 +341,11 @@ class CAESPlant:
         so E-304 would warm the cold tank, capture less compression heat and
         raise compressor work in exchange for nothing sellable.
 
-        Combined-delivery LTHP instead keeps the minimum moisture-safe turbine
+        Combined-delivery LTAHP instead keeps the minimum moisture-safe turbine
         duty, so E-302 can export the band above the first extraction while
         E-304 feeds each stage a supply matched to its own demand.
         """
-        c = self.config
-        return (
-            c.mode is PlantMode.ADIABATIC
-            and not self._dispatches_heat_to_user()
-        )
+        return not self._dispatches_heat_to_user()
 
     def _dispatches_heat_to_user(self) -> bool:
         """Whether this solve routes coolant through E-302 and E-304.
@@ -362,15 +353,14 @@ class CAESPlant:
         The two stand or fall together: E-304 exists to let the user keep the
         hot end of the store, and without a user there is nothing for it to do.
 
-        ``heat_offtake`` describes installed/selected LTHP hardware; the
+        ``heat_offtake`` describes installed/selected LTAHP hardware; the
         objective selects its dispatch.  Electricity-first operation bypasses
         that hardware instead of imposing a small, unwanted heat sale before
         ranking inventory candidates by electrical RTE.
         """
         c = self.config
         return (
-            c.mode is PlantMode.ADIABATIC
-            and c.heat_offtake is HeatOfftake.HEAT_USER
+            c.heat_offtake is HeatOfftake.HEAT_USER
             and c.optimization_objective
             is OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY
         )
@@ -401,8 +391,6 @@ class CAESPlant:
             result = self._run_fast_search()
         except ValueError as original:
             self._preserve_search_path = False
-            if self.config.mode is PlantMode.DIABATIC:
-                raise
             # This necessary inequality really does exclude every passive
             # heat-user design; a sampled failure elsewhere does not.
             if (self._dispatches_heat_to_user() and
@@ -441,8 +429,8 @@ class CAESPlant:
         polished = None
         try:
             charging, internal_store = self._charge_with_ratios(store.cold_temperature_k, ratios)
-            discharge = self._discharge_adiabatic(internal_store, store.cold_temperature_k)
-            candidate = self._assemble_adiabatic(charging, internal_store, discharge)
+            discharge = self._discharge(internal_store, store.cold_temperature_k)
+            candidate = self._assemble(charging, internal_store, discharge)
             if abs(candidate.thermal_store.cold_loop_closure_error_k) <= COLD_LOOP_RETURN_CLOSURE_K:
                 polished = self._polish_wet_result(candidate)
         except ValueError:
@@ -508,9 +496,6 @@ class CAESPlant:
         return result
 
     def _run_fast_search(self) -> PlantResult:
-        if self.config.mode is PlantMode.DIABATIC:
-            return self._simulate_diabatic()
-
         c = self.config
         objective = self._objective
 
@@ -769,7 +754,7 @@ class CAESPlant:
             if cold not in states:
                 try:
                     self._charge_seed = None
-                    charging, store = self._charge_adiabatic(cold, total_inventory)
+                    charging, store = self._charge(cold, total_inventory)
                     if self._absorbs_surplus():
                         design = self._discharge_absorbing(store)
                     else:
@@ -778,7 +763,7 @@ class CAESPlant:
                         except ValueError:
                             # Retain the original numerical recovery if the
                             # bound solve is unresolved (e.g. inverse tolerances).
-                            _, design = self._discharge_adiabatic_unchecked(store, cold)
+                            _, design = self._discharge_unchecked(store, cold)
                             if design is None:
                                 raise SearchUnresolved("no duty-feasible extraction ladder")
                     value = produced_cold(design)-cold
@@ -799,7 +784,7 @@ class CAESPlant:
                     design = self._materialize_ladder(store, design)
                 if abs(sum(r for r, _, _ in design.returns)-total_inventory) > MAX_WATER_MASS_CLOSURE_ERROR:
                     return None
-                result = self._assemble_adiabatic(charging, store, design)
+                result = self._assemble(charging, store, design)
                 if abs(result.thermal_store.cold_loop_closure_error_k) <= COLD_LOOP_RETURN_CLOSURE_K:
                     return result
             except ValueError:
@@ -945,11 +930,11 @@ class CAESPlant:
         def closure_residual(cold_k: float) -> tuple[float, float] | None:
             nonlocal last_evaluation, last_dh_error
             try:
-                charging, store = self._charge_adiabatic(cold_k, total_inventory)
+                charging, store = self._charge(cold_k, total_inventory)
                 if self._absorbs_surplus():
                     design = self._discharge_absorbing(store)
                 else:
-                    solved = self._discharge_adiabatic_unchecked(store, cold_k)
+                    solved = self._discharge_unchecked(store, cold_k)
                     design = solved[1]
                     if design is None:
                         return None
@@ -1011,9 +996,9 @@ class CAESPlant:
                             return False
                     else:
                         design = solved_discharge
-                    result = self._assemble_adiabatic(charging, store, design)
+                    result = self._assemble(charging, store, design)
                 else:
-                    result = self._simulate_adiabatic(cold_k, total_inventory)
+                    result = self._simulate(cold_k, total_inventory)
             except HeatOfftakeTemperatureError as exc:
                 last_dh_error = exc
                 return False
@@ -1395,7 +1380,7 @@ class CAESPlant:
         if abs(current.temperature_k - c.ambient_temperature_k) > 1e-9:
             cavern = exchange_with_environment(
                 current, c.ambient_temperature_k, 0.0, WORKING_FLUID,
-                "aftercooling", BOTH_WAYS,
+                "aftercooling",
             )
             cycle.processes.append(cavern)
 
@@ -1483,7 +1468,7 @@ class CAESPlant:
             moisture=moisture,
         )
 
-    def _charge_adiabatic(self, cold_k: float, total_inventory: float) -> tuple[Cycle, _ThermalStore]:
+    def _charge(self, cold_k: float, total_inventory: float) -> tuple[Cycle, _ThermalStore]:
         """Allocate charge water by heat-capacity matching, not by HX duty.
 
         In a counter-current exchanger the two T-Q curves are locally parallel
@@ -1642,7 +1627,7 @@ class CAESPlant:
         cooler branches to hotter ones while preserving the exact inventory.
         This is the split that best respects a low coolant-circuit pressure, and
         it is deliberately never used on its own merits: it is only the far end
-        of the relief segment in :meth:`_charge_adiabatic`.
+        of the relief segment in :meth:`_charge`.
         """
         n = self.config.compressor_stages
         ratios = [total_inventory / n] * n
@@ -1873,7 +1858,7 @@ class CAESPlant:
         *,
         enforce_coolant_freezing: bool = True,
     ) -> _LadderEvaluation | None:
-        """Evaluate an LTHP ladder without constructing a complete ``Cycle``.
+        """Evaluate an LTAHP ladder without constructing a complete ``Cycle``.
 
         The moisture-safe duty and outlet pressure are invariant, but the
         inverse heat exchanger reaches that duty only to its numerical
@@ -2188,7 +2173,7 @@ class CAESPlant:
             penalty += max(0., floor-TEMPERATURE_LIMIT_TOLERANCE_K-current.temperature_k)**2
         return penalty
 
-    def _discharge_adiabatic(
+    def _discharge(
         self, store: _ThermalStore, returned_mean_k: float
     ) -> _DischargeDesign:
         """Close the discharge water side for the selected design.
@@ -2201,7 +2186,7 @@ class CAESPlant:
         if self._absorbs_surplus():
             return self._discharge_absorbing(store)
 
-        required, evaluation = self._discharge_adiabatic_unchecked(
+        required, evaluation = self._discharge_unchecked(
             store, returned_mean_k
         )
         if evaluation is None:
@@ -2219,7 +2204,7 @@ class CAESPlant:
         returned_mean = sum(r * t for r, t, _ in design.returns) / store.total_ratio
         return replace(design, returned_mean_k=returned_mean)
 
-    def _discharge_adiabatic_unchecked(
+    def _discharge_unchecked(
         self, store: _ThermalStore, returned_mean_k: float
     ) -> tuple[float, _LadderEvaluation | None]:
         """Minimum-duty discharge on the temperature ladder, mass balance UNCHECKED.
@@ -2940,15 +2925,15 @@ class CAESPlant:
             available_effectiveness=available_effectiveness,
         ),)
 
-    def _simulate_adiabatic(
+    def _simulate(
         self, cold_k: float, total_inventory: float
     ) -> PlantResult:
         """One complete cycle for a trial cold-tank temperature."""
-        charging, store = self._charge_adiabatic(cold_k, total_inventory)
-        discharge = self._discharge_adiabatic(store, cold_k)
-        return self._assemble_adiabatic(charging, store, discharge)
+        charging, store = self._charge(cold_k, total_inventory)
+        discharge = self._discharge(store, cold_k)
+        return self._assemble(charging, store, discharge)
 
-    def _assemble_adiabatic(
+    def _assemble(
         self,
         charging: Cycle,
         store: _ThermalStore,
@@ -2967,14 +2952,13 @@ class CAESPlant:
         """
         charging = self._annotate_exergy(charging)
         discharging = self._annotate_exergy(discharge.cycle)
-        thermal, exergy, district, extraction = self._summarize_adiabatic(
+        thermal, exergy, district, extraction = self._summarize(
             charging, discharging, store, discharge
         )
         # The validated charge train already ran the moisture analysis once;
         # its summary is reused, not recomputed.
         assert store.moisture is not None
         result = PlantResult(
-            mode=self.config.mode.value,
             charging=charging,
             discharging=discharging,
             thermal_store=thermal,
@@ -2987,214 +2971,6 @@ class CAESPlant:
             moisture=store.moisture,
         )
         return result
-
-    # ---------------------------------------------------------------- D-CAES
-
-    def _safe_diabatic_pressure_reduction(
-        self,
-        inlet,
-        outlet_pressure_pa: float,
-        protected_humidity_ratio: float,
-    ) -> tuple[Process, ...]:
-        """Take maximum safe turbine work, then throttle the remaining pressure.
-
-        A complete turbine expansion is used whenever its outlet stays above
-        the wet-rated anti-icing envelope: 10 degC in the permitted liquid
-        region or local frost point plus 10 K in the dry sub-zero region.
-        Otherwise the
-        turbine stops at the lowest safe intermediate pressure and an
-        isenthalpic valve completes the stage. If even an infinitesimal turbine
-        drop starts below the protected boundary, the complete stage is
-        throttled.
-        """
-
-        c = self.config
-
-        def safe_margin(pressure_pa: float) -> float:
-            candidate = expand(
-                inlet, pressure_pa, c.expander_efficiency, WORKING_FLUID
-            )
-            return (
-                candidate.outlet.temperature_k
-                - minimum_wet_expander_temperature_k(
-                    pressure_pa, protected_humidity_ratio
-                )
-            )
-
-        full = expand(
-            inlet, outlet_pressure_pa, c.expander_efficiency, WORKING_FLUID
-        )
-        if (
-            full.outlet.temperature_k
-            >= minimum_wet_expander_temperature_k(
-                outlet_pressure_pa, protected_humidity_ratio
-            )
-            - TEMPERATURE_LIMIT_TOLERANCE_K
-        ):
-            return (full,)
-
-        near_inlet_pressure = inlet.pressure_pa * (1.0 - 1e-9)
-        if safe_margin(near_inlet_pressure) <= 0.0:
-            valve = throttle(inlet, outlet_pressure_pa, WORKING_FLUID)
-            if (
-                valve.outlet.temperature_k
-                < wet_expander_hard_floor_temperature_k(
-                    outlet_pressure_pa, protected_humidity_ratio
-                )
-                - TEMPERATURE_LIMIT_TOLERANCE_K
-            ):
-                raise ValueError(
-                    "even full isenthalpic throttling crosses the local pressure "
-                    "wet-expander freezing/frost boundary before ambient trim "
-                    "heat can be applied"
-                )
-            return (valve,)
-
-        low_pressure = outlet_pressure_pa
-        high_pressure = near_inlet_pressure
-        # At low pressure the full expansion is unsafe; at high pressure it is
-        # safe. Geometric bisection respects the logarithmic pressure scale.
-        low_pressure, high_pressure = bisect(
-            lambda pressure: safe_margin(pressure) >= 0.0,
-            low_pressure,
-            high_pressure,
-            iterations=60,
-            tolerance=1e-10,
-            geometric=True,
-        )
-
-        turbine = expand(
-            inlet, high_pressure, c.expander_efficiency, WORKING_FLUID
-        )
-        valve = throttle(turbine.outlet, outlet_pressure_pa, WORKING_FLUID)
-        if (
-            valve.outlet.temperature_k
-            < wet_expander_hard_floor_temperature_k(
-                outlet_pressure_pa, protected_humidity_ratio
-            )
-            - TEMPERATURE_LIMIT_TOLERANCE_K
-        ):
-            # A real-gas Joule-Thomson shift could make the two-step path less
-            # safe than a full throttle. Prefer the safe, lower-work fallback.
-            valve = throttle(inlet, outlet_pressure_pa, WORKING_FLUID)
-            if (
-                valve.outlet.temperature_k
-                < wet_expander_hard_floor_temperature_k(
-                    outlet_pressure_pa, protected_humidity_ratio
-                )
-                - TEMPERATURE_LIMIT_TOLERANCE_K
-            ):
-                raise ValueError(
-                    "no fuel-free turbine/throttle split satisfies the local "
-                    "wet-expander anti-icing envelope"
-                )
-            return (valve,)
-        return turbine, valve
-
-    def _simulate_diabatic(self) -> PlantResult:
-        """Fuel-free D-CAES with ambient reheat and anti-icing throttling."""
-        c = self.config
-        current = state_pt(self._p_ambient, c.ambient_temperature_k, WORKING_FLUID)
-        charging = Cycle("charging", current)
-        ratio = self._compression_ratio()
-        for stage in range(c.compressor_stages):
-            p_out = self._p_storage / (1.0 - c.intercooler_pressure_drop) if stage == c.compressor_stages - 1 else current.pressure_pa * ratio
-            compressor = compress(current, p_out, c.compressor_efficiency, WORKING_FLUID)
-            charging.processes.append(compressor)
-            cooler = exchange_air_with_ambient_ntu(
-                compressor.outlet, c.ambient_temperature_k, c.intercooler_pressure_drop,
-                WORKING_FLUID, c.ambient_heat_exchanger_ntu, "intercooling", COOL_ONLY,
-            )
-            charging.processes.append(cooler)
-            current = cooler.outlet
-        if abs(current.temperature_k - c.ambient_temperature_k) > 1e-9:
-            charging.processes.append(exchange_with_environment(
-                current, c.ambient_temperature_k, 0.0, WORKING_FLUID,
-                "aftercooling", BOTH_WAYS,
-            ))
-
-        moisture = analyze_charge_moisture(c, charging)
-        protected_humidity_ratio = (
-            moisture.stored_air_water_vapor_kg_per_kg_dry_air
-        )
-        if not reference_wet_expander_liquid_envelope_ok(
-            protected_humidity_ratio
-        ):
-            raise ValueError(
-                "remaining charge-side moisture exceeds the selected reference "
-                "wet-expander discharge liquid envelope; add deeper drying or "
-                "select an OEM machine with a larger guaranteed liquid capacity"
-            )
-        if not dry_air_wet_expansion_approximation_ok(
-            protected_humidity_ratio
-        ):
-            raise ValueError(
-                "possible wet-expander condensate exceeds the dry-air model's "
-                "0.1 wt% validity screen; use a coupled humid-air/two-phase "
-                "energy balance for this configuration"
-            )
-        current = state_pt(self._p_storage, c.ambient_temperature_k, WORKING_FLUID)
-        discharging = Cycle("discharging", current)
-        pressure_ratio = self._expansion_ratio()
-        external_heat = 0.0
-        for stage in range(c.expander_stages):
-            heater_pressure = current.pressure_pa * (1.0 - c.interheater_pressure_drop)
-            turbine_pressure = self._p_ambient if stage == c.expander_stages - 1 else heater_pressure * pressure_ratio
-
-            # AD-CAES always recovers ambient heat before each expansion.  A
-            # no-reheat branch is physically unusable here: the expansion
-            # temperatures would cross the icing envelope.
-            reheater = exchange_air_with_ambient_ntu(
-                current, c.ambient_temperature_k, c.interheater_pressure_drop,
-                WORKING_FLUID, c.ambient_heat_exchanger_ntu, "ambient_reheat", HEAT_ONLY,
-            )
-            discharging.processes.append(reheater)
-            current = reheater.outlet
-            external_heat += max(0.0, reheater.heat_to_air_j_per_kg)
-
-            reductions = self._safe_diabatic_pressure_reduction(
-                current,
-                turbine_pressure,
-                protected_humidity_ratio,
-            )
-            discharging.processes.extend(reductions)
-            current = reductions[-1].outlet
-            local_minimum_k = minimum_wet_expander_temperature_k(
-                current.pressure_pa,
-                protected_humidity_ratio,
-            )
-            if current.temperature_k < local_minimum_k - TEMPERATURE_LIMIT_TOLERANCE_K:
-                anti_icing_reheat = exchange_air_with_ambient_ntu(
-                    current,
-                    c.ambient_temperature_k,
-                    0.0,
-                    WORKING_FLUID,
-                    c.ambient_heat_exchanger_ntu,
-                    "ambient_anti_icing_reheat",
-                    HEAT_ONLY,
-                )
-                discharging.processes.append(anti_icing_reheat)
-                current = anti_icing_reheat.outlet
-                external_heat += max(
-                    0.0, anti_icing_reheat.heat_to_air_j_per_kg
-                )
-                if current.temperature_k < local_minimum_k - TEMPERATURE_LIMIT_TOLERANCE_K:
-                    raise ValueError(
-                        "ambient trim heat cannot restore the wet-expander "
-                        "anti-icing margin after D-CAES throttling"
-                    )
-
-        charging = self._annotate_exergy(charging)
-        discharging = self._annotate_exergy(discharging)
-        exergy = self._summarize_diabatic(charging, discharging)
-        return PlantResult(
-            mode=c.mode.value, charging=charging, discharging=discharging,
-            thermal_store=None, exergy=exergy,
-            external_heat_input_j_per_kg=external_heat,
-            moisture=moisture,
-        )
-
-    # ---------------------------------------------------------------- exergy books
 
     def _annotate_exergy(self, cycle: Cycle) -> Cycle:
         c = self.config
@@ -3218,24 +2994,8 @@ class CAESPlant:
         ))}
         return charging.work_j_per_kg, -discharging.work_j_per_kg, component, losses
 
-    def _summarize_diabatic(self, charging: Cycle, discharging: Cycle) -> ExergySummary:
-        compression, expansion, component, losses = self._base_books(
-            charging, discharging
-        )
-        destruction, loss = sum(component.values()), sum(losses.values())
-        electrical = expansion / compression
-        return ExergySummary(
-            total_useful_exergy_efficiency=electrical,
-            hot_water_exergy_j_per_kg_air=0.0,
-            useful_heat_exergy_j_per_kg_air=0.0,
-            component_destruction_j_per_kg_air=component,
-            loss_j_per_kg_air=losses,
-            total_destruction_j_per_kg_air=destruction,
-            total_loss_j_per_kg_air=loss,
-            balance_residual_j_per_kg_air=compression - (expansion + destruction + loss),
-        )
 
-    def _summarize_adiabatic(
+    def _summarize(
         self, charging: Cycle, discharging: Cycle,
         store: _ThermalStore, discharge: _DischargeDesign,
     ) -> tuple[
