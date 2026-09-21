@@ -12,7 +12,7 @@ from caes import (
     PlantMode,
 )
 from caes import diagrams
-from conftest import LTHP
+from conftest import LTAHP
 
 
 @pytest.mark.parametrize(
@@ -71,7 +71,7 @@ def test_diabatic_plant_has_no_composites_to_draw():
             coolant_maximum_temperature_c=450.0,
         ),
         PlantConfig(compressor_stages=5, expander_stages=5),
-        LTHP,
+        LTAHP,
         PlantConfig(mode=PlantMode.DIABATIC),
     ],
 )
@@ -96,7 +96,7 @@ def test_every_diagram_renders(config):
     "config",
     [
         PlantConfig(),
-        LTHP,
+        LTAHP,
         PlantConfig(mode=PlantMode.DIABATIC),
     ],
 )
@@ -145,7 +145,7 @@ def test_sankey_diagrams_run_the_length_of_the_plant_and_close_the_books(config)
 
 
 def test_cycle_diagrams_include_hot_supply_and_cold_return_references():
-    config = LTHP
+    config = LTAHP
     result = CAESPlant(config).run()
     figure, axes = plt.subplots(1, 3)
     try:
@@ -198,7 +198,7 @@ def test_single_store_and_every_extraction_get_an_isotherm():
     drawn, because where the demand profile puts two stages on one nozzle there
     is only one temperature to show.
     """
-    config = LTHP
+    config = LTAHP
     result = CAESPlant(config).run()
     store = result.thermal_store
     assert len(store.hot_level_temperatures_k) == 1
@@ -286,7 +286,7 @@ def test_the_single_user_station_gets_its_own_composite_panel():
     over K stations now lives inside E-304 and is not sold, so there is nothing
     else with a user side to plot.
     """
-    config = LTHP
+    config = LTAHP
     result = CAESPlant(config).run()
     stations = diagrams.offtake_stations(result)
     assert len(stations) == len(result.heat_offtake.taps) == 1

@@ -22,7 +22,7 @@ from .logic import FIELD_RULES, active_fields, grouped_fields
 from .models import PlantResult, Process
 from .nomenclature import (
     HEAT_OFFTAKE_LABELS,
-    LTHP_LABEL,
+    LTAHP_LABEL,
     LTA_LABEL,
     PLANT_MODE_LABELS,
     plant_concept_label,
@@ -74,7 +74,7 @@ def _solve_config(config: PlantConfig) -> PlantResult:
 class CAESGUI(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Normalized CAES Simulator - AD / LTA / LTHP")
+        self.title("Normalized CAES Simulator - AD / LTA / LTAHP")
         self.geometry("1420x900")
         self.minsize(1120, 700)
         self._values = PlantConfig().to_dict()
@@ -743,7 +743,7 @@ class CAESGUI(tk.Tk):
             "only from the atmosphere.\n"
             f"- {LTA_LABEL}: compression heat is "
             "stored in a two-tank coolant loop and returned to the turbines.\n"
-            f"- {LTHP_LABEL}: the LTA store "
+            f"- {LTAHP_LABEL}: the LTA store "
             "additionally exports heat to a district network through E-302.\n\n"
             "The study builds on published LTA-CAES research (Wolf & Budt and "
             "successors). All results are normalized per kilogram of air; no "

@@ -323,7 +323,7 @@ and transients; a safe bulk outlet alone does not prove local ice immunity.
 
 The 93-151 kg/s range in compressed-air drying guidance is a generic CAES
 equipment-sizing reference. The separate **169.7 kg/s** value is the dry-air
-flow obtained by scaling the supplied LTHP example to a 70 MW compressor shaft
+flow obtained by scaling the supplied LTAHP example to a 70 MW compressor shaft
 input (`70 MW / 412.58 kJ/kg-air`). They are not two estimates for one plant.
 
 A defensible low-cost baseline is staged cooling and bulk separation:
@@ -339,7 +339,7 @@ A defensible low-cost baseline is staged cooling and bulk separation:
 5. Use a refrigerated dryer near +3 degC PDP when surface cooling cannot meet
    the guarantee. Use heat-of-compression adsorption at -20 or -40 degC PDP
    only when a quantified icing, corrosion, or cavern requirement justifies
-   its cost and loss of heat otherwise available to LTA/LTHP TES.
+   its cost and loss of heat otherwise available to LTA/LTAHP TES.
 
 Conventional separators collect about 80-90% of precipitated water, so the
 ideal 100% diagnostic requires a real high-efficiency demister/coalescer and a

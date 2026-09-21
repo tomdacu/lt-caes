@@ -11,7 +11,7 @@ from caes import (
 )
 from caes.heat_exchangers import WATER_CP_J_PER_KGK
 from caes.logic import active_fields
-from conftest import LTHP, assert_expander_envelope
+from conftest import LTAHP, assert_expander_envelope
 
 
 def test_normalized_two_tank_cycle_closes_energy_and_pressure():
@@ -129,9 +129,9 @@ def test_cold_tank_standing_loss_follows_the_same_decay_law_as_the_hot_tank():
 def test_heat_only_e303_does_not_rescue_a_default_plant_without_heat_sink():
     with pytest.raises(ValueError, match="no closed two-tank design"):
         CAESPlant(PlantConfig(heat_offtake=HeatOfftake.NONE)).run()
-    selling = CAESPlant(LTHP).run()
+    selling = CAESPlant(LTAHP).run()
 
-    # The LTHP topology supplies the real high-grade sink instead of silently
+    # The LTAHP topology supplies the real high-grade sink instead of silently
     # turning E-303 back into a rejection cooler.
     assert selling.thermal_store.offtake_heat_j_per_kg_air > 0.0
     assert selling.exergy.total_useful_exergy_efficiency > selling.round_trip_efficiency
@@ -194,7 +194,7 @@ def test_coolant_minimum_limit_and_low_freezing_screening_input():
 
 
 def test_adiabatic_air_train_has_no_direct_ambient_reheater():
-    """LTHP takes every joule of direct air reheat from the coolant loop.
+    """LTAHP takes every joule of direct air reheat from the coolant loop.
 
     The AH-20x ambient preheaters are gone. They were up to eight extra
     high-pressure gas/ambient exchangers ahead of the water interheaters, and
@@ -204,7 +204,7 @@ def test_adiabatic_air_train_has_no_direct_ambient_reheater():
     AD-CAES ambient reheat is mandatory, but has no effect on these adiabatic
     concepts.
     """
-    result = CAESPlant(LTHP).run()
+    result = CAESPlant(LTAHP).run()
 
     assert result.external_heat_input_j_per_kg == pytest.approx(
         result.thermal_store.cold_return_heat_absorbed_from_ambient_j_per_kg_air

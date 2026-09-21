@@ -6,7 +6,7 @@
 > **Code:** `_solve_discharge_requirements`, `_light_discharge_at_supply`, `_materialize_ladder` in `caes/plant.py`  
 > **Tests:** `tests/test_extraction_exchanger.py`, `tests/test_district_heating.py`, `tests/test_plant.py`
 
-For LTHP, the turbine pressure train and efficiency together with the
+For LTAHP, the turbine pressure train and efficiency together with the
 moisture-safe outlet envelope determine, for every stage, both a minimum target
 duty AND the air temperature its interheater must produce. That second quantity
 is what E-304's extraction ladder is matched to. At each extraction temperature

@@ -14,15 +14,15 @@ from .config import HeatOfftake, PlantMode
 
 PLANT_MODE_LABELS: dict[PlantMode, str] = {
     PlantMode.DIABATIC: "AD-CAES (ambient diabatic)",
-    PlantMode.ADIABATIC: "LTA/LTHP-CAES (low-temperature adiabatic/heat and power)",
+    PlantMode.ADIABATIC: "LTA/LTAHP-CAES (low-temperature adiabatic, without and with a heat user)",
 }
 
 LTA_LABEL = "LTA-CAES (low-temperature adiabatic CAES)"
-LTHP_LABEL = "LTHP-CAES (low-temperature heat and power CAES)"
+LTAHP_LABEL = "LTAHP-CAES (low-temperature adiabatic heat and power CAES)"
 
 HEAT_OFFTAKE_LABELS: dict[HeatOfftake, str] = {
     HeatOfftake.NONE: f"No external heat user — {LTA_LABEL}",
-    HeatOfftake.HEAT_USER: f"External heat user — {LTHP_LABEL}",
+    HeatOfftake.HEAT_USER: f"External heat user — {LTAHP_LABEL}",
 }
 
 
@@ -39,11 +39,11 @@ def plant_concept_label(
 ) -> str:
     """Return the specific concept name for a result or P&ID.
 
-    ``PlantMode.ADIABATIC`` is the stable machine value shared by LTA and LTHP;
+    ``PlantMode.ADIABATIC`` is the stable machine value shared by LTA and LTAHP;
     the heat-offtake flag is what distinguishes the two user-facing concepts.
     """
 
     selected_mode = PlantMode(mode)
     if selected_mode is PlantMode.DIABATIC:
         return PLANT_MODE_LABELS[selected_mode]
-    return LTHP_LABEL if exports_heat else LTA_LABEL
+    return LTAHP_LABEL if exports_heat else LTA_LABEL

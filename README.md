@@ -1,14 +1,35 @@
-# Normalized CAES Simulator - AD / LTA / LTHP-CAES
+# No-combustion CAES: AD, LTA and LTAHP on one normalized basis
 
-A steady-state simulator that compares three compressed-air energy-storage
-concepts on one normalized basis:
+> **Frozen archive.** This is the three-concept screening tool exactly as it
+> stood at the LT-CAES split. Development continues on the `main` branch, which
+> is the **LT-CAES** line: LTA and LTAHP without the diabatic concept.
+
+A steady-state simulator that compares three fuel-free compressed-air
+energy-storage concepts on one normalized basis. What they share is the absence
+of combustion and of any high-temperature thermal store; what differs is where
+the compression heat goes:
+
+```text
+no-combustion CAES
+├── AD-CAES                       ambient diabatic - no store at all: the
+│                                 heat is rejected to, and recovered from,
+│                                 the atmosphere
+└── LT-CAES                       low-temperature adiabatic family: a liquid
+    │                             two-tank TES, sized for the temperature
+    │                             class the liquid can actually reach
+    ├── LTA-CAES    no heat user  heat_offtake = "none"
+    └── LTAHP-CAES  heat user     heat_offtake = "heat_user"
+```
+
+"Low temperature" therefore qualifies the *store*, which is why it names the
+adiabatic family only: AD-CAES has no store for it to qualify.
 
 - **AD-CAES (ambient diabatic)** rejects compression heat through
   finite-NTU ambient coolers. On discharge it uses only ambient heat, takes the
   largest anti-icing-safe turbine pressure drop, and throttles the remainder.
 - **LTA-CAES (low-temperature adiabatic CAES)** stores compression heat in a
   two-tank sensible-coolant loop and returns it through parallel interheaters.
-- **LTHP-CAES (low-temperature heat and power CAES)** adds heat export through
+- **LTAHP-CAES (low-temperature adiabatic heat and power CAES)** adds heat export through
   the E-302 taps ahead of the coolant interheaters.
 
 Its primary purpose is **configuration brainstorming and thermodynamic
@@ -21,13 +42,13 @@ perform mechanical sizing, costing or dispatch simulation.
 
 ## This is a heat-and-power plant, not a store with a heating bolt-on
 
-LTHP-CAES sells two products, electricity and heat, and the heat user is
+LTAHP-CAES sells two products, electricity and heat, and the heat user is
 described by three inputs: the temperature it wants, the temperature it hands
 back, and the finite-NTU performance class of its exchanger.
 Those three numbers describe a district-heating network, an industrial process
 loop, an absorption chiller, a greenhouse or a drying plant equally well.
 District heating is the most likely application in northern Europe - see the
-[Denmark note](docs/research/LTHP_CAES_AND_DENMARK.md) - but it is **not the
+[Denmark note](docs/research/LTAHP_CAES_AND_DENMARK.md) - but it is **not the
 model's subject**, and nothing in the solver assumes it.
 
 The configuration says so: `heat_offtake = "heat_user"` with
@@ -149,7 +170,7 @@ count to control.
 
 ## Coolant-loop optimization
 
-The LTA/LTHP coolant cycle is closed inside the solve:
+The LTA/LTAHP coolant cycle is closed inside the solve:
 
 1. choose a candidate cold-tank temperature;
 2. iterate each charging ratio toward capacity-rate matching;
@@ -227,7 +248,7 @@ one kilogram of stored air, so
 LTA:
 hot store -> parallel interheaters -> E-303 -> cold tank
 
-LTHP, one mixed hot store:
+LTAHP, one mixed hot store:
 hot TES -> E-302 (whole trunk) -> E-304 -> bleed 1 -> bleed 2 -> ... -> bleed N
               |                     ^                                     |
         one user stream             |                              interheaters
@@ -276,7 +297,7 @@ The concept policy is:
 - AD-CAES: maximum electrical RTE; the direct turbine/throttle solve has no
   independent water-allocation loop;
 - LTA-CAES: maximum electrical RTE;
-- LTHP-CAES: maximum useful-energy delivery ratio.
+- LTAHP-CAES: maximum useful-energy delivery ratio.
 
 Only `max_electric_efficiency` and `max_combined_energy_delivery` are active
 objectives. Old JSON containing `max_total_exergy_efficiency` loads with a
@@ -395,8 +416,8 @@ Research notes:
 - [Research map](docs/research/README.md)
 - [LTA-CAES literature](docs/research/LITERATURE.md)
 - [People, groups, and related software](docs/research/PEOPLE_AND_GROUPS.md)
-- [LTHP-CAES and the Denmark opportunity](docs/research/LTHP_CAES_AND_DENMARK.md)
-- [LTHP-CAES heat rejection and cogeneration](docs/research/LTHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
+- [LTAHP-CAES and the Denmark opportunity](docs/research/LTAHP_CAES_AND_DENMARK.md)
+- [LTAHP-CAES heat rejection and cogeneration](docs/research/LTAHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
 
 ## Model boundary
 

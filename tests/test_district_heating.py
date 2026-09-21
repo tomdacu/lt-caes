@@ -6,7 +6,7 @@ from CoolProp.CoolProp import PropsSI
 from caes import CAESPlant, HeatOfftake, OptimizationObjective, PlantConfig
 from caes.heat_exchangers import WATER_CP_J_PER_KGK
 from caes.thermal_limits import minimum_wet_expander_temperature_k
-from conftest import LTHP, assert_expander_envelope
+from conftest import LTAHP, assert_expander_envelope
 
 
 def _expander_outlets_c(result):
@@ -114,13 +114,13 @@ def test_electric_only_dispatch_does_not_hide_a_return_cooler():
             heat_offtake=HeatOfftake.HEAT_USER,
             optimization_objective=OptimizationObjective.MAX_ELECTRIC_EFFICIENCY,
         )).run()
-    lthp_combined = CAESPlant(LTHP).run()
+    lthp_combined = CAESPlant(LTAHP).run()
 
     assert lthp_combined.thermal_store.offtake_heat_j_per_kg_air > 0.0
 
 
 def test_series_exchanger_duty_follows_the_plant_side_temperature_drop():
-    result = CAESPlant(LTHP).run()
+    result = CAESPlant(LTAHP).run()
     dh = result.heat_offtake
     expected = result.thermal_store.total_water_mass_ratio * WATER_CP_J_PER_KGK * (
         dh.hot_tank_temperature_k - dh.turbine_supply_temperature_k

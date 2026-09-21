@@ -46,5 +46,5 @@ the exchanger as `UA_design = NTU_selected C_min,design`.
 - [Research map](research/README.md)
 - [LTA-CAES literature](research/LITERATURE.md)
 - [People, groups and related software](research/PEOPLE_AND_GROUPS.md)
-- [LTHP-CAES and Denmark](research/LTHP_CAES_AND_DENMARK.md)
-- [LTHP heat rejection and cogeneration](research/LTHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
+- [LTAHP-CAES and Denmark](research/LTAHP_CAES_AND_DENMARK.md)
+- [LTAHP heat rejection and cogeneration](research/LTAHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)

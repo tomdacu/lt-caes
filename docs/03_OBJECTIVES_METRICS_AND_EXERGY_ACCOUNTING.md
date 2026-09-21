@@ -32,7 +32,7 @@ a cost. Two such streams exist:
 
 - external ambient heat, reported as `external_heat_input_j_per_kg`: mandatory
   air-side ambient reheat in AD-CAES, or heat-only E-303 recovery into the
-  returning coolant in LTA/LTHP-CAES;
+  returning coolant in LTA/LTAHP-CAES;
 - the energy the air stream itself hands over. Intake and exhaust are both at
   `p0` and the intake is at `T0`, so the working fluid delivers a net
 
@@ -70,7 +70,7 @@ R_delivery = 111.53 %      <- above one, and correct for what it measures
 eta_exergy = 63.48 %       <- bounded thermodynamic metric
 ```
 
-This LTHP case has two distinct free ambient contributions: E-303 heats the
+This LTAHP case has two distinct free ambient contributions: E-303 heats the
 selected coldest returns, and the exhaust leaves below the inlet enthalpy.
 Both belong in the closed first-law balance, but neither is purchased charging
 electricity.  Their presence is exactly why `R_delivery` is a delivery ratio
@@ -103,8 +103,8 @@ The project policy is:
 |---|---|---|---|
 | AD-CAES | `mode=diabatic` | maximum electrical RTE | Direct finite-NTU turbine/throttle solution; no coolant-inventory optimization loop. |
 | LTA-CAES | `mode=adiabatic`, `heat_offtake=none` | maximum electrical RTE | Rank closed two-tank candidates by expansion work. |
-| LTHP-CAES, electric dispatch | `heat_offtake=heat_user`, `max_electric_efficiency` | maximum electrical RTE | Bypass E-302 and E-304 and route the complete hot-coolant inventory to the interheaters at the one stored temperature; this reproduces LTA unless non-bypassable hardware losses are later added. |
-| LTHP-CAES, combined dispatch | `heat_offtake=heat_user`, `max_combined_energy_delivery` | maximum useful-energy delivery ratio | Sell everything above the first E-304 extraction, feed each stage a common margin above its own demand, and recuperate the descent into the coolant return; rank candidates by `W_exp + Q_heat_user`. |
+| LTAHP-CAES, electric dispatch | `heat_offtake=heat_user`, `max_electric_efficiency` | maximum electrical RTE | Bypass E-302 and E-304 and route the complete hot-coolant inventory to the interheaters at the one stored temperature; this reproduces LTA unless non-bypassable hardware losses are later added. |
+| LTAHP-CAES, combined dispatch | `heat_offtake=heat_user`, `max_combined_energy_delivery` | maximum useful-energy delivery ratio | Sell everything above the first E-304 extraction, feed each stage a common margin above its own demand, and recuperate the descent into the coolant return; rank candidates by `W_exp + Q_heat_user`. |
 
 Both active objectives remain selectable for sensitivity studies, but the
 selected objective always ranks candidates. Endpoint T-Q spread remains an
@@ -120,16 +120,16 @@ the GUI, the CLI summary, and the Grassmann audit.
 Useful-exergy efficiency is not retained as an optimization objective because
 it adds no decision information for LTA-CAES without a heat user (the only
 product is electricity), while an ambient-diabatic comparison requires careful
-treatment of cold-stream physical exergy and ambient interactions. LTHP's
+treatment of cold-stream physical exergy and ambient interactions. LTAHP's
 stated product goal is instead the combined delivery of electricity and heat.
 
 The objective therefore controls both candidate ranking and the physical
-heat/electric dispatch. Merely selecting LTHP hardware does not force a heat
+heat/electric dispatch. Merely selecting LTAHP hardware does not force a heat
 sale when the requested operating objective is electrical.
 
 ## First-law coolant accounting
 
-For LTA/LTHP the coolant loop has two energy sources and four modeled destinations:
+For LTA/LTAHP the coolant loop has two energy sources and four modeled destinations:
 
 ```text
 Q_recovered + Q_E303,ambient

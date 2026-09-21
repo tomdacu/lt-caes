@@ -9,7 +9,7 @@ this repository:
 
 1. **AD-CAES (ambient diabatic)**;
 2. **LTA-CAES (low-temperature adiabatic CAES)**;
-3. **LTHP-CAES (low-temperature heat and power CAES)**.
+3. **LTAHP-CAES (low-temperature adiabatic heat and power CAES)**.
 
 The program is a configuration-brainstorming and thermodynamic-screening tool.
 Every run is one independently sized candidate plant, not another operating
@@ -17,7 +17,7 @@ point of a single fixed plant. Its comparisons are meant to select concepts,
 expose coupled parameters and delimit feasible regions before component
 geometry, cost, controls and off-design operation are introduced.
 
-LTHP-CAES always has an external HEAT USER, and that user is deliberately
+LTAHP-CAES always has an external HEAT USER, and that user is deliberately
 generic. It is specified by the temperature it wants, the temperature it
 returns, and the exchanger NTU class, which describe a
 district-heating network, an industrial process loop, an absorption chiller, a
@@ -25,14 +25,14 @@ greenhouse or a dryer equally well. District heating is the most likely
 application, not the model's subject, and nothing in the solver assumes it.
 The name says so: low-temperature HEAT AND POWER CAES.
 
-LTHP-CAES always has an off-take. Direct process-air ambient reheat belongs to
+LTAHP-CAES always has an off-take. Direct process-air ambient reheat belongs to
 AD-CAES alone: the adiabatic concepts take every joule of turbine reheat from
 the coolant loop, while heat-only E-303 may warm selected cold coolant returns.
-The AH-20x ambient preheaters LTHP used to carry were removed
+The AH-20x ambient preheaters LTAHP used to carry were removed
 because they were up to eight extra high-pressure gas/ambient exchangers with
 their fans and controls, and because they were modelled with zero air-side
 pressure drop while every other exchanger in the train paid one - which
-flattered LTHP against AD-CAES, where the same device does pay it.
+flattered LTAHP against AD-CAES, where the same device does pay it.
 
 The analysis basis is one kilogram of dry process air. Mass-flow and plant-power
 results are obtained by multiplying specific quantities by dry-air mass flow.
@@ -331,7 +331,7 @@ validated glycol model. A real blend changes:
 
 Vendor property tables must replace the reference constants before detailed design.
 
-## 3. LTHP-CAES (low-temperature heat and power CAES)
+## 3. LTAHP-CAES (low-temperature adiabatic heat and power CAES)
 
 ### Why the component order matters
 
@@ -505,7 +505,7 @@ R_delivery = (W_exp + Q_DH) / W_comp
 instead of making HX profile parallelism the primary ranking criterion.
 Profile spread remains reported for equipment sizing.
 
-An LTHP plant at 200 bar with eight stages, `heat_exchanger_ntu = 100`,
+An LTAHP plant at 200 bar with eight stages, `heat_exchanger_ntu = 100`,
 an 80/45 degC heat user and a -30 degC antifreeze demonstrates:
 
 - `R_delivery = 121.9%`, well above unity;
@@ -649,7 +649,7 @@ For each normalized total coolant inventory, the solver:
    coolant-loop root from the previous inventory rather than rescanning.
 
 The selected objective always ranks feasible designs. LTA-CAES normally
-maximizes electrical work. LTHP-CAES normally maximizes useful-energy delivery.
+maximizes electrical work. LTAHP-CAES normally maximizes useful-energy delivery.
 Useful-exergy efficiency and HX-profile spread are reported guard and design
 metrics, not alternative hidden ranking criteria. AD-CAES has no coolant-loop
 search: its turbine/throttle dispatch is solved directly.
@@ -679,7 +679,7 @@ grid-to-grid result:
 - cavern wells and control valves;
 - district-network pumps.
 
-For the above-unity LTHP example, the normalized result is
+For the above-unity LTAHP example, the normalized result is
 `w_comp = 627.83 kJ/kg-air`. A 70 MW compressor shaft input therefore
 corresponds to approximately `111.5 kg/s` dry air and, on the present
 shaft-only boundary:

@@ -16,7 +16,7 @@ The solver follows one kilogram of **dry** air through steady-flow components. T
 cavern is a fixed-pressure, ambient-rock-temperature boundary. There is no time
 domain, power rating, tank geometry, component cost, or water-pump model.
 
-For the plant-level definition of AD-CAES, LTA-CAES, and LTHP-CAES,
+For the plant-level definition of AD-CAES, LTA-CAES, and LTAHP-CAES,
 including left-to-right exergy flowcharts, read
 [Plant concepts and architectures](01_PLANT_CONCEPTS_AND_ARCHITECTURES.md).
 
@@ -103,8 +103,8 @@ selected optimum.
 The A/B validation made with the locally installed CoolProp 7.2.0 covered
 `Air` from 1 to 300 bar and 180 to 1050 K, including `(P,T)`, `(P,h)`, `(P,s)`
 and `cp`, plus pure-water saturation. The returned values were bit-for-bit
-equal. Complete AD-CAES, LTA-CAES, LTHP-CAES and counterflow results were also
-equal as full result dataclasses. The four-level LTHP-CAES case followed
+equal. Complete AD-CAES, LTA-CAES, LTAHP-CAES and counterflow results were also
+equal as full result dataclasses. The four-level LTAHP-CAES case followed
 the same 6,792 discharge-train evaluations and gave the same objective; its
 actual state envelope was 1.013 to 102.04 bar and 248.78 to 574.55 K. This is
 inside the primitive-property test envelope.
@@ -129,7 +129,7 @@ than a property-call microbenchmark.
 
 ## Finite counter-flow exchangers, one code path
 
-Every exchanger in the plant - air/water on the LTA/LTHP side and
+Every exchanger in the plant - air/water on the LTA/LTAHP side and
 air/atmosphere on the AD-CAES side - uses the same finite counter-current
 model:
 
@@ -196,7 +196,7 @@ question explicitly changes that class.
 
 ## AD-CAES ambient reheat and throttling
 
-AD-CAES uses the same wet-expander lower envelope as LTA/LTHP-CAES:
+AD-CAES uses the same wet-expander lower envelope as LTA/LTAHP-CAES:
 
 ```text
 T_hard,i = 0 degC        if T_phase >= 0 degC
@@ -223,7 +223,7 @@ is component destruction: it is the work opportunity deliberately sacrificed
 to remain fuel-free. There is no burner, fuel energy, fuel mass or chemical
 exergy anywhere in the model.
 
-## LTHP-CAES process order
+## LTAHP-CAES process order
 
 With a heat user, the hot TES first crosses the `E-302` taps; only the remaining
 temperature level reaches the turbine coolant interheaters. The air-side order at

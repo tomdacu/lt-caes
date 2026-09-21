@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "caes-storage"
 version = "2.0.0"
-description = "Normalized AD-CAES, LTA-CAES and LTHP-CAES efficiency and exergy simulator"
+description = "Normalized AD-CAES, LTA-CAES and LTAHP-CAES efficiency and exergy screening tool"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

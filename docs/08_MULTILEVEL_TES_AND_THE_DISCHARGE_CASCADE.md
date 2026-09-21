@@ -9,7 +9,7 @@
 
 ## 1. Model boundary
 
-The active LTA/LTHP model contains one mixed hot coolant store and one mixed
+The active LTA/LTAHP model contains one mixed hot coolant store and one mixed
 cold coolant store. Parallel intercooler returns may have different local
 temperatures, but they mix before the standing period.
 

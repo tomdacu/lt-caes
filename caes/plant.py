@@ -1,4 +1,4 @@
-"""Normalized AD-CAES and two-tank coolant LTA/LTHP-CAES cycle solver.
+"""Normalized AD-CAES and two-tank coolant LTA/LTAHP-CAES cycle solver.
 
 The adiabatic model is a *closed coolant cycle*. It solves these physical
 constraints together:
@@ -257,7 +257,7 @@ class _DischargeDesign:
 
 @dataclass(frozen=True)
 class _DischargeRequirement:
-    """Invariant minimum-duty air trajectory for one LTHP expansion stage.
+    """Invariant minimum-duty air trajectory for one LTAHP expansion stage.
 
     ``heater_outlet_temperature_k`` is the air temperature this stage's
     interheater must produce for the following expander to land exactly on its
@@ -337,7 +337,7 @@ class CAESPlant:
         """Electricity-first dispatch: use all high-grade heat in the turbines.
 
         Both E-302 and E-304 are absent in LTA-CAES and bypassed in
-        electricity-first LTHP-CAES. In both cases every kilogram from the hot
+        electricity-first LTAHP-CAES. In both cases every kilogram from the hot
         tank goes directly to an interheater branch, at the one stored
         temperature.
 
@@ -346,7 +346,7 @@ class CAESPlant:
         so E-304 would warm the cold tank, capture less compression heat and
         raise compressor work in exchange for nothing sellable.
 
-        Combined-delivery LTHP instead keeps the minimum moisture-safe turbine
+        Combined-delivery LTAHP instead keeps the minimum moisture-safe turbine
         duty, so E-302 can export the band above the first extraction while
         E-304 feeds each stage a supply matched to its own demand.
         """
@@ -362,7 +362,7 @@ class CAESPlant:
         The two stand or fall together: E-304 exists to let the user keep the
         hot end of the store, and without a user there is nothing for it to do.
 
-        ``heat_offtake`` describes installed/selected LTHP hardware; the
+        ``heat_offtake`` describes installed/selected LTAHP hardware; the
         objective selects its dispatch.  Electricity-first operation bypasses
         that hardware instead of imposing a small, unwanted heat sale before
         ranking inventory candidates by electrical RTE.
@@ -1873,7 +1873,7 @@ class CAESPlant:
         *,
         enforce_coolant_freezing: bool = True,
     ) -> _LadderEvaluation | None:
-        """Evaluate an LTHP ladder without constructing a complete ``Cycle``.
+        """Evaluate an LTAHP ladder without constructing a complete ``Cycle``.
 
         The moisture-safe duty and outlet pressure are invariant, but the
         inverse heat exchanger reaches that duty only to its numerical

@@ -1,4 +1,4 @@
-# AD / LTA / LTHP-CAES research map
+# AD / LTA / LTAHP-CAES research map
 
 This directory is a curated, public-facing reading map for the project. It
 links original publications, research groups, and related open software; it
@@ -8,7 +8,7 @@ whose licence is unclear.
 The project extends the established low-temperature adiabatic CAES literature
 into three simulator concepts: **AD-CAES (ambient diabatic)**,
 **LTA-CAES (low-temperature adiabatic CAES)**, and
-**LTHP-CAES (low-temperature heat and power CAES)**. The liquid-TES attraction is not a claim of the
+**LTAHP-CAES (low-temperature adiabatic heat and power CAES)**. The liquid-TES attraction is not a claim of the
 highest possible round-trip efficiency; it is the use of a cheap, available,
 benign heat-transfer medium and conventional exchangers at less demanding
 temperatures than high-temperature A-CAES.
@@ -23,9 +23,9 @@ Start with:
    tools worth following.
 3. [Model scope](../02_PHYSICS_AND_MODEL_BOUNDARY.md) for the normalized two-tank assumptions and
    the dynamic or equipment-sizing effects intentionally deferred.
-4. [LTHP-CAES literature and the Denmark opportunity](LTHP_CAES_AND_DENMARK.md)
+4. [LTAHP-CAES literature and the Denmark opportunity](LTAHP_CAES_AND_DENMARK.md)
    for the district-heating, ambient-preheat and salt-cavern research case.
-5. [LTHP-CAES heat rejection, cogeneration, and citation map](LTHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
+5. [LTAHP-CAES heat rejection, cogeneration, and citation map](LTAHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
    for the E-303 audit, heat-recovery alternatives and ranked literature.
 
 ## How to contribute a source

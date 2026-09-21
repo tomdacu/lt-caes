@@ -18,7 +18,7 @@ from caes import (
     PlantMode,
 )
 from caes.exergy import air_exergy
-from conftest import LTHP
+from conftest import LTAHP
 
 # A deliberately broad sweep: a low-pressure single-stage train,
 # lopsided stage counts, multiple NTU sizes, both surplus destinations, both
@@ -37,7 +37,7 @@ CONFIGURATIONS = [
     ),
     pytest.param(PlantConfig(compressor_stages=6, expander_stages=3), id="lopsided-stages"),
     pytest.param(
-        LTHP,
+        LTAHP,
         id="heat-user",
     ),
     pytest.param(

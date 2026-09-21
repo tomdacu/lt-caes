@@ -1,6 +1,6 @@
 """Shared declarations for the CAES suite.
 
-The LTHP concept is the same two-key configuration literal in every file, and
+The LTAHP concept is the same two-key configuration literal in every file, and
 several files re-derive the same wet-expander envelope check. Both live here, so
 a change to the concept definition - or to the envelope tolerance - is one edit
 instead of seventeen.
@@ -18,7 +18,7 @@ from caes.thermal_limits import (
 )
 
 
-LTHP = PlantConfig(
+LTAHP = PlantConfig(
     heat_offtake=HeatOfftake.HEAT_USER,
     optimization_objective=OptimizationObjective.MAX_COMBINED_ENERGY_DELIVERY,
 )
@@ -30,9 +30,9 @@ ENVELOPE_TOLERANCE_K = 0.02
 
 
 def lthp(**overrides) -> PlantConfig:
-    """LTHP-CAES - heat user plus the combined-delivery objective - with overrides."""
+    """LTAHP-CAES - heat user plus the combined-delivery objective - with overrides."""
 
-    return replace(LTHP, **overrides)
+    return replace(LTAHP, **overrides)
 
 
 def assert_expander_envelope(

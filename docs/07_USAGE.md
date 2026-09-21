@@ -110,7 +110,7 @@ can only warm the coldest sub-ambient returns; it never rejects heat. Neither
 concept carries E-304: without a heat user there is nothing to sell off the top
 of the trunk, so there is no reason to stage it.
 
-### Study LTHP-CAES
+### Study LTAHP-CAES
 
 Start from `heat_and_power_example_config.json`. Its process order is:
 

@@ -1,4 +1,4 @@
-"""Normalized AD-CAES, LTA-CAES and LTHP-CAES efficiency and exergy models."""
+"""Normalized AD-CAES, LTA-CAES and LTAHP-CAES efficiency and exergy models."""
 
 from .config import (
     OptimizationObjective,

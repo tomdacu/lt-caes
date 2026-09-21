@@ -27,7 +27,7 @@ class OptimizationObjective(str, Enum):
 
     AD-CAES and LTA-CAES maximize electrical round-trip efficiency (with no
     heat user, maximum electrical work and maximum useful exergy are the same
-    dispatch).  LTHP-CAES maximizes the combined electricity-plus-heat
+    dispatch).  LTAHP-CAES maximizes the combined electricity-plus-heat
     delivery ratio.  Total useful exergy efficiency remains a reported
     metric, but is no longer a selectable objective: it either coincides with
     one of these two or misclassifies the free ambient heat input.

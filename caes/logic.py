@@ -44,7 +44,7 @@ CONCEPT_GROUP = "Plant concept"
 BOUNDARY_GROUP = "Boundary conditions"
 MACHINERY_GROUP = "Turbomachinery"
 AMBIENT_GROUP = "AD-CAES ambient recovery and throttling"
-COOLANT_HX_GROUP = "LTA/LTHP-CAES coolant heat exchangers"
+COOLANT_HX_GROUP = "LTA/LTAHP-CAES coolant heat exchangers"
 OPTIMIZATION_GROUP = "Coolant-flow optimization"
 STORE_GROUP = "Thermal store"
 OFFTAKE_GROUP = "Heat off-take"
@@ -55,7 +55,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         "Plant mode", CONCEPT_GROUP,
         help="AD-CAES (ambient diabatic) rejects compression heat and scavenges "
              "ambient heat on discharge; the adiabatic concepts (LTA-CAES, "
-             "LTHP-CAES) store it in a two-tank coolant loop.",
+             "LTAHP-CAES) store it in a two-tank coolant loop.",
     ),
     "ambient_temperature_c": FieldRule("Ambient temperature", BOUNDARY_GROUP, "°C"),
     "ambient_pressure_bar": FieldRule("Ambient pressure", BOUNDARY_GROUP, "bar"),
@@ -111,7 +111,7 @@ FIELD_RULES: dict[str, FieldRule] = {
     ),
     "optimization_objective": FieldRule(
         "Optimization objective", OPTIMIZATION_GROUP,
-        help="Electrical RTE bypasses the LTHP heat-user exchangers and sends "
+        help="Electrical RTE bypasses the LTAHP heat-user exchangers and sends "
              "all available coolant to turbine reheat. Combined delivery "
              "activates heat export and ranks electricity plus useful heat "
              "over charge work; that delivery ratio is not an efficiency.",
@@ -132,7 +132,7 @@ FIELD_RULES: dict[str, FieldRule] = {
     ),
     "heat_offtake": FieldRule(
         "External heat off-take", OFFTAKE_GROUP,
-        help="LTHP-CAES: add E-302 and send the complete feasible upstream "
+        help="LTAHP-CAES: add E-302 and send the complete feasible upstream "
              "surplus to an external heat user of any kind - a heat network, a "
              "process loop, an absorption chiller. With no user (LTA-CAES) "
              "E-302 is absent and stored heat is used for additional turbine work.",

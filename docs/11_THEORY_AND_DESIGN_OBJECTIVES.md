@@ -44,7 +44,7 @@ separate.
 |---|---|---|---|
 | AD-CAES (ambient diabatic) | electricity | electrical RTE | Ambient reheat is an external energy flow; the sold product is shaft/electric work |
 | LTA-CAES (low-temperature adiabatic CAES) | electricity | electrical RTE | With no heat user, stored heat is valuable only insofar as it raises expansion work |
-| LTHP-CAES (low-temperature heat and power CAES) | electricity and useful heat | useful-energy delivery ratio | The concept is explicitly sector-coupled and must not discard the heat product during ranking |
+| LTAHP-CAES (low-temperature adiabatic heat and power CAES) | electricity and useful heat | useful-energy delivery ratio | The concept is explicitly sector-coupled and must not discard the heat product during ranking |
 
 Useful-exergy efficiency is reported as the thermodynamic quality audit. It is
 not the current ranking objective. Cost, equipment volume, `UA`, water
@@ -63,7 +63,7 @@ The major boundary conditions are:
 - direct coolant minimum and maximum temperatures;
 - wet-expander liquid/frost anti-icing envelope;
 - hot/cold store dwell and normalized loss coefficient;
-- for LTHP, heat-user supply/return temperatures and exchanger NTU class.
+- for LTAHP, heat-user supply/return temperatures and exchanger NTU class.
 
 Changing any of these can change not only the metric but whether a topology is
 feasible and which constraint is active. Sensitivity studies should therefore
@@ -101,7 +101,7 @@ For each parameter, separate three outputs:
 
 The first sweep should cover storage pressure, stage count, compressor/expander
 efficiency, HX NTU class, pressure loss, coolant limits, normalized
-tank UA, duration, humidity and LTHP supply/return/user NTU. Use dimensionless
+tank UA, duration, humidity and LTAHP supply/return/user NTU. Use dimensionless
 groups where possible: overall pressure ratio, per-stage pressure ratio,
 capacity ratio, NTU, temperature approach ratios and normalized storage loss.
 
@@ -127,7 +127,7 @@ local trend.
 | Storage pressure | Raises compression work, available expansion pressure ratio and compression temperature | Thermal limits, real-gas properties, moisture, throttling and stage pressure drops change together |
 | Compressor stages | With effective intercooling, approaches isothermal compression and tends to reduce work | Every added cooler adds pressure loss and changes coolant allocation/equipment count |
 | Expander stages | Reheat between stages can recover more stored heat and work | Added interheater pressure loss and moisture-safe duty can offset the gain |
-| Compressor efficiency | Directly reduces actual compression work at fixed pressure ratio | It also reduces recovered compression heat and can lower LTHP heat delivery |
+| Compressor efficiency | Directly reduces actual compression work at fixed pressure ratio | It also reduces recovered compression heat and can lower LTAHP heat delivery |
 | Expander efficiency | Directly raises shaft work | A larger enthalpy drop lowers turbine outlet temperature and can demand more anti-icing reheat |
 | Intercooler/interheater NTU class | Improves approach/effectiveness for a given capacity ratio | Candidate `UA` is resized; water-temperature grade and required flow change, so cost is not represented |
 | Ambient E-303 NTU | Warms the selected sub-ambient return suffix more strongly toward ambient | It never rejects heat; changed recovery alters the next charge and can move the optimal suffix |
