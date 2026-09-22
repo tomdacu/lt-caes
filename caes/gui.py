@@ -6,6 +6,7 @@ import tkinter as tk
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import fields
 from multiprocessing import freeze_support, get_context
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
@@ -57,6 +58,30 @@ INTEGER_FIELDS = {
 }
 
 
+# Artwork lives at the repository root rather than inside the package: it
+# ships with the source tree and the GitHub release, not with the wheel.
+_WINDOW_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+# Tk drops an image that nothing references, so the window keeps this one alive.
+_WINDOW_ICON: "tk.PhotoImage | None" = None
+
+
+def _apply_window_icon(window: tk.Tk) -> None:
+    """Show the project mark on the window when the artwork is available.
+
+    Purely cosmetic: missing artwork, or a Tk built without PNG support, must
+    leave a usable window rather than stop the application from starting.
+    """
+    global _WINDOW_ICON
+
+    if not _WINDOW_ICON_PATH.is_file():
+        return
+    try:
+        _WINDOW_ICON = tk.PhotoImage(file=str(_WINDOW_ICON_PATH))
+    except tk.TclError:
+        return
+    window.iconphoto(True, _WINDOW_ICON)
+
+
 def _is_bool_field(field: Any) -> bool:
     """Detect boolean config fields from their DEFAULT VALUE.
 
@@ -77,6 +102,7 @@ class CAESGUI(tk.Tk):
         self.title("Normalized CAES Simulator - AD / LTA / LTAHP")
         self.geometry("1420x900")
         self.minsize(1120, 700)
+        _apply_window_icon(self)
         self._values = PlantConfig().to_dict()
         self._widgets: dict[str, ttk.Widget] = {}
         self._variables: dict[str, tk.Variable] = {}
