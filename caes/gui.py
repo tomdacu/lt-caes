@@ -29,6 +29,7 @@ from .nomenclature import (
     plant_concept_label,
 )
 from .plant import CAESPlant
+from .presets import REALISTIC_REFERENCE
 from .reporting import summary_rows
 
 ENUM_TYPES = {
@@ -99,11 +100,11 @@ def _solve_config(config: PlantConfig) -> PlantResult:
 class CAESGUI(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Normalized CAES Simulator - AD / LTA / LTAHP")
+        self.title("CAES Atlas - AD / LTA / LTAHP compressed-air storage")
         self.geometry("1420x900")
         self.minsize(1120, 700)
         _apply_window_icon(self)
-        self._values = PlantConfig().to_dict()
+        self._values = REALISTIC_REFERENCE.to_dict()
         self._widgets: dict[str, ttk.Widget] = {}
         self._variables: dict[str, tk.Variable] = {}
         self._result: PlantResult | None = None
@@ -355,7 +356,7 @@ class CAESGUI(tk.Tk):
             save_config(config, path)
 
     def _reset(self) -> None:
-        config = PlantConfig()
+        config = REALISTIC_REFERENCE
         self._values = config.to_dict()
         for name, value in self._values.items():
             self._variables[name].set(ENUM_DISPLAY.get(name, {}).get(value, value))

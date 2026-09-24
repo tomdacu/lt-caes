@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from .config import PlantConfig, PlantMode, load_config, save_config
 from .logic import FIELD_RULES, active_fields
 from .plant import CAESPlant
+from .presets import REALISTIC_REFERENCE
 from .reporting import save_sankey_plots, save_thermodynamic_plots, summary
 from .thermodynamics import PropertyAPI
 
 def main(argv: list[str] | None = None) -> int:
+    # The summary prints symbols such as arrows and degree signs. A Windows
+    # console or a redirected stream may still be a legacy code page, where
+    # that is a UnicodeEncodeError after the whole solve has run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Run normalized CAES efficiency and exergy analysis.")
     parser.add_argument("--config", type=Path, help="JSON configuration file")
     parser.add_argument("--mode", choices=[mode.value for mode in PlantMode], help="override plant mode")
@@ -29,10 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.write_default_config:
-        save_config(PlantConfig(), args.write_default_config)
+        save_config(REALISTIC_REFERENCE, args.write_default_config)
         return 0
 
-    config = load_config(args.config) if args.config else PlantConfig()
+    config = load_config(args.config) if args.config else REALISTIC_REFERENCE
     if args.mode:
         data = config.to_dict()
         data["mode"] = args.mode

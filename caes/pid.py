@@ -142,7 +142,14 @@ X_RETURN_CORRIDOR_OFFSET = 4.4   # spent-water riser, further left still
 
 X_COLD_TANK = X_ORIGIN + 0.5
 X_HOT_TANK = X_ORIGIN + 5.0
-HOP_R = 0.20          # radius of the crossing-bridge arcs
+HOP_R = 0.15          # radius of the crossing-bridge arcs
+
+# Runs ABOVE the tank band, used only with a heat user. The trunk leaving E-302
+# climbs over E-304 and enters its hot face from the right; the recuperated
+# return leaves the body's top at the hot end and goes home over the tanks.
+Y_TRUNK_OVER = Y_TANKS + 1.05
+Y_RETURN_OVER = Y_TANKS + 0.82
+Y_RETURN_HOME = Y_TANKS + 1.55     # clears the tank tops (+1.1) on the way to TK-302
 
 # E-304, the extraction body.  It is drawn WIDE and TAPERED rather than as
 # another circle, because its two distinguishing features are exactly those: it
@@ -150,6 +157,14 @@ HOP_R = 0.20          # radius of the crossing-bridge arcs
 # thins at every nozzle.  A circle would make it read as just one more
 # exchanger in a series, which is the thing it replaced.
 EXTRACTION_HALF_W = 1.8
+# Nozzle pitch along E-304. Every bleed drop that crosses another fluid's lane
+# is bridged, and bridges on nozzles closer than this merge into a comb.
+EXTRACTION_PORT_PITCH = 0.9
+
+
+def _extraction_half_w(bleeds: int) -> float:
+    """Half-length of the E-304 body: long enough to space its nozzles."""
+    return max(EXTRACTION_HALF_W, 0.5 * EXTRACTION_PORT_PITCH * max(0, bleeds - 1))
 EXTRACTION_HOT_HALF_H = 0.62     # trunk inlet end, carrying the whole inventory
 EXTRACTION_COLD_HALF_H = 0.26    # last extraction, where the trunk is exhausted
 
@@ -164,6 +179,62 @@ Y_BLEED_TOP = -2.08                  # manifold reaching FURTHEST left
 Y_BLEED_BOTTOM = -3.30               # manifold reaching least far left
 Y_E303_BAND = -2.95                  # E-303 body and its collection header
 Y_FINAL_HEADER = -3.62               # everything mixed, on its way to E-304
+
+# With E-304 every expansion stage owns one bleed manifold, each on its own
+# horizontal lane. The lanes need room: a vertical run that crosses a lane is
+# bridged with an arc of radius HOP_R, and lanes closer than about 2.5 HOP_R
+# turn a column of bridges into a coil. So the lower half of the drawing is not
+# fixed: it is pushed down by exactly the height the lanes need (see _bands).
+LANE_STEP = 0.40
+
+
+@dataclass(frozen=True)
+class Bands:
+    """Heights of everything below the tank band, for one plant.
+
+    The defaults are the layout without a heat user. With one, ``_bands``
+    stacks the bleed lanes, the ambient-recovery header and the final return
+    header below the tank band and lowers the interheaters, expanders, grade
+    and cavern by the height that stack needs.
+    """
+
+    user_run: float = Y_USER_RUN
+    recup_return: float = Y_RECUP_RETURN
+    bleed_top: float = -2.30
+    bleed_step: float = LANE_STEP
+    e303: float = Y_DHDR_C
+    # The ambient-recovery collection header. Without a heat user it runs
+    # through the exchanger's centre; with one it sits below the exchanger.
+    e303_header: float = Y_DHDR_C
+    final_header: float = Y_DHDR_C - 0.62
+    dhdr_w: float = Y_DHDR_W
+    dhdr_c: float = Y_DHDR_C
+    ee: float = Y_EE
+    ke: float = Y_KE
+    ground: float = Y_KE - 2.5
+    cavern: float = Y_KE - 5.1
+
+
+def _bands(expander_stages: int, selling: bool) -> Bands:
+    if not selling:
+        return Bands()
+    # Top to bottom below the lanes: the final return header (everything
+    # mixed, on its way to E-304), the ambient-recovery exchanger, its
+    # collection header, then the interheaters. The coldest returns rise a
+    # short way into the collection header, cross E-303 upward and join the
+    # final header above it.
+    top = -2.30
+    bottom = top - LANE_STEP * max(0, expander_stages - 1)
+    final = bottom - 0.55
+    e303 = final - (HX_R + 0.30)
+    e303_header = e303 - (HX_R + 0.30)
+    ee = e303_header - 0.85
+    drop = ee - Y_EE
+    return Bands(
+        bleed_top=top, e303=e303, e303_header=e303_header, final_header=final,
+        ee=ee, ke=Y_KE + drop, ground=Y_KE + drop - 2.5, cavern=Y_KE + drop - 5.1,
+    )
+
 
 # The user return and the recuperated return are BOTH blue and both leave the
 # tank band leftward, so they are deliberately kept far enough apart to read as
@@ -208,6 +279,7 @@ class Diagram:
     x_max: float = 0.0
     y_min: float = 0.0
     y_max: float = 0.0
+    bands: Bands = field(default_factory=Bands)
 
     def by_tag(self, tag: str) -> Equipment | None:
         return next((e for e in self.equipment if e.tag == tag), None)
@@ -238,6 +310,7 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
     adiabatic = config.mode is PlantMode.ADIABATIC
     selling = adiabatic and config.heat_offtake is not HeatOfftake.NONE
     n_c, n_e = config.compressor_stages, config.expander_stages
+    bands = _bands(n_e, selling)
     items: list[Equipment] = []
 
     # ---- CHARGING TRAIN --------------------------------------------------------
@@ -276,7 +349,7 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
         if adiabatic:
             items.append(Equipment(
                 f"E-{201 + i}", "water_hx", f"Reheater {i + 1}",
-                x + STAGE_PITCH / 2, Y_EE, flow=-1,
+                x + STAGE_PITCH / 2, bands.ee, flow=-1,
             ))
         else:
             # Air flows right-to-left: ambient recovery comes first, followed
@@ -288,17 +361,17 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
             # outlet temperatures violate the icing envelope.
             items.append(Equipment(
                 f"AH-{201 + i}", "ambient_heater", f"Ambient reheater {i + 1}",
-                x + 3.0, Y_EE, flow=-1,
+                x + 3.0, bands.ee, flow=-1,
             ))
             items.append(Equipment(
                 f"TV-{201 + i}", "valve", f"Anti-icing throttle {i + 1}",
-                x - 1.45, Y_EE, flow=-1,
+                x - 1.45, bands.ee, flow=-1,
             ))
-        items.append(Equipment(f"T-{201 + i}", "expander", f"Expander stage {i + 1}", x, Y_KE, flow=-1))
+        items.append(Equipment(f"T-{201 + i}", "expander", f"Expander stage {i + 1}", x, bands.ke, flow=-1))
     # Generator at the left end of the expander shaft, grid tie IN LINE with it; stack.
-    items.append(Equipment("G-201", "generator", "Generator", ex[-1] - 3.0, Y_KE))
-    items.append(Equipment("W-201", "grid", "Grid export", ex[-1] - 3.0 - 2.9, Y_KE))
-    items.append(Equipment("S-201", "stack", "Exhaust\nto atmosphere", ex[-1] - STAGE_PITCH / 2 - 1.6, Y_EE))
+    items.append(Equipment("G-201", "generator", "Generator", ex[-1] - 3.0, bands.ke))
+    items.append(Equipment("W-201", "grid", "Grid export", ex[-1] - 3.0 - 2.9, bands.ke))
+    items.append(Equipment("S-201", "stack", "Exhaust\nto atmosphere", ex[-1] - STAGE_PITCH / 2 - 1.6, bands.ee))
 
     # ---- CAVERN (underground, on the right, shared by both trains) -------------
     x_cavern = max(cx[-1] + STAGE_PITCH / 2, x_dstart) + 4.6
@@ -306,9 +379,13 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
     # 1.4 to the right of the cavern centre), aligned on one vertical, not floating
     # over the cavern centreline where they read as disconnected.
     x_well = x_cavern + 1.4
-    items.append(Equipment("V-401", "cavern", "Salt cavern", x_cavern, Y_CAVERN))
-    items.append(Equipment("XV-401", "valve", "Charge block valve", x_well, Y_EC, flow=+1))
-    items.append(Equipment("XV-402", "valve", "Discharge block valve", x_well, Y_EE, flow=-1))
+    items.append(Equipment("V-401", "cavern", "Salt cavern", x_cavern, bands.cavern))
+    # Block valves sit ON their horizontal air branches, at the exact height of
+    # the air line, just before the shared well riser.
+    items.append(Equipment("XV-401", "valve", "Charge block valve",
+                           x_well - 1.3, Y_EC + 0.22 * HXH, flow=+1))
+    items.append(Equipment("XV-402", "valve", "Discharge block valve",
+                           x_well - 1.3, bands.ee - 0.22 * HXH, flow=-1))
 
     # ---- THERMAL STORE (adiabatic only), centred between the trains ------------
     if adiabatic:
@@ -331,7 +408,9 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
             items.append(Equipment(
                 "E-302", "offtake_tap", "Heat-user HX", tap_x, Y_TANKS,
             ))
-            extraction_x = tap_x + 1.45 + EXTRACTION_HALF_W
+            # Room between E-302 and E-304 for the trunk's climb and the
+            # return riser into E-304's cold face.
+            extraction_x = tap_x + 2.4 + _extraction_half_w(n_e)
             items.append(Equipment(
                 "E-304",
                 "extraction_hx",
@@ -340,9 +419,11 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
                 Y_TANKS,
                 ports=n_e,
             ))
+            # The user is outside the plant boundary: drawn as a terminal on
+            # E-302's two stubs, not as a second exchanger.
             items.append(Equipment(
-                "H-301", "heat_user", "External\nheat user",
-                extraction_x + EXTRACTION_HALF_W + 3.2, Y_TANKS,
+                "H-301", "heat_user", "External heat user",
+                tap_x, Y_TANKS - 1.85,
             ))
         items.append(Equipment(
             "E-303",
@@ -361,8 +442,10 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
                     else "bypassed"
                 )
             ),
-            X_COLD_TANK + 2.2,
-            Y_E303_BAND if selling else Y_DHDR_C,
+            # Left of every interheater, so all returns reach it from one side
+            # and its outlet drops straight into the final header.
+            ex[-1] + STAGE_PITCH / 2 - HXW / 2 - 1.9,
+            bands.e303,
             flow=-1,
         ))
 
@@ -383,10 +466,11 @@ def layout(config: PlantConfig, result: PlantResult | None = None) -> Diagram:
         x_return_corridor=x_leftmost - X_RETURN_CORRIDOR_OFFSET,
         x_min=min(xs) - 5.0,
         x_max=max(xs) + 6.4,          # room for the cavern instrument balloons
-        y_min=Y_CAVERN - 2.6,
+        y_min=bands.cavern - 2.6,
         # The grid ties now sit on the machine bands instead of on tall stubs at
         # +/-9, so the frame closes just above the compressor duty callouts.
         y_max=Y_KC + 2.9,
+        bands=bands,
     )
 
 
@@ -503,6 +587,25 @@ def _air_cooler(ax, x, y):
     )
 
 
+def _ambient_recovery(ax, x, y):
+    """Heat-only ambient exchanger: fan on the side, ambient heat flowing IN.
+
+    E-303 never rejects heat, so it must not wear the rejection symbol's
+    outward vent. The fan sits on its left and the atmosphere arrow points
+    into the body; top and bottom stay free for the water connections.
+    """
+    from matplotlib.patches import Ellipse
+
+    _hx_circle(ax, x, y, "#eceff1")
+    fan_x = x - HX_R - 0.36
+    ax.add_patch(Ellipse((fan_x, y), 0.32, 1.25, facecolor=FILL, edgecolor=INK, lw=1.0, zorder=5))
+    ax.plot([fan_x, fan_x], [y - 0.55, y + 0.55], color=INK, lw=0.9, zorder=6)
+    ax.annotate(
+        "", xy=(fan_x - 0.2, y), xytext=(fan_x - 1.0, y),
+        arrowprops=dict(arrowstyle="-|>", color=VENT, lw=1.4, mutation_scale=11), zorder=5,
+    )
+
+
 def _ambient_heater(ax, x, y):
     """Ambient reheater: the HX circle fed by an arrow coming IN from atmosphere.
 
@@ -531,15 +634,18 @@ def _dh_exchanger(ax, x, y):
 def _extraction_ports(x: float, bleeds: int) -> list[float]:
     """x of each extraction nozzle along E-304, hottest first.
 
-    The first extraction IS the trunk inlet - E-302 has already taken everything
-    above it - so nozzle zero sits on the hot face rather than inboard of it.
-    The last one sits on the cold face, where the trunk is exhausted.
+    The body is drawn with its HOT end on the RIGHT, because the first expansion
+    stage - the one fed from the hottest nozzle - is the rightmost machine of a
+    train that flows right to left. Nozzle order then matches interheater order
+    and no two bleed manifolds have to cross. The first extraction IS the trunk
+    inlet, so nozzle zero sits on the hot face; the last sits on the cold face.
     """
-    left = x - EXTRACTION_HALF_W
+    half_w = _extraction_half_w(bleeds)
+    right = x + half_w
     if bleeds <= 1:
-        return [left]
-    span = 2.0 * EXTRACTION_HALF_W
-    return [left + span * index / (bleeds - 1) for index in range(bleeds)]
+        return [right]
+    span = 2.0 * half_w
+    return [right - span * index / (bleeds - 1) for index in range(bleeds)]
 
 
 def _extraction_hx(ax, x, y, bleeds: int):
@@ -557,12 +663,13 @@ def _extraction_hx(ax, x, y, bleeds: int):
     """
     from matplotlib.patches import Polygon
 
-    left, right = x - EXTRACTION_HALF_W, x + EXTRACTION_HALF_W
+    half_w = _extraction_half_w(bleeds)
+    left, right = x - half_w, x + half_w
     hot_h, cold_h = EXTRACTION_HOT_HALF_H, EXTRACTION_COLD_HALF_H
     ax.add_patch(Polygon(
         [
-            (left, y + hot_h), (right, y + cold_h),
-            (right, y - cold_h), (left, y - hot_h),
+            (left, y + cold_h), (right, y + hot_h),
+            (right, y - hot_h), (left, y - cold_h),
         ],
         closed=True, facecolor="#fff3e0", edgecolor=INK, lw=1.5, zorder=4,
     ))
@@ -575,13 +682,13 @@ def _extraction_hx(ax, x, y, bleeds: int):
     for index in range(n + 1):
         fraction = index / n
         half_h = hot_h + (cold_h - hot_h) * fraction
-        xs.append(left + 2.0 * EXTRACTION_HALF_W * fraction)
+        xs.append(right - 2.0 * half_w * fraction)
         ys.append(y + (0.45 if index % 2 else -0.45) * half_h)
     ax.plot(xs, ys, color=INK, lw=1.0, zorder=5, solid_joinstyle="miter")
     # Counter-current return, drawn along the body against the trunk direction.
     ax.annotate(
-        "", xy=(left + 0.34, y + hot_h * 0.62),
-        xytext=(right - 0.34, y + cold_h * 0.62),
+        "", xy=(right - 0.34, y + cold_h * 0.62),
+        xytext=(left + 0.34, y + cold_h * 0.62),
         arrowprops=dict(arrowstyle="-|>", color=COLD, lw=1.1, mutation_scale=8),
         zorder=6,
     )
@@ -596,16 +703,19 @@ def _extraction_hx(ax, x, y, bleeds: int):
 
 
 def _heat_network(ax, x, y):
-    """The district-heating network itself: a load block outside the plant boundary."""
-    from matplotlib.patches import Rectangle
+    """The heat user: a terminal outside the plant boundary, not an exchanger.
 
-    ax.add_patch(Rectangle((x - 1.5, y - 0.75), 3.0, 1.5, facecolor="#fff3e0", edgecolor=HOT, lw=1.5, zorder=4))
-    for k in range(3):
-        yy = y - 0.36 + k * 0.36
-        ax.annotate(
-            "", xy=(x + 1.15, yy), xytext=(x - 1.15, yy),
-            arrowprops=dict(arrowstyle="-|>", color=HOT, lw=1.0, mutation_scale=8), zorder=5,
-        )
+    E-302 is the one exchanger between plant and user; the user's own plant is
+    off the drawing, so it is shown as a boundary block on E-302's two stubs.
+    """
+    from matplotlib.patches import FancyBboxPatch
+
+    ax.add_patch(FancyBboxPatch(
+        (x - 1.05, y - 0.26), 2.1, 0.52, boxstyle="round,pad=0.04,rounding_size=0.18",
+        facecolor="#fff3e0", edgecolor=HOT, lw=1.3, zorder=4,
+    ))
+    ax.text(x, y, "HEAT USER", ha="center", va="center", fontsize=6.5,
+            fontweight="bold", color=HOT, zorder=5)
 
 
 def _vessel(ax, x, y, w, h, fc: str):
@@ -898,13 +1008,13 @@ def _draw_ground(ax, diagram: Diagram, fs: float):
     span = (diagram.x_max - diagram.x_min) * 4.0
     ax.add_patch(
         Rectangle((diagram.x_min - span, diagram.y_min - span), span * 2 + (diagram.x_max - diagram.x_min),
-                  span + (Y_GROUND - diagram.y_min), facecolor="#efebe9", edgecolor="none", zorder=0)
+                  span + (diagram.bands.ground - diagram.y_min), facecolor="#efebe9", edgecolor="none", zorder=0)
     )
-    ax.plot([diagram.x_min - span, diagram.x_max + span], [Y_GROUND, Y_GROUND], color=ROCK, lw=1.6, zorder=1)
+    ax.plot([diagram.x_min - span, diagram.x_max + span], [diagram.bands.ground, diagram.bands.ground], color=ROCK, lw=1.6, zorder=1)
 
     # Anchor the caption to the left EDGE of the axes, not to a data coordinate, so
     # it stays put when the data limits expand.
-    ax.text(0.012, Y_GROUND - 0.45, "grade", fontsize=fs * 0.9, color=ROCK, va="top", zorder=2,
+    ax.text(0.012, diagram.bands.ground - 0.45, "grade", fontsize=fs * 0.9, color=ROCK, va="top", zorder=2,
             transform=blended_transform_factory(ax.transAxes, ax.transData))
 
 
@@ -975,7 +1085,7 @@ def _draw_air_lines(ax, diagram: Diagram, fs: float):
             _elbow(ax, c_r, nxt_in, AIR)
     # aftercooler -> down the well into the cavern
     _, last_r = _hx_air(coolers[-1])
-    _pipe(ax, [last_r, (x_cav + 1.4, last_r[1]), (x_cav + 1.4, Y_CAVERN + 1.4)], AIR, arrow_at=0.6)
+    _pipe(ax, [last_r, (x_cav + 1.4, last_r[1]), (x_cav + 1.4, diagram.bands.cavern + 1.4)], AIR, arrow_at=0.6)
 
     # discharging: cavern ->
     # [AH-20x ambient reheater? -> E-20x water reheater? -> expander -> throttle?]
@@ -997,7 +1107,7 @@ def _draw_air_lines(ax, diagram: Diagram, fs: float):
         if valve is not None:
             vl, vr = _control_valve_air(valve)
             seq.append((vr, vl))
-    _pipe(ax, [(x_cav + 1.4, Y_CAVERN + 1.4), (x_cav + 1.4, seq[0][0][1]), seq[0][0]], AIR, arrow_at=0.6)
+    _pipe(ax, [(x_cav + 1.4, diagram.bands.cavern + 1.4), (x_cav + 1.4, seq[0][0][1]), seq[0][0]], AIR, arrow_at=0.6)
     for (_, prev_out), (nxt_in, _) in zip(seq, seq[1:]):
         _elbow(ax, prev_out, nxt_in, AIR)
     stack = diagram.by_tag("S-201")
@@ -1080,7 +1190,8 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
     extraction = diagram.by_tag("E-304")
     network = diagram.by_tag("H-301")
     coolers = sorted([e for e in diagram.of_kind("water_hx") if e.y == Y_EC], key=lambda e: e.x)
-    heaters = sorted([e for e in diagram.of_kind("water_hx") if e.y == Y_EE], key=lambda e: e.x)
+    bands = diagram.bands
+    heaters = sorted([e for e in diagram.of_kind("water_hx") if e.y == bands.ee], key=lambda e: e.x)
     if not coolers:
         return
     x_ct, x_ht = cold.x, hot.x
@@ -1104,106 +1215,44 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
     # --- Hot tank discharge.  The whole trunk crosses E-302, then enters E-304.
     _pipe(ax, [(x_ht + TANK_W / 2, Y_TANKS), (p_hot.x - 0.42, Y_TANKS)], HOT, lw=1.6, arrow_at=0.6)
     if user_hxs:
-        _pipe(
-            ax,
-            [(p_hot.x + 0.42, Y_TANKS), (user_hxs[0].x - HX_R, Y_TANKS)],
-            HOT,
-            lw=1.6,
-            arrow_at=0.6,
-        )
+        tap = user_hxs[0]
+        _pipe(ax, [(p_hot.x + 0.42, Y_TANKS), (tap.x - HX_R, Y_TANKS)], HOT, lw=1.6, arrow_at=0.6)
         if extraction is not None:
-            _pipe(
-                ax,
-                [(user_hxs[-1].x + HX_R, Y_TANKS),
-                 (extraction.x - EXTRACTION_HALF_W, Y_TANKS)],
-                WARM,
-                lw=1.6,
-                arrow_at=0.6,
-            )
-        supply_x = user_hxs[-1].x + HX_R + 0.5
+            # Over the top of E-304 and into its HOT face, on the right.
+            hot_face = extraction.x + _extraction_half_w(extraction.ports)
+            climb_x = tap.x + HX_R + 0.35
+            _pipe(ax, [(tap.x + HX_R, Y_TANKS), (climb_x, Y_TANKS),
+                       (climb_x, Y_TRUNK_OVER), (hot_face + 0.6, Y_TRUNK_OVER),
+                       (hot_face + 0.6, Y_TANKS + 0.18), (hot_face, Y_TANKS + 0.18)],
+                  WARM, lw=1.6, arrow_at=0.9)
+        supply_x = tap.x + HX_R + 0.5
         supply_color = WARM
+        if network is not None:
+            # One counter-current pass: user return in on the left stub, supply
+            # out on the right stub, both to the boundary terminal below.
+            for dx, color, up in ((-0.34, COLD, True), (0.34, HOT, False)):
+                x_stub = tap.x + dx
+                y_top = Y_TANKS - (HX_R ** 2 - dx ** 2) ** 0.5
+                y_bot = network.y + 0.28
+                points = [(x_stub, y_bot), (x_stub, y_top)] if up else [(x_stub, y_top), (x_stub, y_bot)]
+                _pipe(ax, points, color, lw=1.3, arrow_at=0.6)
     else:
         supply_x = p_hot.x + 0.9
         supply_color = HOT
         _pipe(ax, [(p_hot.x + 0.42, Y_TANKS), (supply_x, Y_TANKS)], HOT, lw=1.6, arrow_at=0.6)
-    if user_hxs and network is not None:
-        # The external-user stream is one counter-current pass through the one
-        # exchanger: supply off the top, return in at the bottom. Both runs are
-        # kept clear of E-304, which they pass over and under on their way to
-        # the network block.
-        user_run_up = Y_TANKS + (Y_TANKS - Y_USER_RUN)
-        _pipe(ax, [(user_hxs[0].x, Y_TANKS + HX_R),
-                   (user_hxs[0].x, user_run_up),
-                   (network.x - 1.5, user_run_up)], HOT, lw=1.4, arrow_at=0.7)
-        _pipe(ax, [(network.x - 1.5, Y_USER_RUN),
-                   (user_hxs[0].x, Y_USER_RUN),
-                   (user_hxs[0].x, Y_TANKS - HX_R)], COLD, lw=1.4, arrow_at=0.7)
 
-    # --- DISCHARGING WATER: turbine-supply (orange) and cold-return (blue) headers,
-    # both ABOVE the interheaters (which face the tanks with their water on top).
+    # --- DISCHARGING WATER. Every horizontal run below the tank band is
+    # recorded as (y, x_left, x_right), so a vertical run is bridged exactly
+    # where it crosses one and nowhere else.
     hr = [_hx_wat(h)[1] for h in heaters]
-    if extraction is not None:
-        # One bleed per extraction nozzle, in stage order along the body. Every
-        # stage owns a nozzle, so the drawing needs no grouping rule at all -
-        # where two stages share a temperature the backend simply places their
-        # nozzles at the same point and the two runs leave together.
-        stage_heaters = sorted(heaters, key=lambda item: int(item.tag.split("-")[1]))
-        ports = _extraction_ports(extraction.x, extraction.ports)
-        count = len(stage_heaters)
-        # One manifold per bleed, each on its own band. They cross each other
-        # because the plant does: the hottest extraction is at the LEFT of the
-        # body and belongs to the first expansion stage, which sits at the far
-        # RIGHT of a train that flows right to left.
-        #
-        # The bands are ordered by how far LEFT each manifold has to reach, not
-        # by stage. The one that travels furthest gets the top band, so it clears
-        # E-303 and the cold tank instead of running straight through them.
-        reach = sorted(
-            range(count), key=lambda index: _hx_wat(stage_heaters[index])[1][0]
-        )
-        band_of = {stage: order for order, stage in enumerate(reach)}
-        step = (
-            (Y_BLEED_TOP - Y_BLEED_BOTTOM) / (count - 1) if count > 1 else 0.0
-        )
-        for index, heater in enumerate(stage_heaters):
-            if index >= len(ports):
-                break
-            port_x = ports[index]
-            target_x, target_y = _hx_wat(heater)[1]
-            header_y = Y_BLEED_TOP - step * band_of[index]
-            fraction = index / max(1, extraction.ports - 1)
-            nozzle_y = Y_TANKS - (
-                EXTRACTION_HOT_HALF_H
-                + (EXTRACTION_COLD_HALF_H - EXTRACTION_HOT_HALF_H) * fraction
-            )
-            _bridge(
-                ax, port_x, nozzle_y, header_y, WARM, lw=1.2, arrow=False,
-                hops=[Y_USER_RUN],
-            )
-            _pipe(
-                ax,
-                [(min(port_x, target_x), header_y), (max(port_x, target_x), header_y)],
-                WARM, lw=1.2, arrow_at=None,
-            )
-            _bridge(
-                ax, target_x, header_y, target_y, WARM,
-                hops=[Y_E303_BAND, Y_FINAL_HEADER],
-            )
-    else:
-        wr0, wr1 = min([supply_x, *[p[0] for p in hr]]), max([supply_x, *[p[0] for p in hr]])
-        _pipe(ax, [(supply_x, Y_TANKS), (supply_x, Y_DHDR_W)], supply_color, lw=1.6, arrow_at=None)
-        _pipe(ax, [(wr0, Y_DHDR_W), (wr1, Y_DHDR_W)], supply_color, lw=1.6, arrow_at=None)
-    # The solved topology has TWO return manifolds. Only the selected group
-    # mixes upstream of E-303; warmer stages bypass it and join its warmed
-    # outlet on the final manifold. This is the actual backend placement, not a
-    # decorative label on an all-return cooler.
-    #
-    # The group is the COLDEST returns, which is not the same as a run of
-    # consecutive stages: E-304 gives each stage its own supply, so the returns
-    # are no longer ordered by stage. The selection is therefore reconstructed
-    # from the solved return temperatures rather than from a stage index.
-    header_y = Y_E303_BAND if extraction is not None else Y_DHDR_C
-    final_y = Y_FINAL_HEADER if extraction is not None else Y_DHDR_C - 0.62
+    runs: list[tuple[float, float, float]] = []
+
+    # Which returns E-303 takes: the COLDEST ones, reconstructed from the
+    # solved return temperatures (with E-304 the returns are not ordered by
+    # stage, so a stage range would be wrong).
+    header_y = bands.e303_header
+    final_y = bands.final_header
+    from_below = header_y < trim_cooler.y - 1e-9
     by_stage = sorted(heaters, key=lambda item: int(item.tag.split("-")[1]))
     selected: list[Equipment] = []
     if result is not None and result.thermal_store is not None:
@@ -1219,104 +1268,184 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
             )[:count]
             selected = [by_stage[index] for index in sorted(coldest)]
     bypassed = [heater for heater in by_stage if heater not in selected]
+    selected_ports = [_hx_wat(heater)[0] for heater in selected]
+    bypass_ports = [_hx_wat(heater)[0] for heater in bypassed]
+    if selected:
+        runs.append((header_y, trim_cooler.x, max(point[0] for point in selected_ports)))
+
+    if extraction is not None:
+        cold_face_x = extraction.x - _extraction_half_w(extraction.ports)
+        hot_face_x = extraction.x + _extraction_half_w(extraction.ports)
+        riser_x = cold_face_x - 0.45
+        final_left = trim_cooler.x
+        final_right = max([riser_x, *[point[0] for point in bypass_ports]])
+        runs.append((final_y, final_left, final_right))
+
+        # One bleed per extraction nozzle, in stage order along the body. The
+        # hottest nozzle is on the RIGHT, like the first expansion stage it
+        # feeds, so nozzle order matches interheater order; the lane order is
+        # still optimised, which leaves the bleeds free of mutual crossings.
+        stage_heaters = sorted(heaters, key=lambda item: int(item.tag.split("-")[1]))
+        ports = _extraction_ports(extraction.x, extraction.ports)
+        count = min(len(stage_heaters), len(ports))
+        targets = [_hx_wat(stage_heaters[i])[1] for i in range(count)]
+        lane_y = _bleed_lanes(ports[:count], [t[0] for t in targets], bands)
+        bleed_runs = [
+            (lane_y[i], min(ports[i], targets[i][0]), max(ports[i], targets[i][0]))
+            for i in range(count)
+        ]
+        all_runs = runs + bleed_runs
+        for index in range(count):
+            port_x = ports[index]
+            target_x, target_y = targets[index]
+            lane = lane_y[index]
+            fraction = index / max(1, extraction.ports - 1)
+            nozzle_y = Y_TANKS - (
+                EXTRACTION_HOT_HALF_H
+                + (EXTRACTION_COLD_HALF_H - EXTRACTION_HOT_HALF_H) * fraction
+            )
+            others = [run for run in all_runs if run is not bleed_runs[index]]
+            _bridge(ax, port_x, nozzle_y, lane, WARM, lw=1.2, arrow=False,
+                    hops=_crossings(port_x, nozzle_y, lane, others))
+            _pipe(ax, [(bleed_runs[index][1], lane), (bleed_runs[index][2], lane)],
+                  WARM, lw=1.2, arrow_at=None)
+            _bridge(ax, target_x, lane, target_y, WARM,
+                    hops=_crossings(target_x, lane, target_y, others))
+        runs = all_runs
+    else:
+        wr0, wr1 = min([supply_x, *[p[0] for p in hr]]), max([supply_x, *[p[0] for p in hr]])
+        _pipe(ax, [(supply_x, Y_TANKS), (supply_x, bands.dhdr_w)], supply_color, lw=1.6, arrow_at=None)
+        _pipe(ax, [(wr0, bands.dhdr_w), (wr1, bands.dhdr_w)], supply_color, lw=1.6, arrow_at=None)
 
     if selected:
-        selected_ports = [_hx_wat(heater)[0] for heater in selected]
-        # The collection header reaches from the coldest return that joins the
-        # group across to E-303, on whichever side of the drawing it sits.
-        span = [trim_cooler.x, *[point[0] for point in selected_ports]]
-        _pipe(
-            ax,
-            [(min(span), header_y), (max(span), header_y)],
-            COLD, lw=1.6, arrow_at=None,
-        )
+        far = max(point[0] for point in selected_ports)
         for port_x, port_y in selected_ports:
-            _bridge(ax, port_x, port_y, header_y, COLD)
-        _pipe(
-            ax,
-            [
-                (trim_cooler.x - HX_R, header_y),
-                (trim_cooler.x - HX_R, final_y),
-            ],
-            COLD,
-            lw=1.6,
-            arrow_at=0.7,
-        )
+            _bridge(ax, port_x, port_y, header_y, COLD,
+                    hops=_crossings(port_x, port_y, header_y, runs))
+        if from_below:
+            # Coldest returns in at the bottom, warmed, out at the top into the
+            # final header above.
+            _pipe(ax, [(far, header_y), (trim_cooler.x, header_y),
+                       (trim_cooler.x, trim_cooler.y - HX_R)], COLD, lw=1.6, arrow_at=0.93)
+            _pipe(ax, [(trim_cooler.x, trim_cooler.y + HX_R), (trim_cooler.x, final_y)],
+                  COLD, lw=1.6, arrow_at=0.6)
+        else:
+            _pipe(ax, [(far, header_y), (trim_cooler.x + HX_R, header_y)], COLD, lw=1.6, arrow_at=0.97)
+            _pipe(ax, [(trim_cooler.x, header_y - HX_R), (trim_cooler.x, final_y)],
+                  COLD, lw=1.6, arrow_at=0.6)
     else:
         # Solved bypass: the body remains installed but has no active process
-        # connection because no legal return suffix is below ambient.
-        _tag(ax, trim_cooler.x, trim_cooler.y + 1.05, "BYPASS", fs * 0.82, MUTED)
+        # connection because no return is below ambient.
+        _tag(ax, trim_cooler.x - HX_R - 0.25, trim_cooler.y, "BYPASS", fs * 0.82, MUTED, va="center", ha="right")
 
-    bypass_ports = [_hx_wat(heater)[0] for heater in bypassed]
     for port_x, port_y in bypass_ports:
-        _bridge(ax, port_x, port_y, final_y, COLD)
+        _bridge(ax, port_x, port_y, final_y, COLD,
+                hops=_crossings(port_x, port_y, final_y, runs))
 
     if extraction is None:
         # No user, no extraction body: the mixed return goes straight to the tank.
-        final_right = max(
-            [trim_cooler.x - HX_R, *[point[0] for point in bypass_ports]]
-        )
-        _pipe(ax, [(x_ct, final_y), (final_right, final_y)], COLD, lw=1.6, arrow_at=None)
-        _pipe(
-            ax,
-            [(x_ct, final_y), (x_ct, cold.y - TANK_H / 2)],
-            COLD, lw=1.6, arrow_at=0.7,
-        )
+        final_right = max([trim_cooler.x, *[point[0] for point in bypass_ports]])
+        _pipe(ax, [(min(x_ct, trim_cooler.x), final_y), (final_right, final_y)], COLD, lw=1.6, arrow_at=None)
+        _pipe(ax, [(x_ct, final_y), (x_ct, cold.y - TANK_H / 2)], COLD, lw=1.6, arrow_at=0.7)
+        for heater in heaters:
+            (_, _), (rx, ry) = _hx_wat(heater)
+            _bridge(ax, rx, bands.dhdr_w, ry, supply_color, hops=[bands.dhdr_c, final_y])
     else:
-        # E-304 is the LAST thing the return meets. Collect everything on the
-        # final manifold, take it to the body's COLD face, run it counter to the
-        # trunk, and only then drop it into the tank. Drawing it any other way
-        # would put the recuperation on the wrong side of the tank and imply the
-        # loop closes on the mixed return, which it does not.
-        cold_face_x = extraction.x + EXTRACTION_HALF_W
-        hot_face_x = extraction.x - EXTRACTION_HALF_W
-        riser_x = cold_face_x + 0.62
-        final_left = min(
-            [trim_cooler.x - HX_R, *[point[0] for point in bypass_ports]]
-        )
-        _pipe(
-            ax,
-            [(final_left, final_y), (riser_x, final_y)],
-            COLD, lw=1.6, arrow_at=0.55,
-        )
-        # Up past the bleed manifolds and into the body's COLD face, so the
-        # return enters where the trunk is coldest and leaves where it is
-        # hottest: a genuine counter-current pass, not a parallel one. The
-        # manifolds it crosses are bridged, so no crossing reads as a tee.
-        entry_y = Y_TANKS - EXTRACTION_COLD_HALF_H * 0.45
-        crossed = [
-            Y_BLEED_TOP - (Y_BLEED_TOP - Y_BLEED_BOTTOM) * index / max(1, len(heaters) - 1)
-            for index in range(len(heaters))
-        ]
-        _bridge(
-            ax, riser_x, final_y, entry_y, COLD,
-            arrow=False,
-            hops=[value for value in crossed if final_y < value < entry_y],
-        )
-        _pipe(
-            ax,
-            [(riser_x, entry_y), (cold_face_x, entry_y)],
-            COLD, lw=1.6, arrow_at=0.7,
-        )
-        # Out of the hot face, under the trunk inlet, then home along its own
-        # band. The return leaves E-304 warmer than it arrived, and THAT is the
-        # temperature the cold tank actually receives.
-        _pipe(
-            ax,
-            [
-                (hot_face_x, Y_TANKS - EXTRACTION_HOT_HALF_H * 0.55),
-                (hot_face_x - 0.35, Y_TANKS - EXTRACTION_HOT_HALF_H * 0.55),
-                (hot_face_x - 0.35, Y_RECUP_RETURN),
-                (x_ct, Y_RECUP_RETURN),
-                (x_ct, cold.y - TANK_H / 2),
-            ],
-            COLD, lw=1.6, arrow_at=0.86,
-        )
+        # E-304 is the LAST thing the return meets: collect everything on the
+        # final manifold, run it up into the body's COLD face, counter to the
+        # trunk, and out of the HOT face into the cold tank.
+        _pipe(ax, [(final_left, final_y), (final_right, final_y)], COLD, lw=1.6, arrow_at=None)
+        entry_y = Y_TANKS
+        _bridge(ax, riser_x, final_y, entry_y, COLD, arrow=False,
+                hops=_crossings(riser_x, final_y, entry_y, runs))
+        _pipe(ax, [(riser_x, entry_y), (cold_face_x, entry_y)], COLD, lw=1.6, arrow_at=0.7)
+        # Out of the top of the body at its HOT end, back over E-304, E-302 and
+        # the tanks, and into the cold tank from above.
+        exit_x = hot_face_x - 0.35
+        climb_x = tap.x + HX_R + 0.35
+        _pipe(ax, [(exit_x, Y_TANKS + EXTRACTION_HOT_HALF_H * 0.9), (exit_x, Y_RETURN_OVER),
+                   (climb_x + 0.5, Y_RETURN_OVER)], COLD, lw=1.6, arrow_at=None)
+        _bridge_h(ax, climb_x + 0.5, climb_x - 0.5, Y_RETURN_OVER, COLD, hops=[climb_x])
+        _pipe(ax, [(climb_x - 0.5, Y_RETURN_OVER), (hot.x + TANK_W / 2 + 0.35, Y_RETURN_OVER),
+                   (hot.x + TANK_W / 2 + 0.35, Y_RETURN_HOME)], COLD, lw=1.6, arrow_at=None)
+        # Down beside the cold tank and in through its side: the tank top
+        # carries the charging pump and supply riser.
+        side_x = x_ct + TANK_W / 2 + 0.35
+        _bridge_h(ax, hot.x + TANK_W / 2 + 0.35, side_x, Y_RETURN_HOME, COLD, hops=[x_ht])
+        _pipe(ax, [(side_x, Y_RETURN_HOME), (side_x, Y_TANKS + 0.5),
+                   (x_ct + TANK_W / 2, Y_TANKS + 0.5)], COLD, lw=1.6, arrow_at=0.85)
 
-    for heater in heaters:
-        (_, _), (rx, ry) = _hx_wat(heater)
-        if extraction is None:
-            _bridge(ax, rx, Y_DHDR_W, ry, supply_color, hops=[Y_DHDR_C, final_y])
+
+def _bridge_h(ax, xa, xb, y, color, lw=1.6, hops=()):
+    """A horizontal run from xa to xb that bridges over each x in ``hops``."""
+    from matplotlib.patches import Arc
+
+    step = -1 if xa > xb else 1
+    xs = sorted([x for x in hops if min(xa, xb) + HOP_R < x < max(xa, xb) - HOP_R], reverse=(xa > xb))
+    cur = xa
+    for xh in xs:
+        ax.plot([cur, xh - step * HOP_R], [y, y], color=color, lw=lw, solid_capstyle="butt", zorder=2)
+        ax.add_patch(Arc((xh, y), 2 * HOP_R, 2 * HOP_R, angle=0, theta1=0, theta2=180,
+                         color=color, lw=lw, zorder=2))
+        cur = xh + step * HOP_R
+    ax.plot([cur, xb], [y, y], color=color, lw=lw, solid_capstyle="round", zorder=2)
+
+
+def _crossings(x: float, y_from: float, y_to: float,
+               runs: list[tuple[float, float, float]]) -> list[float]:
+    """Heights at which a vertical run at ``x`` really crosses a horizontal one."""
+    low, high = min(y_from, y_to), max(y_from, y_to)
+    return sorted({
+        y for y, left, right in runs
+        if left + 1e-6 < x < right - 1e-6 and low + HOP_R < y < high - HOP_R
+    })
+
+
+def _bleed_lanes(ports: list[float], targets: list[float], bands: Bands) -> list[float]:
+    """Lane height of every bleed manifold, ordered to minimise crossings.
+
+    Bleed ``i`` drops from its nozzle at ``ports[i]`` to its lane, runs across
+    to ``targets[i]`` and drops to its interheater. Its first drop crosses every
+    lane above its own that spans ``ports[i]``; its second drop crosses every
+    lane below its own that spans ``targets[i]``. The order is improved by
+    pairwise swaps from a few seeds; with at most ten stages that is cheap and
+    deterministic.
+    """
+    count = len(ports)
+    spans = [(min(p, t), max(p, t)) for p, t in zip(ports, targets)]
+
+    def cost(order: list[int]) -> int:
+        rank = {bleed: position for position, bleed in enumerate(order)}
+        total = 0
+        for i in range(count):
+            for j in range(count):
+                if i == j:
+                    continue
+                left, right = spans[j]
+                if rank[j] < rank[i] and left < ports[i] < right:
+                    total += 1
+                if rank[j] > rank[i] and left < targets[i] < right:
+                    total += 1
+        return total
+
+    seeds = [
+        list(range(count)),
+        list(reversed(range(count))),
+        sorted(range(count), key=lambda i: spans[i][0]),
+        sorted(range(count), key=lambda i: -(spans[i][1] - spans[i][0])),
+    ]
+    best = min(seeds, key=cost)
+    improved = True
+    while improved:
+        improved = False
+        for a in range(count):
+            for b in range(a + 1, count):
+                trial = list(best)
+                trial[a], trial[b] = trial[b], trial[a]
+                if cost(trial) < cost(best):
+                    best, improved = trial, True
+    rank = {bleed: position for position, bleed in enumerate(best)}
+    return [bands.bleed_top - bands.bleed_step * rank[i] for i in range(count)]
 
 
 # Peripheral symbols carry ISA details (hatches, atmosphere arrows, elliptical
@@ -1327,7 +1456,7 @@ def _draw_water_loop(ax, diagram: Diagram, result: PlantResult | None, fs: float
 _PERIPHERAL = {
     "air_cooler": lambda ax, e: _air_cooler(ax, e.x, e.y),
     "ambient_heater": lambda ax, e: _ambient_heater(ax, e.x, e.y),
-    "water_trim_cooler": lambda ax, e: _air_cooler(ax, e.x, e.y),
+    "water_trim_cooler": lambda ax, e: _ambient_recovery(ax, e.x, e.y),
     "offtake_tap": lambda ax, e: _dh_exchanger(ax, e.x, e.y),
     "extraction_hx": lambda ax, e: _extraction_hx(ax, e.x, e.y, e.ports),
     "heat_user": lambda ax, e: _heat_network(ax, e.x, e.y),
@@ -1390,7 +1519,7 @@ def place_tag(ax, e: Equipment, fs: float) -> None:
                 fontweight="bold", color=ROCK, zorder=8)
         ax.text(e.x, e.y - 0.5, e.label, ha="center", va="center", fontsize=fs * 0.95, color=ROCK, zorder=8)
     elif e.kind == "heat_user":
-        ax.text(e.x, e.y - 1.05, f"{e.tag}  {e.label.replace(chr(10), ' ')}", ha="center", va="top",
+        ax.text(e.x, e.y - 0.42, e.tag, ha="center", va="top",
                 fontsize=fs * 0.9, fontweight="bold", color=HOT, zorder=8)
     elif e.kind == "grid":
         # The driver now sits to the RIGHT of the grid box, so the tag goes left.
@@ -1404,6 +1533,9 @@ def place_tag(ax, e: Equipment, fs: float) -> None:
         # The shaft bus passes directly below the motor / above the generator,
         # so a tag under the circle lands on the line. Put it beside instead.
         ax.text(e.x + 0.78, e.y, e.tag, ha="left", va="center", fontsize=fs * 0.9,
+                fontweight="bold", color=INK, zorder=8)
+    elif e.kind == "water_trim_cooler":
+        ax.text(e.x + HX_R + 0.25, e.y + 0.25, e.tag, ha="left", va="center", fontsize=fs,
                 fontweight="bold", color=INK, zorder=8)
     elif e.kind == "valve":
         ax.text(e.x, e.y - 0.85, e.tag, ha="center", va="top", fontsize=fs * 0.9,
@@ -1454,7 +1586,7 @@ def _annotate_values(
                  fs * 0.95, HOT if diagram.has_water_loop else VENT, va="bottom")
             # Air temperature INTO each turbine - THE number that decides how much
             # work comes back out of the plant.
-            _stream_label(ax, e.x - STAGE_PITCH / 2 + 0.4, Y_KE, f"{heat.outlet.temperature_c:.0f}°C", fs * 0.9)
+            _stream_label(ax, e.x - STAGE_PITCH / 2 + 0.4, diagram.bands.ke, f"{heat.outlet.temperature_c:.0f}°C", fs * 0.9)
 
     for i, heat in enumerate(ambient_heaters):
         e = diagram.by_tag(f"AH-{201 + i}")
@@ -1481,89 +1613,34 @@ def _annotate_values(
     # generator's grid tie now shares the expander band, so the old spot on that band
     # collided with the GRID box.
     _stream_label(
-        ax, stack.x - 1.5, Y_EE + 2.6,
+        ax, stack.x - 1.5, stack.y + 2.6,
         f"{exhaust.temperature_c:.0f} °C   {exhaust.pressure_bar:.2f} bar\nexergy lost: {loss / 1000:.1f} kJ/kg",
         fs * 0.9, color=VENT,
     )
 
     store = result.thermal_store
     trim = diagram.by_tag("E-303")
-    if store and trim:
+    if store and trim and store.cold_return_heat_absorbed_from_ambient_j_per_kg_air > 0.0:
         # Keep the live duty above the fin-fan. The ordinary ISA tag is below
         # the symbol; putting both below made the two texts overlap.
         _stream_label(
             ax,
-            trim.x,
-            trim.y + 1.25,
-            (
-                f"{store.cold_return_heat_absorbed_from_ambient_j_per_kg_air / 1000:.0f}"
-                " kJ/kg ambient heat\n"
-            )
-            + f"selected mix {store.cold_return_recovery_inlet_temperature_k - 273.15:.0f}→"
-            f"{store.cold_return_recovery_outlet_temperature_k - 273.15:.0f} °C",
+            trim.x + HX_R + 1.25,
+            trim.y - 0.3,
+            f"+{store.cold_return_heat_absorbed_from_ambient_j_per_kg_air / 1000:.0f} kJ/kg\nfrom ambient",
             fs * 0.82,
             VENT,
         )
-    # E-304's solved state. The margin and the recuperated duty are the two
-    # numbers that are not readable off the geometry, and the recuperation is
-    # the one flow on this drawing that is neither a product nor an input - so
-    # it is labelled as internal rather than left to be guessed.
-    extraction = diagram.by_tag("E-304")
-    solved_extraction = result.extraction_exchanger
-    if extraction is not None and solved_extraction is not None:
-        _stream_label(
-            ax,
-            extraction.x,
-            Y_TANKS + EXTRACTION_HOT_HALF_H + 0.34,
-            f"+{solved_extraction.margin_k:.1f} K over each stage demand   ·   "
-            f"{solved_extraction.recuperated_heat_j_per_kg_air / 1000:.0f} kJ/kg "
-            "recuperated (internal)\n"
-            f"return {solved_extraction.return_inlet_temperature_k - 273.15:.0f}→"
-            f"{solved_extraction.return_outlet_temperature_k - 273.15:.0f} °C   ·   "
-            f"tightest zone approach {solved_extraction.minimum_terminal_difference_k:.1f} K",
-            fs * 0.8,
-            color=WARM,
-        )
-
-    # The heat user receives the band above the first extraction.  Selecting it
-    # changes product vs internal recuperation, not turbine work.
+    # The long solved-state notes of E-302 and E-304 live in the title block;
+    # on the drawing only the two user temperatures, next to their stubs.
     dh = result.heat_offtake
-    user_hxs = sorted(diagram.of_kind("offtake_tap"), key=lambda item: item.x)
-    dh_hx = user_hxs[0] if user_hxs else None
     network = diagram.by_tag("H-301")
-    store = result.thermal_store
-    if dh and dh_hx and network and store:
-        # T_x is the optimized minimum turbine supply, fixed before heat destination.
-        lines = [
-            "wet-expander target: " + wet_expander_envelope_label(),
-            f"trunk: {dh.hot_tank_temperature_k - 273.15:.0f} °C  →  "
-            f"{dh.turbine_supply_temperature_k - 273.15:.0f} °C first extraction   "
-            f"({store.total_water_mass_ratio:.2f} kg/kg-air in total)",
-            f"heat sold:   {dh.heat_j_per_kg_air / 1000:.0f} kJ/kg-air in one exchanger",
-            f"exergy sold: {dh.exergy_j_per_kg_air / 1000:.1f} kJ/kg-air",
-            f"heat user:   {dh.return_temperature_k - 273.15:.0f} → {dh.supply_temperature_k - 273.15:.0f} °C, "
-            f"{dh.network_water_per_kg_air:.2f} kg/kg-air, "
-            f"HX NTU {dh.heat_exchanger_ntu:g}, minimum effectiveness margin "
-            f"{dh.minimum_effectiveness_margin:.3f}",
-        ]
-
-        # The block describes the off-take branch; put it to the RIGHT of the user so it
-        # no longer eats the vertical space below the tank band.
-        ax.text(network.x + 1.9, Y_TANKS, "\n".join(lines), ha="left", va="center",
-                fontsize=fs * 0.85,
-                color=HOT,
-                zorder=8,
-                bbox=dict(boxstyle="round,pad=0.35", facecolor="#fff8f6", edgecolor=HOT, lw=0.7, alpha=0.95))
-
-        # Label the supply header with the hottest temperature any stage is bled
-        # at. On a single-level plant that is the classic common T_x; on a
-        # cascade it is the top of the ladder, and the rest of the ladder is
-        # below it.
-        _stream_label(
-            ax, dh_hx.x, Y_DHDR_W + 0.9,
-            f"hottest bleed {dh.turbine_supply_temperature_k - 273.15:.0f} °C",
-            fs * 0.9, color=HOT,
-        )
+    tap = diagram.by_tag("E-302")
+    if dh and network and tap:
+        ax.text(tap.x - 0.5, network.y + 0.62, f"{dh.return_temperature_k - 273.15:.0f} °C",
+                ha="right", va="center", fontsize=fs * 0.85, color=COLD, zorder=8)
+        ax.text(tap.x + 0.5, network.y + 0.62, f"{dh.supply_temperature_k - 273.15:.0f} °C",
+                ha="left", va="center", fontsize=fs * 0.85, color=HOT, zorder=8)
 
 
 def _draw_instruments(ax, diagram, config, result, fs):
@@ -1573,8 +1650,8 @@ def _draw_instruments(ax, diagram, config, result, fs):
         (0.9, "PI", f"{config.storage_pressure_bar:.0f}"),
         (-0.9, "TI", f"{config.ambient_temperature_c:.0f}"),
     ):
-        _balloon(ax, cavern.x + 4.4, Y_CAVERN + dy, tag, value, fs)
-        ax.plot([cavern.x + 2.9, cavern.x + 3.78], [Y_CAVERN + dy, Y_CAVERN + dy],
+        _balloon(ax, cavern.x + 4.4, cavern.y + dy, tag, value, fs)
+        ax.plot([cavern.x + 2.9, cavern.x + 3.78], [cavern.y + dy, cavern.y + dy],
                 color=MUTED, lw=0.8, ls="--", zorder=5)
 
     if result.thermal_store:
@@ -1634,6 +1711,18 @@ def _draw_title_block(ax, diagram, config, result, fs):
         lines.append("Fuel: none; frost control by turbine + throttle")
         lines.append("Ambient reheat: mandatory (icing-safe AD-CAES operation)")
     lines.append("Lower envelope: " + wet_expander_envelope_label())
+    if result is not None and result.extraction_exchanger is not None:
+        e304 = result.extraction_exchanger
+        lines.append(
+            f"E-304: +{e304.margin_k:.1f} K over each stage demand, "
+            f"{e304.recuperated_heat_j_per_kg_air / 1000:.0f} kJ/kg recuperated"
+        )
+    if result is not None and result.heat_offtake is not None:
+        dh = result.heat_offtake
+        lines.append(
+            f"Heat user: {dh.return_temperature_k - 273.15:.0f}->{dh.supply_temperature_k - 273.15:.0f} °C, "
+            f"{dh.heat_j_per_kg_air / 1000:.0f} kJ/kg sold"
+        )
     if result is not None:
         lines.append(f"Electrical RTE:     {result.round_trip_efficiency:6.1%}")
         lines.append(f"Useful-energy ratio:{result.useful_energy_delivery_ratio:6.1%}")

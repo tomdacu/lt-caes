@@ -266,7 +266,9 @@ def test_one_hot_tank_one_user_hx_and_one_bleed_per_stage():
         assert extraction is not None
         assert extraction.ports == stages
         # Process order along the tank band: sell first, then stage the rest.
-        assert exchangers[0].x < extraction.x < diagram.by_tag("H-301").x
+        # The user itself is a boundary terminal on E-302's own stubs.
+        assert exchangers[0].x < extraction.x
+        assert diagram.by_tag("H-301").x == pytest.approx(exchangers[0].x)
 
 
 def test_the_heat_user_is_not_called_a_district_heating_network():
