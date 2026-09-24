@@ -61,6 +61,7 @@ is.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -93,8 +94,9 @@ from .models import (
 )
 from .moisture import analyze_charge_moisture, inlet_humidity_ratio, saturation_humidity_ratio
 from .numerics import (
-    SearchUnresolved, affine_fixed_point, bisect, bracketed_root, illinois_residuals,
-    sampled_roots, simplex_feasible, trial_point,
+    SearchUnresolved, affine_fixed_point, bisect, bracketed_root, brent_maximize,
+    geometric_grid, illinois_residuals, sampled_roots,
+    simplex_feasible, trial_point,
 )
 from .thermal_limits import (
     TEMPERATURE_LIMIT_TOLERANCE_K,
@@ -195,8 +197,50 @@ WATER_MASS_CLOSURE_SEARCH_ERROR = 0.5 / (
 # one-joule budget instead of the ~30 J/kg a plain relative tolerance allowed.
 MAX_WATER_MASS_CLOSURE_ERROR = 2.0 * WATER_MASS_CLOSURE_SEARCH_ERROR
 
+# Heat-user (LTAHP combined-delivery) search.  The plant is one-dimensional in
+# the inventory R here (see _run_heat_user_search), so the search is a scan that
+# maps the binding constraint along R, then a bracketed refinement.
+# First scan: reference/SPAN .. reference*SPAN, neighbours at most RATIO apart.
+HEAT_USER_SCAN_SPAN = 4.0
+HEAT_USER_SCAN_RATIO = 1.25
+# Only when that finds nothing: the whole declared domain, 10 % apart.
+HEAT_USER_FALLBACK_RATIO = 1.10
+# Relative resolution of the refined inventory and of a constraint boundary.
+HEAT_USER_INVENTORY_TOLERANCE = 2e-4
+# Where two neighbouring scan points are refused by DIFFERENT constraints, a
+# feasible window can hide between them (one constraint gives way before the
+# other takes over). The gap is bisected down to this relative width.
+HEAT_USER_WINDOW_RESOLUTION = 2e-3
+# Humidity -> ladder -> cold tank -> charge -> humidity. The stored humidity is
+# set at the cavern state and normally settles on the first pass.
+HEAT_USER_CONSISTENCY_PASSES = 4
+
+# Exergy-optimal charge split: two shares (first and last branch), each found
+# by a bounded Brent search, alternated until neither moves by more than the
+# tolerance. A branch is never driven below FLOOR times an equal share: a
+# starved branch is still a physical exchanger, and the coolant ceiling decides
+# how far it may be starved.
+CHARGE_SPLIT_FLOOR_FRACTION = 1e-3
+CHARGE_SPLIT_ROUNDS = 4
+CHARGE_SPLIT_SHARE_TOLERANCE = 1e-3
+
 class HeatOfftakeTemperatureError(ValueError):
     """The requested DH temperatures cannot match the plant-coolant profile."""
+
+
+def _constraint_label(message: str | None) -> str:
+    """A refusal's constraint NAME, without the numbers that vary point to point.
+
+    One constraint then reads as one interval on the inventory axis, and two
+    neighbouring points can be compared for WHICH constraint refused them.
+    """
+    label = re.split(
+        r"[:(]|\s(?:between|reaches|at|of)\s|\s-?\d",
+        message or "unknown", maxsplit=1,
+    )[0].strip()
+    if label == "numerically unresolved":
+        return "numerical root unresolved (not a physical verdict)"
+    return label
 
 
 def _hx_profile_spread(result: PlantResult) -> float:
@@ -282,6 +326,15 @@ class _LadderEvaluation:
 
 
 @dataclass(frozen=True)
+class _InventoryPoint:
+    """One heat-user candidate: its solved plant, or the constraint that refused it."""
+
+    inventory: float
+    result: PlantResult | None
+    cause: str | None = None
+
+
+@dataclass(frozen=True)
 class _ColdReturnRecovery:
     """Optimal placement and state of the single heat-only E-303."""
 
@@ -324,6 +377,11 @@ class CAESPlant:
         self._requirements_cache: dict[
             float, tuple[_DischargeRequirement, ...]
         ] = {}
+        # Heat-user search continuation: the last explicit cold-tank temperature
+        # (it only seeds the humidity probe) and the last optimal split, as
+        # the two branch multipliers so it survives a change of inventory.
+        self._heat_user_cold_seed: float | None = None
+        self._charge_split_seed: tuple[float, float] | None = None
 
     @property
     def _p_ambient(self) -> float:
@@ -396,6 +454,8 @@ class CAESPlant:
         return result.round_trip_efficiency
 
     def _run_uncached(self) -> PlantResult:
+        if self._dispatches_heat_to_user():
+            return self._polish_wet_result(self._run_heat_user_search())
         self._preserve_search_path = True
         try:
             result = self._run_fast_search()
@@ -687,6 +747,473 @@ class CAESPlant:
             max_hx_temperature_spread_k=_hx_profile_spread(result),
         )
         return result
+
+    # ------------------------------------------------ heat-user (LTAHP) search
+
+    def _run_heat_user_search(self) -> PlantResult:
+        """Combined-delivery LTAHP as a one-dimensional problem in the inventory.
+
+        Under the minimum-duty dispatch the plant has exactly one free variable,
+        the conserved coolant inventory ``R``. Three facts make that exact:
+
+        * the discharge ladder depends on ``R`` and the stored humidity only -
+          the hot-store temperature enters it as an inequality, never in the
+          mass equation (``_solve_extraction_margin``);
+        * the cold-tank temperature is therefore EXPLICIT: E-303, final mixing,
+          E-304 recuperation and dwell act on returns that do not depend on the
+          trial tank temperature, so the coolant-loop "root" is one evaluation;
+        * the charge then runs once at that tank temperature, with the split
+          chosen by :meth:`_exergy_optimal_charge_split`.
+
+        A point is feasible or it is refused by a named constraint, so the scan
+        below is also a map of which constraint binds where along ``R``. The
+        objective is refined by bisection onto an adjacent constraint boundary
+        and Brent's method in between; with a hot user or an active coolant
+        ceiling the optimum usually sits on that boundary.
+        """
+        c = self.config
+        reference = 0.25 * min(c.compressor_stages, c.expander_stages)
+        scanned: dict[float, _InventoryPoint] = {}
+
+        def scan(values: list[float]) -> None:
+            for inventory in values:
+                inventory = min(INVENTORY_MAX, max(INVENTORY_MIN, inventory))
+                if inventory not in scanned:
+                    scanned[inventory] = self._heat_user_point(
+                        inventory, optimize_split=False
+                    )
+
+        def label(inventory: float) -> str:
+            return _constraint_label(scanned[inventory].cause)
+
+        def explore_windows() -> None:
+            """Bisect every gap between two points refused for different reasons."""
+            ordered = sorted(scanned)
+            gaps = [
+                (a, b) for a, b in zip(ordered, ordered[1:])
+                if scanned[a].result is None and scanned[b].result is None
+                and label(a) != label(b)
+            ]
+            while gaps:
+                a, b = gaps.pop()
+                if b / a - 1.0 < HEAT_USER_WINDOW_RESOLUTION:
+                    continue
+                middle = (a * b) ** 0.5
+                scan([middle])
+                if scanned[middle].result is not None:
+                    continue
+                if label(middle) != label(a):
+                    gaps.append((a, middle))
+                if label(middle) != label(b):
+                    gaps.append((middle, b))
+
+        scan(geometric_grid(
+            reference / HEAT_USER_SCAN_SPAN,
+            reference * HEAT_USER_SCAN_SPAN,
+            HEAT_USER_SCAN_RATIO,
+        ))
+        explore_windows()
+        if not any(point.result for point in scanned.values()):
+            scan(geometric_grid(INVENTORY_MIN, INVENTORY_MAX, HEAT_USER_FALLBACK_RATIO))
+            explore_windows()
+        if not any(point.result for point in scanned.values()):
+            raise self._heat_user_infeasibility(scanned)
+
+        refined: dict[float, _InventoryPoint] = {}
+
+        def point(inventory: float) -> _InventoryPoint:
+            if inventory not in refined:
+                refined[inventory] = self._heat_user_point(
+                    inventory, optimize_split=True
+                )
+            return refined[inventory]
+
+        def value(inventory: float) -> float | None:
+            result = point(inventory).result
+            return None if result is None else self._objective(result)
+
+        grid = sorted(scanned)
+        feasible = [r for r in grid if scanned[r].result is not None]
+        index = grid.index(max(
+            feasible, key=lambda r: self._objective(scanned[r].result)
+        ))
+        # The optimal split can move the best cell (it lifts the hot store, so
+        # a hot-user boundary moves outward): climb until no neighbour is better.
+        while True:
+            here = value(grid[index])
+            better = [
+                j for j in (index - 1, index + 1)
+                if 0 <= j < len(grid) and here is not None
+                and (value(grid[j]) or -float("inf")) > here
+            ]
+            if not better:
+                break
+            index = max(better, key=lambda j: value(grid[j]))
+        best = grid[index]
+        tolerance = HEAT_USER_INVENTORY_TOLERANCE * best
+
+        def feasible_end(infeasible: float, feasible_side: float) -> float:
+            """Bisect a constraint boundary; return its feasible side."""
+            while abs(infeasible - feasible_side) > tolerance:
+                middle = 0.5 * (infeasible + feasible_side)
+                if point(middle).result is None:
+                    infeasible = middle
+                else:
+                    feasible_side = middle
+            return feasible_side
+
+        low = grid[index - 1] if index > 0 else best
+        high = grid[index + 1] if index + 1 < len(grid) else best
+        if low < best and point(low).result is None:
+            low = feasible_end(low, best)
+        if high > best and point(high).result is None:
+            high = feasible_end(high, best)
+
+        def optimum_on_edge(edge: float, inward: float) -> bool:
+            """Unimodal and still rising into a feasible edge: the edge is it.
+
+            Brent's method never evaluates its ends and would crawl toward a
+            boundary optimum by golden steps; one inward probe settles it.
+            """
+            here, there = value(best), value(edge)
+            if edge == best or there is None or (here is not None and there < here):
+                return False
+            inner = value(edge + inward)
+            return inner is None or inner <= there
+
+        if not (
+            optimum_on_edge(high, -2.0 * tolerance)
+            or optimum_on_edge(low, 2.0 * tolerance)
+        ) and high - low > 2.0 * tolerance:
+            brent_maximize(value, low, high, x_tolerance=tolerance)
+
+        candidates = [p for p in refined.values() if p.result is not None]
+        candidates = candidates or [p for p in scanned.values() if p.result is not None]
+        chosen = max(candidates, key=lambda p: self._objective(p.result))
+        result = chosen.result
+        assert result is not None
+        result.optimization = OptimizationSummary(
+            objective=c.optimization_objective.value,
+            objective_value=self._objective(result),
+            evaluated_points=len(scanned) + len(refined),
+            max_hx_temperature_spread_k=_hx_profile_spread(result),
+        )
+        return result
+
+    def _heat_user_point(
+        self, inventory: float, *, optimize_split: bool
+    ) -> _InventoryPoint:
+        try:
+            return _InventoryPoint(
+                inventory, self._heat_user_design(inventory, optimize_split)
+            )
+        except SearchUnresolved as exc:
+            return _InventoryPoint(inventory, None, f"numerically unresolved: {exc}")
+        except ValueError as exc:
+            return _InventoryPoint(inventory, None, str(exc))
+
+    def _heat_user_design(
+        self, inventory: float, optimize_split: bool
+    ) -> PlantResult:
+        """Solve one heat-user plant at a fixed inventory, without a loop root.
+
+        Order: stored humidity -> E-304 ladder (mass root on the margin) ->
+        explicit cold tank -> charge at that tank. The ladder is solved against
+        the coolant ceiling as its provisional hot end, because the hot store
+        does not enter the mass equation; whether the real store reaches the
+        first extraction is then checked as the inequality it is.
+        """
+        c = self.config
+        ceiling = c.coolant_maximum_temperature_k + TEMPERATURE_LIMIT_TOLERANCE_K
+        stages = c.compressor_stages
+        cold_k = (
+            self._heat_user_cold_seed
+            if self._heat_user_cold_seed is not None
+            else c.ambient_temperature_k
+        )
+        _, probe = self._charge_with_ratios(
+            cold_k, [inventory / stages] * stages,
+            enforce_water_limit=False, analyze_moisture=True,
+        )
+        humidity = probe.protected_humidity_ratio
+        for _ in range(HEAT_USER_CONSISTENCY_PASSES):
+            bound = _ThermalStore(
+                total_ratio=inventory, cold_k=cold_k,
+                hot_before_loss_k=ceiling, hot_available_k=ceiling,
+                storage_loss_j_per_kg_air=0.0, charge_returns=(),
+                protected_humidity_ratio=humidity,
+                maximum_water_temperature_reached_k=ceiling,
+            )
+            ladder = self._heat_user_ladder(bound)
+            recovery = self._optimize_cold_return_recovery(ladder.returns)
+            tank_inlet_k = self._recuperated_tank_inlet_k(
+                inventory, ladder.supplies, ladder.returns,
+                recovery.mixed_tank_inlet_k,
+            )
+            cold_k = c.ambient_temperature_k + (
+                tank_inlet_k - c.ambient_temperature_k
+            ) * self._tank_decay(inventory)
+            charging, store = self._charge_adiabatic(cold_k, inventory)
+            if store.protected_humidity_ratio == humidity:
+                break
+            humidity = store.protected_humidity_ratio
+        else:
+            raise SearchUnresolved(
+                "stored humidity and cold-tank temperature did not settle"
+            )
+        self._heat_user_cold_seed = cold_k
+
+        trunk_inlet_k = ladder.supplies[0]
+        if store.hot_available_k <= trunk_inlet_k:
+            raise ValueError(
+                "the hot store is colder than the first E-304 extraction: "
+                f"{store.hot_available_k - 273.15:.2f} °C against "
+                f"{trunk_inlet_k - 273.15:.2f} °C"
+            )
+        design = self._materialize_ladder(store, ladder)
+        if (
+            abs(sum(r for r, _, _ in design.returns) - inventory)
+            > MAX_WATER_MASS_CLOSURE_ERROR
+        ):
+            raise ValueError(
+                "materialized interheater flows do not close the stored-water "
+                "mass balance"
+            )
+        design = replace(design, returned_mean_k=sum(
+            r * t for r, t, _ in design.returns
+        ) / inventory)
+
+        attempts: list[tuple[Cycle, _ThermalStore]] = []
+        if optimize_split:
+            ratios = [
+                p.heat_exchanger.water_air_mass_ratio
+                for p in charging.processes
+                if p.kind == "intercooling" and p.heat_exchanger is not None
+            ]
+            if len(ratios) == stages:
+                split = self._exergy_optimal_charge_split(
+                    cold_k, ratios, -design.cycle.work_j_per_kg, trunk_inlet_k
+                )
+                if split != ratios:
+                    try:
+                        optimized = self._charge_with_ratios(cold_k, split)
+                    except ValueError:
+                        optimized = None
+                    if (
+                        optimized is not None
+                        and optimized[1].protected_humidity_ratio == humidity
+                    ):
+                        attempts.append(optimized)
+        attempts.append((charging, store))
+
+        refusal: ValueError | None = None
+        for charge_cycle, charge_store in attempts:
+            try:
+                result = self._assemble_adiabatic(charge_cycle, charge_store, design)
+            except ValueError as exc:
+                refusal = refusal or exc
+                continue
+            closure = result.thermal_store.cold_loop_closure_error_k
+            if abs(closure) > COLD_LOOP_RETURN_CLOSURE_K:
+                refusal = refusal or ValueError(
+                    f"the coolant loop does not close: {closure:.2e} K"
+                )
+                continue
+            return result
+        assert refusal is not None
+        raise refusal
+
+    def _heat_user_ladder(self, bound: _ThermalStore) -> _LadderEvaluation:
+        """Mass-closed E-304 ladder, independent of the evaluation history.
+
+        The continued margin root is tried first because it is cheap. A seed
+        left by a distant inventory can stop it short of the mass tolerance,
+        and a candidate's feasibility must not depend on which candidate was
+        solved before it, so the fallback is the seed-free bracketed root.
+        """
+        inventory = bound.total_ratio
+        required, ladder, _ = self._solve_extraction_margin(bound, 0.0)
+        if (
+            ladder is not None
+            and abs(required - inventory) <= MAX_WATER_MASS_CLOSURE_ERROR
+        ):
+            return ladder
+        self._extraction_margin_fraction_seed = None
+        try:
+            _, ladder, _ = self._solve_extraction_margin_recovery(bound)
+        except SearchUnresolved as exc:
+            if "no mass bracket" in str(exc):
+                raise ValueError(
+                    "the coolant inventory is too small for the minimum "
+                    "moisture-safe interheater duties, even fed from the "
+                    "coolant ceiling"
+                ) from exc
+            raise
+        return ladder
+
+    def _heat_value_weight(self) -> float:
+        """Exergy carried per joule of delivered user heat.
+
+        The user stream is heated between two fixed temperatures, so
+        ``Ex_user = theta * Q_user`` with a constant
+
+            theta = [e(T_supply) - e(T_return)] / [cp (T_supply - T_return)].
+
+        It is the Carnot factor of the user's mean thermodynamic temperature.
+        """
+        c = self.config
+        t0 = c.ambient_temperature_k
+        supply = c.heat_user_supply_temperature_k
+        back = c.heat_user_return_temperature_k
+        return (water_exergy(supply, t0) - water_exergy(back, t0)) / (
+            WATER_CP_J_PER_KGK * (supply - back)
+        )
+
+    def _exergy_optimal_charge_split(
+        self,
+        cold_k: float,
+        start: list[float],
+        expansion_work: float,
+        trunk_inlet_k: float,
+    ) -> list[float]:
+        """Charge split that maximizes useful exergy efficiency at fixed R.
+
+        WHY EXERGY. At a fixed inventory every discharge quantity is fixed, and
+        the first-law book collapses to (derivation in docs/14):
+
+            Q_user = W_comp - Q_ac - L_tank + K(R)
+            Psi_w  = (W_exp + w Q_user) / W_comp
+                   = w + (W_exp + w (K - Q_ac - L_tank)) / W_comp
+
+        so extra compression work raises ``Psi_w`` exactly when ``Psi_w < w``.
+        With ``w = 1`` (the delivery ratio) a plant below one is rewarded for
+        turning electricity into heat, like a resistance heater; with
+        ``w = theta`` (useful exergy) that cannot happen here, because theta is
+        far below the exergy efficiency. The split is therefore chosen by
+        exergy, whatever objective then ranks the inventory.
+
+        WHY TWO VARIABLES. The branches are not alike. The LAST branch's air
+        goes to the aftercooler, so its heat is either stored or thrown away;
+        the FIRST branch cools air compressed from ambient, the coldest outlet
+        of the train, so its water dilutes the grade of the store. Every
+        intermediate branch trades intercooling against grade in the same way,
+        and capacity matching already balances them. The free N-branch optimum
+        was measured to add at most 0.3 exergy points on top of these two
+        shares, by switching off alternate intercoolers - a flat, non-convex
+        landscape, not a design. So the split keeps the capacity-matched shape
+        for the intermediate branches and optimizes two multipliers, ``a`` on
+        the first branch and ``b`` on the last, rescaling the middle to keep
+        the inventory exact. Each is a bounded one-dimensional maximization
+        (Brent), alternated to convergence; only the charge train is re-solved,
+        about 2 ms per trial. The coolant ceiling is a hard constraint.
+        """
+        c = self.config
+        count = len(start)
+        if count < 2:
+            return start
+        total = sum(start)
+        weight = self._heat_value_weight()
+        ceiling = c.coolant_maximum_temperature_k + TEMPERATURE_LIMIT_TOLERANCE_K
+        smallest = CHARGE_SPLIT_FLOOR_FRACTION * total / count
+        # The starved end is a = smallest / first, and a * first can round one
+        # ulp below smallest; the floor check must not reject its own endpoint.
+        admissible = smallest * (1.0 - 1e-9)
+        first, last = start[0], start[-1]
+        middle = total - first - last
+
+        def ratios(a: float, b: float) -> list[float] | None:
+            head = a * first
+            if count == 2:
+                tail = total - head
+                return [head, tail] if min(head, tail) >= admissible else None
+            tail = b * last
+            rest = total - head - tail
+            if min(head, tail) < admissible or rest < admissible * (count - 2):
+                return None
+            scale = rest / middle
+            return [head] + [ratio * scale for ratio in start[1:-1]] + [tail]
+
+        cache: dict[tuple[float, float], float | None] = {}
+
+        def value(a: float, b: float) -> float | None:
+            if (a, b) not in cache:
+                split = ratios(a, b)
+                cache[(a, b)] = None
+                if split is not None:
+                    try:
+                        cycle, store = self._charge_with_ratios(
+                            cold_k, split,
+                            enforce_water_limit=False, analyze_moisture=False,
+                        )
+                    except ValueError:
+                        cycle = None
+                    if (
+                        cycle is not None
+                        and store.maximum_water_temperature_reached_k <= ceiling
+                    ):
+                        heat = store.total_ratio * WATER_CP_J_PER_KGK * (
+                            store.hot_available_k - trunk_inlet_k
+                        )
+                        cache[(a, b)] = (
+                            expansion_work + weight * heat
+                        ) / cycle.work_j_per_kg
+            return cache[(a, b)]
+
+        def rank(item: float | None) -> float:
+            return -float("inf") if item is None else item
+
+        def best_share(along, low: float, high: float, current: float) -> float:
+            """Brent inside, plus the starved end, which Brent never visits."""
+            if high <= low:
+                return current
+            found, _ = brent_maximize(
+                along, low, high, x_tolerance=CHARGE_SPLIT_SHARE_TOLERANCE
+            )
+            return max((found, low, current), key=lambda s: rank(along(s)))
+
+        a = b = 1.0
+        seed = self._charge_split_seed
+        if seed is not None and rank(value(*seed)) > rank(value(a, b)):
+            a, b = seed
+        if value(a, b) is None:
+            return start
+        for _ in range(CHARGE_SPLIT_ROUNDS):
+            before = (a, b)
+            reserve = smallest * max(0, count - 2)
+            a = best_share(
+                lambda s: value(s, b), smallest / first,
+                (total - reserve - (0.0 if count == 2 else b * last)) / first, a,
+            )
+            if count > 2:
+                b = best_share(
+                    lambda s: value(a, s), smallest / last,
+                    (total - reserve - a * first) / last, b,
+                )
+            if max(abs(a - before[0]), abs(b - before[1])) < CHARGE_SPLIT_SHARE_TOLERANCE:
+                break
+        self._charge_split_seed = (a, b)
+        return ratios(a, b) or start
+
+    def _heat_user_infeasibility(
+        self, scanned: dict[float, _InventoryPoint]
+    ) -> ValueError:
+        """Say which constraint refused which part of the inventory axis."""
+        segments: list[list] = []
+        for inventory in sorted(scanned):
+            cause = _constraint_label(scanned[inventory].cause)
+            if segments and segments[-1][2] == cause:
+                segments[-1][1] = inventory
+            else:
+                segments.append([inventory, inventory, cause])
+        described = "; ".join(
+            f"R {low:.3g}-{high:.3g}: {cause}" for low, high, cause in segments
+        )
+        return ValueError(
+            "no closed two-tank design is feasible for these pressures, stage "
+            "counts, coolant limits and exchanger classes. The binding "
+            f"constraint along the coolant inventory R (kg water per kg air, "
+            f"{len(scanned)} sampled points) is: {described}"
+        )
 
     def _cold_loop_search_window(self) -> tuple[float, float]:
         """Bounds of the mixed-return search coordinate [K].

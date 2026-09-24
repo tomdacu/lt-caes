@@ -15,11 +15,14 @@ functions has checked every search.
 The recovery helpers additionally provide a contracting signed bracket,
 finite-resolution isolation on partially defined domains, and constrained
 simplex feasibility restoration. Their finite budgets never certify absence.
+
+The heat-user search adds two textbook pieces: a geometric scan grid and
+Brent's bounded maximization, which also drives the charge-split shares.
 """
 
 from __future__ import annotations
 
-from math import isfinite
+from math import isfinite, log
 from typing import Callable
 
 
@@ -229,6 +232,93 @@ def trial_point(low: float, f_low: float, high: float, f_high: float) -> float:
         return 0.5 * (low + high)
     trial = (low * f_high - high * f_low) / denominator
     return trial if low < trial < high else 0.5 * (low + high)
+
+
+def geometric_grid(low: float, high: float, ratio: float) -> list[float]:
+    """Points from ``low`` to ``high`` whose neighbours differ by at most ``ratio``.
+
+    Both ends are included. Used for positive scale-like coordinates (the
+    coolant inventory), where a relative step is the meaningful resolution.
+    """
+    if not 0.0 < low < high or ratio <= 1.0:
+        raise ValueError("a geometric grid needs 0 < low < high and ratio > 1")
+    count = max(1, int(-(-log(high / low) // log(ratio))))
+    return [low * (high / low) ** (i / count) for i in range(count + 1)]
+
+
+def brent_maximize(
+    function: Callable[[float], float | None],
+    low: float,
+    high: float,
+    *,
+    x_tolerance: float,
+    max_iterations: int = 60,
+) -> tuple[float, float | None]:
+    """Brent's golden-section/parabolic search for a maximum on ``[low, high]``.
+
+    Brent (1973), *Algorithms for Minimization without Derivatives*, ch. 5.
+    ``None`` means the trial is infeasible; it is ranked below every feasible
+    value, and parabolic steps are only taken through three finite points, so
+    an infeasible pocket degrades the search to golden section instead of
+    breaking it. The interval ends are never evaluated: a caller whose
+    maximum may sit on a constraint boundary compares its own endpoints.
+    Converges to a LOCAL maximum; unimodality is the caller's claim.
+    """
+    golden = 0.3819660112501051
+    infinite = float("inf")
+
+    def cost(x: float) -> float:
+        value = function(x)
+        return infinite if value is None or not isfinite(value) else -value
+
+    a, b = low, high
+    x = w = v = a + golden * (b - a)
+    fx = fw = fv = cost(x)
+    d = e = 0.0
+    for _ in range(max_iterations):
+        middle = 0.5 * (a + b)
+        tol1 = x_tolerance
+        tol2 = 2.0 * tol1
+        if abs(x - middle) <= tol2 - 0.5 * (b - a):
+            break
+        parabolic = False
+        if abs(e) > tol1 and isfinite(fx) and isfinite(fw) and isfinite(fv):
+            r = (x - w) * (fx - fv)
+            q = (x - v) * (fx - fw)
+            p = (x - v) * q - (x - w) * r
+            q = 2.0 * (q - r)
+            if q > 0.0:
+                p = -p
+            q = abs(q)
+            if abs(p) < abs(0.5 * q * e) and q * (a - x) < p < q * (b - x):
+                e, d = d, p / q
+                u = x + d
+                if u - a < tol2 or b - u < tol2:
+                    d = tol1 if x < middle else -tol1
+                parabolic = True
+        if not parabolic:
+            e = (a - x) if x >= middle else (b - x)
+            d = golden * e
+        u = x + (d if abs(d) >= tol1 else (tol1 if d > 0.0 else -tol1))
+        fu = cost(u)
+        # Two infeasible trials are not a tie to move toward: without this a
+        # search that starts inside an infeasible region walks deeper into it.
+        if fu < fx or (fu == fx and isfinite(fu)):
+            if u >= x:
+                a = x
+            else:
+                b = x
+            v, fv, w, fw, x, fx = w, fw, x, fx, u, fu
+        else:
+            if u < x:
+                a = u
+            else:
+                b = u
+            if fu <= fw or w == x:
+                v, fv, w, fw = w, fw, u, fu
+            elif fu <= fv or v == x or v == w:
+                v, fv = u, fu
+    return x, (None if fx == infinite else -fx)
 
 
 def illinois_residuals(
