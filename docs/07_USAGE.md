@@ -9,14 +9,15 @@
 The GUI is the primary interface:
 
 ```powershell
-python -m caes
+caes-atlas          # after pip install -e .
+python -m caes      # equivalent, from a checkout
 ```
 
 ## Command line automation
 
 ```powershell
 python -m caes.cli
-python -m caes.cli --mode diabatic
+python -m caes.cli --config heat_and_power_example_config.json --mode diabatic
 python -m caes.cli --config counterflow_example_config.json
 python -m caes.cli --config heat_and_power_example_config.json
 python -m caes.cli --plot artifacts/cycle.png
@@ -127,7 +128,10 @@ cavern air -> coolant interheater -> turbine
 There is no ambient exchanger on the air side: AD-CAES ambient reheat is
 mandatory and applies only to the diabatic concept. Select
 `max_combined_energy_delivery` to
-maximize electricity plus district heat per unit of charging work. Compare the
+maximize electricity plus heat per unit of charging work. The charge-water
+split is then chosen for maximum useful exergy, and an infeasible
+configuration is reported as a map of which constraint refuses which range of
+coolant inventory. Compare the
 off-take duty, electrical RTE, useful exergy efficiency, E-303 ambient absorption and coldest
 coolant state; do not compare only the delivery ratio, which prices no free
 stream.
@@ -138,9 +142,10 @@ stream.
 - Total useful exergy efficiency is useful exergy out (expansion + district
   heat) over compression-work exergy in.
 - Useful-energy delivery ratio is `(W_exp + Q_DH) / W_comp`, and it is the only
-  energy metric. Its denominator is purchased electricity alone: the AH-20x
-  ambient duty and the energy an exhaust below intake enthalpy carries in are
-  both free, so neither is charged to it. It may therefore exceed one, and it
+  energy metric. Its denominator is purchased electricity alone: ambient heat
+  (E-303 in the adiabatic concepts, AH-20x in AD-CAES) and the energy an
+  exhaust below intake enthalpy carries in are both free, so neither is
+  charged to it. It may therefore exceed one, and it
   is not a thermodynamic
   efficiency. Read the closed boundary balance off the Energy Sankey tab
   instead, and the bounded figure off the exergy efficiency.

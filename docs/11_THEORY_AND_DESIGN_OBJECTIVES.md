@@ -47,7 +47,10 @@ separate.
 | LTAHP-CAES (low-temperature adiabatic heat and power CAES) | electricity and useful heat | useful-energy delivery ratio | The concept is explicitly sector-coupled and must not discard the heat product during ranking |
 
 Useful-exergy efficiency is reported as the thermodynamic quality audit. It is
-not the current ranking objective. Cost, equipment volume, `UA`, water
+not the ranking objective, but it chooses the charge-water split of the
+heat-user plant, because the delivery ratio values heat equal to electricity
+and would reward spending electricity as heat
+([document 14](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md)). Cost, equipment volume, `UA`, water
 inventory, parasitic loads and deliverability duration are also not yet in the
 objective, so an “optimal” result means optimal only inside this normalized
 thermodynamic boundary.
@@ -82,14 +85,69 @@ Several first-principle relations remove numerical degrees of freedom:
   construction, so no ordering search is needed;
 - constant-`cp` liquid-coolant mixing is exactly enthalpy-weighted in this model;
 - an optimal E-303 group is downward closed in temperature, so sorting the
-  returns once reduces `2**N` subsets to N thresholds.
+  returns once reduces `2**N` subsets to N thresholds;
+- under the heat-user (minimum-duty) dispatch the discharge side depends on the
+  inventory and the stored humidity only, so the cold tank is explicit and the
+  whole plant is one-dimensional in the inventory
+  ([document 14](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md)). The coolant-loop
+  root disappears there;
+- a closed first-law identity,
+  `W_exp + Q_user = W_comp + Q_amb + (h0 - h_exh) - Q_ac - L_tank`, explains
+  every delivery ratio below one (aftercooler rejection) and shows that the
+  user temperatures enter the delivery ratio only through feasibility.
 
 Other unknowns cannot yet be removed honestly. Finite-NTU effectiveness depends
-on capacity ratio, air `cp` varies with state, E-303 and dwell couple the return
-to the next charge, and active coolant-limit/finite-NTU constraints create
-piecewise branches. Inventory, cold-loop closure, inverse-HX sizing and the
-extraction-margin mass root therefore remain numerical until stronger
-monotonicity or convexity is proved over the complete admissible domain.
+on capacity ratio, air `cp` varies with state, and active coolant-limit and
+finite-NTU constraints create piecewise branches. The inverse-HX sizing, the
+extraction-margin mass root and the inventory search therefore remain
+numerical. Under the electricity-first (absorbing) dispatch the discharge
+depends on the hot store, E-303 and dwell couple the return to the next
+charge, and the cold-loop closure stays a genuine root.
+
+## Measured sensitivity of the delivery ratio J (LTAHP)
+
+One parameter at a time from the reference plant (85.8 bar, 6+6 stages,
+efficiencies 0.85, NTU 5, 80/45 °C user, 15 °C ambient), each point solved to
+its own optimum inventory. Energy terms in kJ/kg-air.
+
+| change | J | RTE | eta_ex | Q_amb | h0 - h_exh | Q_ac |
+|---|---:|---:|---:|---:|---:|---:|
+| reference | 1.075 | 0.551 | 0.625 | 44.4 | 38.6 | 42.2 |
+| storage 30 / 150 / 300 bar | 1.097 / 1.054 / 1.025 | 0.574 / 0.541 / 0.536 | 0.647 / 0.613 / 0.604 | 34.7 / 45.6 / 39.6 | 30.2 / 41.8 / 43.4 | 26.1 / 52.8 / 64.5 |
+| stages 3 / 4 / 8 / 10 | 0.943 / 0.986 / 1.154 / 1.172 | 0.506 / 0.505 / 0.552 / 0.534 | 0.568 / 0.573 / 0.637 / 0.624 | 0 / 19.6 / 77.9 / 89.7 | 38.6 | 75.3 / 67.0 / 34.6 / 35.2 |
+| exchanger NTU 3 / 10 / 30 / 100 | 1.010 / 1.128 / 1.171 / 1.187 | 0.533 / 0.565 / 0.572 / 0.575 | 0.600 / 0.644 / 0.656 / 0.661 | 25.4 / 61.2 / 76.9 / 82.5 | 38.6 | 58.4 / 31.2 / 25.3 / 23.0 |
+| E-303 NTU 1 / 2 / 20 | 1.050 / 1.066 / 1.075 | 0.554 / 0.552 / 0.551 | 0.624 / 0.625 / 0.625 | 28.3 / 38.7 / 44.7 | 38.6 | ~40 |
+| machine efficiency 0.80 / 0.90 / 0.95 | 1.075 / 1.073 / 1.073 | 0.483 / 0.625 / 0.700 | 0.566 / 0.688 / 0.753 | ~45 | 38.6 | ~43 |
+| ambient 0 / 30 °C | 1.031 / 1.153 | 0.548 / 0.551 | 0.637 / 0.609 | 31.9 / 75.6 | 32.4 / 45.1 | 47.9 / 34.8 |
+| user 60/30, 95/75, 110/90 °C | 1.070 / 1.072 / 1.040 | 0.549 / 0.543 / 0.511 | 0.598 / 0.647 / 0.631 | ~45 / 45.7 / 39.8 | 38.6 | 46.7 / 44.5 / 54.8 |
+| coolant minimum 0 °C (instead of -80) | 1.057 | 0.552 | 0.624 | 32.8 | 38.6 | 40.0 |
+| pressure drops 0 / 5 % (instead of 2 %) | 1.074 / 1.076 | 0.585 / 0.503 | 0.654 / 0.583 | ~44 | 38.6 | ~42 |
+| combined: 200 bar, 10+10, NTU 30, E-303 NTU 20, eta 0.90, drops 1 %, user 60/30 | **1.215** | 0.655 | 0.707 | 134.5 | 42.8 | 52.7 |
+
+Formal bounds, ideal-component results and the heat-pump reading are in
+[document 16](16_PERFORMANCE_LIMITS.md).
+
+How to read it, through the identity
+`J = 1 + (Q_amb + (h0 - h_exh) - Q_ac - L_tank) / W_comp`:
+
+- **J measures free ambient energy, not machine quality.** Machine efficiency
+  and pressure drops barely move J (1.073-1.076) while RTE moves by 20 points:
+  every irreversibility turns electricity into heat, and J counts that heat
+  at par. Always read J next to RTE or eta_ex.
+- **What raises J is what lets the plant act as a heat pump**: more expansion
+  stages and better exchangers make colder interheater returns, so E-303
+  harvests more ambient heat (`Q_amb` 0 kJ with 3 stages, 90 kJ with 10), and
+  they shrink the aftercooler loss `Q_ac`. A warmer ambient helps for the same
+  reason. A coolant that must stay above 0 °C caps the harvest.
+- **Higher storage pressure lowers J**, because the aftercooler loss grows
+  faster than the harvest.
+- **An upper bound in this model.** `Q_ac` and `L_tank` are non-negative, and
+  the exhaust cannot fall below the anti-icing floor, so
+  `J <= 1 + (Q_amb + (h0 - h_exh)) / W_comp`. For the combined case that is
+  `1 + (134.5 + 42.8) / 579.9 = 1.31`: even an ideal aftercooler would leave J
+  near 1.3. The practical optimum found so far is 1.22 (1.215 above, 1.222 at
+  200 bar, 8+8, NTU 100, coolant minimum -30 °C). Pushing further means more
+  stages and exchanger area, which this model does not cost.
 
 ## Recommended theory-led sensitivity program
 
@@ -133,7 +191,8 @@ local trend.
 | Ambient E-303 NTU | Warms the selected sub-ambient return suffix more strongly toward ambient | It never rejects heat; changed recovery alters the next charge and can move the optimal suffix |
 | Pressure drop | Normally degrades work recovery and raises compression burden | It also changes downstream temperature and moisture constraints, so feasibility can switch abruptly |
 | Conserved coolant inventory | More heat capacity improves air cooling but lowers coolant temperature grade | This is the core interior trade-off; direct coolant limits, finite-HX duty asymptotes and heat-user approaches create a bounded feasible band |
-| Optimized E-303 cutoff | Selects the ordered cold-return suffix with maximum ambient pickup | The local O(N) optimum excludes fixed-area cost, pumps/fans and arbitrary cross-connected subsets |
+| Optimized E-303 group | Selects the coldest-return group with maximum ambient pickup | The O(N log N) optimum excludes fixed-area cost, pumps/fans and cross-connected piping |
+| Charge-water split (heat user) | Exergy-optimal: hot users switch the first intercooler off and give the last one more water | Chosen by useful exergy because the delivery ratio would reward electric heating; limited by the coolant ceiling |
 
 | Normalized tank UA × duration | Exponentially relaxes stored water toward ambient | Hot and cold tank losses can have different signs relative to ambient; duration is not yet a dispatch variable |
 | Heat-user supply temperature | Raises delivered heat quality/exergy | Requires a hotter store and tighter hot-end approach, shrinking feasibility |

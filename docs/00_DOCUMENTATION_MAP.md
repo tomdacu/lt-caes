@@ -3,7 +3,7 @@
 > **Parent:** [project README](../README.md)  
 > **Purpose:** start here and follow links toward implementation detail
 
-This repository is a configuration brainstorming and screening tool. A fixed
+CAES Atlas is a configuration brainstorming and screening tool. A fixed
 NTU selects an exchanger performance class; each candidate implicitly resizes
 the exchanger as `UA_design = NTU_selected C_min,design`.
 
@@ -11,9 +11,13 @@ the exchanger as `UA_design = NTU_selected C_min,design`.
 
 | Question | Canonical document | Deeper detail |
 |---|---|---|
+| How does the solver work, explained from first principles? | [How the solver works](15_HOW_THE_SOLVER_WORKS.md) | [Solver workflow](04_OPTIMIZATION_WORKFLOW.md) |
+| How good can such a plant be at best (RTE, J, heat-pump COP)? | [Performance limits](16_PERFORMANCE_LIMITS.md) | [Theory and objectives](11_THEORY_AND_DESIGN_OBJECTIVES.md) |
+| What does a realistic plant look like, and where do its numbers come from? | [Realistic reference parameters](17_REALISTIC_REFERENCE_PARAMETERS.md) | [Source dossier](research/REALISTIC_PARAMETERS_SOURCES.md) |
 | What plants are represented? | [Plant concepts](01_PLANT_CONCEPTS_AND_ARCHITECTURES.md) | [Physics boundary](02_PHYSICS_AND_MODEL_BOUNDARY.md) |
 | What is optimized? | [Theory and objectives](11_THEORY_AND_DESIGN_OBJECTIVES.md) | [Metrics and exergy](03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md) |
 | How does the solver nest? | [Optimization workflow](04_OPTIMIZATION_WORKFLOW.md) | [Algorithm index](algorithms/README.md) |
+| Why is the heat-user plant one-dimensional, and how is the charge water split? | [Heat-user reduction and charge split](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md) | [Metrics and exergy](03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md) |
 | How is the trunk staged to the turbines? | [Extraction architecture](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md) | [Discharge solver and results](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md) |
 | Where is E-303 placed? | [Cold-return recovery](algorithms/cold_return_recovery.md) | [Extraction architecture](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md) |
 | What about direct hot-to-cold recuperation? | [Recuperator study, now delivered as E-304](13_HOT_TO_COLD_RECUPERATOR_STUDY.md) | [Extraction architecture](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md) |
@@ -27,10 +31,11 @@ the exchanger as `UA_design = NTU_selected C_min,design`.
 2. [Physics and model boundary](02_PHYSICS_AND_MODEL_BOUNDARY.md)
 3. [Objectives, metrics and exergy accounting](03_OBJECTIVES_METRICS_AND_EXERGY_ACCOUNTING.md)
 4. [Theory and design objectives](11_THEORY_AND_DESIGN_OBJECTIVES.md)
-5. [Moisture, dew point and wet expansion](06_MOISTURE_DEW_POINT_AND_WET_EXPANSION.md)
-6. [Single-store extraction architecture (E-302 + E-304)](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
-7. [Single-store TES, discharge solver and measured results](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md)
-8. [Hot-to-cold recuperator study, closed](13_HOT_TO_COLD_RECUPERATOR_STUDY.md)
+5. [The heat-user plant is one-dimensional: reduction, objectives, charge split](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md)
+6. [Moisture, dew point and wet expansion](06_MOISTURE_DEW_POINT_AND_WET_EXPANSION.md)
+7. [Single-store extraction architecture (E-302 + E-304)](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
+8. [Single-store TES, discharge solver and measured results](08_MULTILEVEL_TES_AND_THE_DISCHARGE_CASCADE.md)
+9. [Hot-to-cold recuperator study, closed](13_HOT_TO_COLD_RECUPERATOR_STUDY.md)
 
 ## Solver and evidence
 

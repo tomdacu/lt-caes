@@ -4,6 +4,11 @@
 > **Related:** [Charge train](charge_train.md) · [Discharge train](discharge_train.md) · [E-303 optimization](cold_return_recovery.md)  
 > **Code:** `CAESPlant._close_cold_loop` in `caes/plant.py`
 
+**Scope.** This root exists only under the electricity-first (absorbing)
+dispatch. With a heat user and combined delivery the cold tank is an explicit
+function of the inventory and no root is solved; see
+[document 14](../14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md#1-three-structural-facts).
+
 The root coordinate is the cold-tank temperature. This is required by the
 branch-selective E-303 topology: an untreated all-return mean loses the branch
 distribution and therefore cannot determine which returns are warmed or how

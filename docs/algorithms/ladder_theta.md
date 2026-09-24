@@ -76,6 +76,13 @@ over-inventory point is recovered.
 3. **Safeguarded false position.** The global bracket remains the proof path
    near feasibility boundaries, with the same reciprocal transform and Illinois
    halving so neither endpoint sticks.
+4. **Seed-free fallback (heat-user solver).** A seed left by a distant
+   inventory can stop steps 1-3 short of the mass tolerance. The heat-user
+   solver then clears it and uses the seed-free bracketed root
+   (`_solve_extraction_margin_recovery`), so a candidate's feasibility never
+   depends on which candidate was solved before it. There the provisional hot
+   end is the coolant ceiling, because the store does not enter the mass
+   equation.
 
 The tolerance is not an ad-hoc number: it is derived from the one-joule energy
 budget in `WATER_MASS_CLOSURE_SEARCH_ERROR`, because a mass residual reappears

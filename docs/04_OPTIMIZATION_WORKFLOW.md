@@ -2,13 +2,58 @@
 
 > **Parent:** [Documentation map](00_DOCUMENTATION_MAP.md)  
 > **Children:** [Algorithm index](algorithms/README.md) · [Performance registry](09_PERFORMANCE_AND_OPTIMIZATION.md)  
-> **Architecture:** [Single-store extraction architecture](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)
+> **Architecture:** [Single-store extraction architecture](12_PROPOSED_COOLANT_CASCADE_ARCHITECTURE.md)  
+> **Theory:** [The heat-user plant is one-dimensional](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md)
 
 The LTA/LTAHP solver compares candidate plants on a one-kilogram-air basis. It
 does not time-step one fixed exchanger: constant NTU denotes a performance
 class and each candidate implicitly resizes `UA = NTU C_min`.
 
-## Whole-plant map
+There are two solvers, because the two dispatches have different structure:
+
+| dispatch | concepts | unknowns per inventory | outer search |
+|---|---|---|---|
+| minimum-duty, heat sold | LTAHP, `max_combined_energy_delivery` | none: the cold tank is explicit | scan, constraint boundary, Brent |
+| absorbing, electricity first | LTA; LTAHP with `max_electric_efficiency` | cold-tank temperature (a root) | coarse walk and refinement |
+
+## Heat-user solver: one variable
+
+Under minimum-duty dispatch the discharge ladder depends on the inventory and
+the stored humidity only, so the cold tank follows from it in one evaluation
+and the charge train runs once at that tank. Derivation and measurements are
+in [document 14](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md).
+
+```mermaid
+flowchart LR
+    R[Inventory R] --> W[Stored humidity]
+    W --> M[E-304 margin root: bleeds sum to R]
+    M --> C[E-303, mix, E-304 recuperation, dwell = cold tank, explicit]
+    C --> K[Charge train at that tank, exergy-optimal split]
+    K --> F{Store above first extraction, E-302 and E-304 areas, coolant limits}
+    F -->|refused| X[Record the named constraint for this R]
+    F -->|feasible| J[Objective R_delivery]
+```
+
+The inventory is then searched in one dimension:
+
+1. scan `R` geometrically from a quarter to four times the capacity-rate
+   reference, neighbours 25 % apart (the whole 0.1-30 domain, 10 % apart, if
+   nothing closes). This scan is also the diagnosis: every refused point
+   carries its constraint;
+2. bisect every gap between two neighbours refused by different constraints,
+   down to 0.2 % of `R`: that is the only place a narrow feasible window can
+   hide;
+3. move to the best cell under the exergy-optimal charge split;
+4. bisect any neighbouring constraint boundary to 0.02 % of `R`;
+5. if the objective still rises into that boundary, the boundary is the
+   optimum; otherwise run Brent's method on the bracket.
+
+The charge split optimizes two multipliers, on the first and on the last
+intercooler branch, around the capacity-matched shape of the rest, for maximum
+useful exergy. The reason exergy and not the ranking ratio chooses it is in
+[document 14, section 3](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md#3-one-family-of-objectives-and-why-j-cannot-choose-the-split).
+
+## Electricity-first solver: coupled cold loop
 
 ```mermaid
 flowchart LR
@@ -28,7 +73,11 @@ flowchart LR
     L --> M[Rank inventory by selected objective]
 ```
 
-AD-CAES does not enter this loop. It always uses finite ambient reheat and a
+The map above still names E-302 and E-304 because the coupled solver can also
+evaluate a heat-user plant (tests and diagnostics call it directly); `run()`
+sends every heat-user plant to the one-variable solver instead.
+
+AD-CAES enters neither loop. It always uses finite ambient reheat and a
 turbine/throttle split that respects the icing envelope.
 
 ## Charge block
@@ -66,10 +115,12 @@ flowchart TD
 ```
 
 One safeguarded, continued scalar root chooses the common margin `m` so all
-inverse-HX bleeds sum to the conserved inventory. Because the first extraction
-is the trunk inlet, that same root also fixes what E-302 gets - there is no
-separate split to search. The outer root then reproduces the physical cold-tank
-state after E-303, final mixing, E-304 recuperation and dwell.
+inverse-HX bleeds sum to the conserved inventory; if a stale continuation seed
+stops it short, a seed-free bracketed root is used, so feasibility never
+depends on which inventory was solved before. Because the first extraction is
+the trunk inlet, that same root also fixes what E-302 gets - there is no
+separate split to search. E-303, final mixing, E-304 recuperation and dwell
+then give the cold tank directly; the coupled solver instead roots it.
 
 The user's coolant is one counter-current stream through one exchanger. Its mass
 flow is derived from the duty and the configured supply/return temperatures, and
@@ -97,8 +148,10 @@ the bounded thermodynamic metric is total useful exergy efficiency.
 ## Numerical safeguards
 
 - All inverse HXs refine against the same forward finite-NTU law.
-- The cold-loop coordinate is the cold-tank temperature because the branch
-  distribution, not its untreated mean, determines E-303 placement.
+- In the coupled solver the cold-loop coordinate is the cold-tank temperature
+  because the branch distribution, not its untreated mean, determines E-303
+  placement. The heat-user solver needs no coordinate: its cold tank is
+  explicit.
 - Previous cold-loop and extraction-margin roots are continuation seeds, but
   every seed is re-evaluated and bracketed.
 - The discharge network closes mass internally before cold-tank closure.

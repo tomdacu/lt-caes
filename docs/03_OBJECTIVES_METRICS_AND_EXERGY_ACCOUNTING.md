@@ -18,7 +18,7 @@ internal air-centric process sign convention.
 |---|---|---|
 | Electrical round-trip efficiency | `eta_electric = W_exp / W_comp` | Shaft work out divided by shaft work in. Motor, generator, pump, and fan losses are outside the current boundary. |
 | Useful-energy delivery ratio | `R_delivery = (W_exp + Q_heat_user) / W_comp` | The one energy metric: sector-coupling output per unit of *purchased* charging electricity. Free harvested ambient energy never enters the denominator, so it may exceed 100% and must not be called a thermodynamic efficiency. |
-| Useful-exergy efficiency | `eta_exergy = (W_exp + B_heat_user) / W_comp` | Useful exergy product divided by compression-work exergy. Ambient heat transferred at the dead-state temperature has approximately zero exergy. Reported, not optimized. |
+| Useful-exergy efficiency | `eta_exergy = (W_exp + B_heat_user) / W_comp` | Useful exergy product divided by compression-work exergy. Ambient heat transferred at the dead-state temperature has approximately zero exergy. Not a ranking objective; it chooses the LTAHP charge-water split (see below). |
 
 There is exactly **one** energy metric. `R_delivery > 1` is not perpetual
 motion; see the next section for why the denominator is what it is.
@@ -62,12 +62,12 @@ heat-pump COP is not. A worked case:
 200 bar, 8+8 stages, NTU = 100, external heat user,
 coolant_minimum_temperature_c = -30
 
-W_comp = 639.63   W_exp = 355.70   Q_heat_user = 357.68   E-303 ambient = 69.39 kJ/kg-air
+W_comp = 627.37   W_exp = 355.70   Q_heat_user = 411.00   E-303 ambient = 122.92 kJ/kg-air
 intake  +15.00 degC   h = 414.37 kJ/kg
 exhaust -27.57 degC   h = 371.56 kJ/kg     -> 42.81 kJ/kg-air harvested, unpriced
 
-R_delivery = 111.53 %      <- above one, and correct for what it measures
-eta_exergy = 63.48 %       <- bounded thermodynamic metric
+R_delivery = 122.21 %      <- above one, and correct for what it measures
+eta_exergy = 65.92 %       <- bounded thermodynamic metric
 ```
 
 This LTAHP case has two distinct free ambient contributions: E-303 heats the
@@ -104,7 +104,7 @@ The project policy is:
 | AD-CAES | `mode=diabatic` | maximum electrical RTE | Direct finite-NTU turbine/throttle solution; no coolant-inventory optimization loop. |
 | LTA-CAES | `mode=adiabatic`, `heat_offtake=none` | maximum electrical RTE | Rank closed two-tank candidates by expansion work. |
 | LTAHP-CAES, electric dispatch | `heat_offtake=heat_user`, `max_electric_efficiency` | maximum electrical RTE | Bypass E-302 and E-304 and route the complete hot-coolant inventory to the interheaters at the one stored temperature; this reproduces LTA unless non-bypassable hardware losses are later added. |
-| LTAHP-CAES, combined dispatch | `heat_offtake=heat_user`, `max_combined_energy_delivery` | maximum useful-energy delivery ratio | Sell everything above the first E-304 extraction, feed each stage a common margin above its own demand, and recuperate the descent into the coolant return; rank candidates by `W_exp + Q_heat_user`. |
+| LTAHP-CAES, combined dispatch | `heat_offtake=heat_user`, `max_combined_energy_delivery` | maximum useful-energy delivery ratio | Sell everything above the first E-304 extraction, feed each stage a common margin above its own demand, and recuperate the descent into the coolant return; split the charge water for maximum useful exergy; rank inventories by `R_delivery`. |
 
 Both active objectives remain selectable for sensitivity studies, but the
 selected objective always ranks candidates. Endpoint T-Q spread remains an
@@ -126,6 +126,33 @@ stated product goal is instead the combined delivery of electricity and heat.
 The objective therefore controls both candidate ranking and the physical
 heat/electric dispatch. Merely selecting LTAHP hardware does not force a heat
 sale when the requested operating objective is electrical.
+
+## One family of ratios, and which decision each may make
+
+All three metrics are members of one family,
+
+```text
+Psi_w = (W_exp + w * Q_user) / W_comp        w = 0 (RTE), theta (eta_exergy), 1 (R_delivery)
+```
+
+where `theta = [e(T_supply) - e(T_return)] / [cp (T_supply - T_return)]` is the
+exergy per joule of user heat, 0.14 for an 80/45 degC user and 0.23 for 110/90.
+At a fixed inventory the plant's first-law identity gives
+
+```text
+d Psi_w / d W_comp = -(Psi_w - w) / W_comp      (heat rejection held fixed)
+```
+
+so extra compression work raises `Psi_w` exactly when `Psi_w < w`. A resistance
+heater scores `R_delivery = 1`, and a plant below one can climb toward it by
+spending electricity as heat: the free charge split that maximizes
+`R_delivery` at 30 bar, 3+3 stages, switches the first intercooler off, gaining 3
+points of `R_delivery` while losing 4.5 points of RTE and 3.4 of exergy
+efficiency. The charge split is therefore chosen by useful exergy, which
+never rewards that trade here (`theta` is far below `eta_exergy`), and
+`R_delivery` keeps ranking the inventory. That the ranking objective shares the
+same weakness in principle is recorded as an open decision in
+[document 14](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md#6-what-is-and-is-not-claimed).
 
 ## First-law coolant accounting
 
@@ -207,9 +234,20 @@ python -m caes.cli --config heat_and_power_example_config.json `
 
 Closed two-tank candidates remain subject to hard thermodynamic limits; the
 optimizer does not return a design that exceeds them. If no candidate closes,
-the raised error aggregates the actual binding causes encountered over the
-inventory search, including reached and permitted values where available, and
-offers cause-specific remedies. Examples include direct coolant temperature
+the raised error reports the binding causes encountered over the inventory
+search, including reached and permitted values where available. For LTAHP
+combined delivery it is a map along the inventory axis. At 250 bar with 3+3
+stages it reads (abridged):
+
+```text
+R 0.1-0.674:  the coolant inventory is too small for the minimum moisture-safe interheater duties
+R 0.736-3:    coolant maximum temperature limit exceeded
+R 3.06-27.3:  the E-304 exchanger class is too small in the zone
+              (two isolated points marked "numerical root unresolved (not a physical verdict)")
+```
+
+That is what tells the designer that two constraints cross, and which input
+to relax. Examples include direct coolant temperature
 limits, finite-HX ordering, wet-expander boundary,
 and incompatible capacity-matched throughput.
 

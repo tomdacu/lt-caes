@@ -20,21 +20,31 @@ presentation text only; changing them does not invalidate existing studies.
 and dormant inputs. JSON keeps the stable low-level enum values; concept names
 are derived from their combination.
 
-## Current brainstorming defaults
+## Startup configuration and code defaults
 
-Reset Defaults opens the LTAHP reference point requested for configuration
-screening: six compressor and six expander stages, 85.8 bar storage pressure
-(`2.1^6` rounded to one decimal), all active exchanger NTUs equal to 5, direct
-coolant limits -80/200 degC, 80/45 degC heat user, zero
-normalized tank UA and the combined heat-plus-power objective. The broad
-coolant limits are intentionally non-binding defaults, not a material claim;
-real candidate fluids must replace them with characterized limits/properties.
+The application opens with, and "Reset defaults" restores, the **reference
+plant** `caes.presets.REALISTIC_REFERENCE`: a large (tens of MW) plant with
+typical published component values and a few marked design choices. It has a
+100 bar salt cavern, eight integrally geared compression and eight expansion
+stages at 0.86 / 0.85 isentropic efficiency, 1.5 % pressure drop per
+exchanger, air/water exchangers of NTU 3.4, a water-glycol loop limited to
+-25/150 °C and an 80/40 °C district-heating user at a 10 °C, 80 % RH site. The command line uses it when no `--config` is
+given, and `--write-default-config` writes it. Every value and its source is
+in [document 17](17_REALISTIC_REFERENCE_PARAMETERS.md).
+
+`PlantConfig()` without arguments keeps the older screening point: six
+compressor and six expander stages, 85.8 bar storage pressure (`2.1^6`
+rounded to one decimal), all active exchanger NTUs equal to 5, direct coolant
+limits -80/200 degC, 80/45 degC heat user, zero normalized tank UA. It is the
+fixed numerical baseline of the test suite and of
+`heat_and_power_example_config.json`; its broad coolant limits are
+intentionally non-binding and are not a material claim.
 
 ## Concept mapping
 
 | Concept | `mode` | `heat_offtake` | Ambient reheat | Example file |
 |---|---|---|---|---|
-| AD-CAES | `diabatic` | dormant / `none` | always enabled; otherwise expansion temperatures violate the icing envelope | `--mode diabatic` |
+| AD-CAES | `diabatic` | dormant / `none` | always enabled; otherwise expansion temperatures violate the icing envelope | `--config heat_and_power_example_config.json --mode diabatic` |
 | LTA-CAES | `adiabatic` | `none` | dormant | concept option; each point must prove a heat-only closed loop |
 | LTAHP-CAES | `adiabatic` | `heat_user` | dormant | `heat_and_power_example_config.json` |
 

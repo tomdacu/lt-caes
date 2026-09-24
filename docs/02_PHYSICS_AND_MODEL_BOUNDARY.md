@@ -395,20 +395,24 @@ tank_decay(E304(final_mix(E303(coldest_group(returns))))) = T_cold
 
 Every kilogram of transferred water crosses one active interheater core, so
 `sum(r_h,i)` is exactly the complete normalized throughput. With a heat user,
-the margin root closes bleed mass inside the discharge solve and the outer root
-reproduces the cold-tank state. With no heat
+the margin root closes bleed mass inside the discharge solve, and because that
+discharge does not depend on either tank the second equation is not a root at
+all: it gives the cold tank directly
+([document 14](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md)). With no heat
 user, E-302 is absent for every objective, every stage is served from the one
 mixed hot store, and candidate allocations of
 all conserved water are compared by real multi-stage expansion work. That
 path roots on the actual routed-return/tank closure. E-303 never becomes a
 rejection cooler.
 
-The outer search uses the capacity-rate scale `cp_air/cp_coolant ~= 0.25` and
-additional inventory candidates because direct coolant limits and finite-HX
-constraints can leave a narrow feasible window. With no heat user it refines
-around maximum RTE; HX profile spread remains a reported equipment metric.
-The inner cold-loop search also locates the precise start
-of each feasible temperature window before bracketing its mass-balance root.
+The inventory search is centred on the capacity-rate scale
+`cp_air/cp_coolant ~= 0.25` per stage because direct coolant limits and
+finite-HX constraints can leave a narrow feasible window. With a heat user it
+scans the inventory and records the binding constraint of every refused point;
+with no heat user it refines around maximum RTE, and its inner cold-loop search
+also locates the precise start of each feasible temperature window before
+bracketing its mass-balance root. HX profile spread remains a reported
+equipment metric.
 The actual cold-tank closure, rather than a loose proxy residual, is the final
 acceptance test.
 

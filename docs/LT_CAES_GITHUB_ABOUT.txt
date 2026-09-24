@@ -1,18 +1,18 @@
-No-combustion CAES repository description
------------------------------------------
+CAES Atlas repository description
+---------------------------------
 
-No-combustion CAES: a screening simulator that compares three fuel-free
-compressed-air energy storage concepts - ambient-diabatic AD, low-temperature
-adiabatic LTA, and its heat-and-power sibling LTAHP - on one normalized
-kilogram of air. (229 characters, the one actually on GitHub)
+CAES Atlas: thermodynamic screening of compressed-air energy storage without
+combustion. Ambient-diabatic, low-temperature adiabatic and heat-and-power
+plants on one real-fluid, per-kg-air basis, with closed exergy books and a map
+of the constraint that binds. (260 characters)
 
 LT-CAES branch description
 --------------------------
 
 LT-CAES: the low-temperature adiabatic family alone (LTA and LTAHP), cut from
 main onto its own branch. One plant, two uses of the stored heat - back into
-the turbines (LTA), or sold as district heat (LTAHP); the diabatic concept and
-the mode axis are removed from that line. (279 characters)
+the turbines (LTA), or sold to a heat user (LTAHP); the diabatic concept and
+the mode axis are removed from that line. (273 characters)
 
 GitHub topics
 -------------

@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "caes-storage"
+name = "caes-atlas"
 version = "2.0.0"
-description = "Normalized AD-CAES, LTA-CAES and LTAHP-CAES efficiency and exergy screening tool"
+description = "CAES Atlas: thermodynamic screening of compressed-air energy storage without combustion - ambient-diabatic, low-temperature adiabatic, and heat-and-power - on one normalized basis"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -24,7 +24,7 @@ caes-simulate = "caes.cli:main"
 # launcher uses pythonw, so the Tk window opens without a dead console behind it.
 # There is deliberately no second console-mode alias for the same entry point.
 [project.gui-scripts]
-caes-storage = "caes.gui:main"
+caes-atlas = "caes.gui:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

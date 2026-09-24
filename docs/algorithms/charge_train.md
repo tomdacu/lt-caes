@@ -21,6 +21,20 @@ split. The accepted feasibility trial is retained and finalized once with the
 moisture diagnostic; rebuilding the same physical train a second time was an
 exact duplicate and has been removed.
 
+## The split with a heat user
+
+With a heat user and combined delivery, the capacity-matched split (or its
+relief blend) is only the starting shape. Two multipliers, on the first and
+on the last branch, are then optimized for maximum useful exergy at the
+explicit cold tank, with the middle branches rescaled to keep the inventory
+exact (`_exergy_optimal_charge_split`). Hot users switch the first intercooler
+off and give the last one 30-40 % more water; mild users stay within 0.02
+exergy points of capacity matching. Why exergy and not the delivery ratio, and
+why two shares and not N, is in
+[document 14](../14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md#4-rules-for-the-charge-split).
+The electricity-first dispatch keeps the capacity-matched split: its free
+optimum was measured 0.0001 RTE better.
+
 Main invariants:
 
 - sum of branch coolant ratios equals the candidate inventory;

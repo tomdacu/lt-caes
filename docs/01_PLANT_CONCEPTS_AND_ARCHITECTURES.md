@@ -503,18 +503,22 @@ R_delivery = (W_exp + Q_DH) / W_comp
 ```
 
 instead of making HX profile parallelism the primary ranking criterion.
-Profile spread remains reported for equipment sizing.
+Profile spread remains reported for equipment sizing. The charge-water split
+inside each candidate is NOT chosen by this ratio but by useful exergy: a ratio
+that weights heat equal to electricity rewards a plant below one for behaving
+like a resistance heater. See
+[document 14](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md).
 
 An LTAHP plant at 200 bar with eight stages, `heat_exchanger_ntu = 100`,
 an 80/45 degC heat user and a -30 degC antifreeze demonstrates:
 
-- `R_delivery = 121.9%`, well above unity;
-- total useful exergy efficiency `65.8%`, below unity.
+- `R_delivery = 122.2%`, well above unity;
+- total useful exergy efficiency `65.9%`, below unity.
 
 That is how apparent greater-than-unity performance should be read. The plant
 draws energy out of the atmosphere by two free routes and nobody charges it for
 either: the exhaust leaves at -27.6 degC, `42.8 kJ/kg-air` below intake
-enthalpy, and E-303 harvests a further `122.4 kJ/kg-air` into the coolant
+enthalpy, and E-303 harvests a further `122.9 kJ/kg-air` into the coolant
 return. The delivery ratio counts free harvested energy in its numerator and
 never in its denominator, so passing 100% is expected rather than suspect. Only
 the second line is a bound - `eta_exergy` is always below one. See
@@ -522,7 +526,7 @@ the second line is a bound - `eta_exergy` is always below one. See
 
 Under the former serial cascade the same configuration returned
 `R_delivery = 103.3%`, `eta_exergy = 64.0%` and imported **zero** ambient heat.
-The whole of that 18-point gain is the ambient harvest, and the harvest exists
+Almost the whole of that 19-point gain is the ambient harvest, and the harvest exists
 because E-304 stops overheating the tail-stage coolant: matched supplies let the
 interheater returns come back genuinely cold, and cold returns are what E-303
 has to work with. It is worth being explicit that this is a first-law effect on
@@ -633,20 +637,31 @@ RECUPERATED temperature, not this one.
 
 ## Optimization hierarchy
 
-For each normalized total coolant inventory, the solver:
+For LTAHP-CAES with combined delivery, each normalized coolant inventory is
+solved WITHOUT a coolant-loop root, because the discharge side does not depend
+on either tank temperature
+([document 14](14_HEAT_USER_REDUCTION_AND_CHARGE_SPLIT.md)):
 
-1. solves the sequential compressor and finite-intercooler train;
-2. enforces direct coolant minimum and maximum temperatures;
-3. applies hot-tank standing loss;
-4. determines moisture-safe turbine requirements;
-5. roots the common E-304 extraction margin, inversely sizing every
+1. determines the stored humidity and the moisture-safe turbine requirements;
+2. roots the common E-304 extraction margin, inversely sizing every
    interheater branch, so the bleeds consume the exact inventory;
-6. selects the maximum-duty E-303 group over the COLDEST returns, then mixes;
-7. runs that mixed return through E-304's cold side and derives the next
-   cold-TES temperature from the RECUPERATED inlet;
-8. evaluates energy, exergy and HX-profile metrics;
-9. refines the inventory search around the selected objective, continuing the
-   coolant-loop root from the previous inventory rather than rescanning.
+3. selects the maximum-duty E-303 group over the COLDEST returns, mixes, runs
+   the mixture through E-304's cold side and applies dwell: that IS the cold
+   tank, explicitly;
+4. solves the sequential compressor and finite-intercooler train at that cold
+   tank, with the exergy-optimal split of the charge water;
+5. enforces the direct coolant limits, the store-above-first-extraction
+   inequality and the finite-area checks of E-302 and E-304;
+6. evaluates energy, exergy and HX-profile metrics.
+
+The inventory itself is scanned, and the scan records the constraint that
+refuses every infeasible point; the optimum is then refined by bisection onto
+the active constraint boundary or by Brent's method between boundaries.
+
+LTA-CAES and electricity-first LTAHP keep the coupled solve: for each
+inventory the cold-tank temperature is a genuine root, because the absorbing
+discharge depends on the hot store, and the root is continued from the
+previous inventory.
 
 The selected objective always ranks feasible designs. LTA-CAES normally
 maximizes electrical work. LTAHP-CAES normally maximizes useful-energy delivery.
@@ -680,25 +695,25 @@ grid-to-grid result:
 - district-network pumps.
 
 For the above-unity LTAHP example, the normalized result is
-`w_comp = 627.83 kJ/kg-air`. A 70 MW compressor shaft input therefore
-corresponds to approximately `111.5 kg/s` dry air and, on the present
+`w_comp = 627.37 kJ/kg-air`. A 70 MW compressor shaft input therefore
+corresponds to approximately `111.6 kg/s` dry air and, on the present
 shaft-only boundary:
 
 ```text
-expander shaft output       ~= 39.66 MW
-heat-user output            ~= 45.66 MW
-E-303 ambient heat imported ~= 13.65 MW
-electricity + heat delivery ~= 85.32 MW
+expander shaft output       ~= 39.69 MW
+heat-user output            ~= 45.86 MW
+E-303 ambient heat imported ~= 13.72 MW
+electricity + heat delivery ~= 85.55 MW
 ```
 
 The last line is larger than the 70 MW electrical input only because it mixes
 two energy products while charging none of the harvested ambient energy to the
-denominator. In addition to E-303, the exhaust carries another `4.77 MW` of
+denominator. In addition to E-303, the exhaust carries another `4.78 MW` of
 ambient contribution because it leaves `42.81 kJ/kg-air` below intake
 enthalpy. The energy Sankey draws both and closes the boundary balance;
 `R_delivery` deliberately prices neither, because the plant pays for neither.
 Generator, motor, pump and fan losses will reduce the physical outputs, and at
-`13.65 MW` of harvested ambient duty the E-303 fan power this model still omits
+`13.72 MW` of harvested ambient duty the E-303 fan power this model still omits
 is no longer a rounding error.
 
 ## Model-development priorities

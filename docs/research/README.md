@@ -27,6 +27,9 @@ Start with:
    for the district-heating, ambient-preheat and salt-cavern research case.
 5. [LTAHP-CAES heat rejection, cogeneration, and citation map](LTAHP_CAES_HEAT_REJECTION_AND_COGENERATION.md)
    for the E-303 audit, heat-recovery alternatives and ranked literature.
+6. [Realistic parameter sources](REALISTIC_PARAMETERS_SOURCES.md): the sourced
+   dossier (163 links) behind the realistic reference configuration of
+   [document 17](../17_REALISTIC_REFERENCE_PARAMETERS.md).
 
 ## How to contribute a source
 
